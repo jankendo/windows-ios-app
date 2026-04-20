@@ -116,7 +116,11 @@ jobs:
           else
             openssl pkcs12 -in "$CERT_PATH" -clcerts -nokeys -passin "pass:$P12_PASSWORD" -out "$CERT_PEM_PATH"
           fi
-          security import "$CERT_PEM_PATH" -A -k "$KEYCHAIN_PATH"
+          CERT_IMPORT_OUTPUT="$(security import "$CERT_PEM_PATH" -A -k "$KEYCHAIN_PATH" 2>&1)" || CERT_IMPORT_STATUS=$?
+          if [[ "${CERT_IMPORT_STATUS:-0}" -ne 0 && "$CERT_IMPORT_OUTPUT" != *"already exists"* ]]; then
+            echo "$CERT_IMPORT_OUTPUT" >&2
+            exit "${CERT_IMPORT_STATUS}"
+          fi
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*\"\\(.*\\)\".*/\\1/p' | head -n 1)"
           if [[ -z "$SIGNING_IDENTITY" ]]; then
