@@ -84,6 +84,7 @@ jobs:
           set -euo pipefail
 
           CERT_PATH="$RUNNER_TEMP/build_certificate.p12"
+          CERT_PEM_PATH="$RUNNER_TEMP/build_certificate.pem"
           PROFILE_PATH="$RUNNER_TEMP/build_profile.mobileprovision"
           PROFILE_PLIST="$RUNNER_TEMP/build_profile.plist"
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
@@ -110,10 +111,13 @@ jobs:
           security default-keychain -d user -s "$KEYCHAIN_PATH"
 
           security import "$CERT_PATH" -P "$P12_PASSWORD" -A -f pkcs12 -k "$KEYCHAIN_PATH"
+          openssl pkcs12 -legacy -in "$CERT_PATH" -clcerts -nokeys -passin "pass:$P12_PASSWORD" -out "$CERT_PEM_PATH"
+          security import "$CERT_PEM_PATH" -A -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*\"\\(.*\\)\".*/\\1/p' | head -n 1)"
           if [[ -z "$SIGNING_IDENTITY" ]]; then
             echo "No code signing identity was found in the imported keychain." >&2
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
             exit 1
           fi
 
