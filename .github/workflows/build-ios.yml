@@ -122,7 +122,7 @@ jobs:
             exit "${CERT_IMPORT_STATUS}"
           fi
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*\"\\(.*\\)\".*/\\1/p' | head -n 1)"
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" 2>&1 | awk -F '\"' '/\"/ {print $2; exit}')"
           if [[ -z "$SIGNING_IDENTITY" ]]; then
             echo "No code signing identity was found in the imported keychain." >&2
             security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
