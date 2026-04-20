@@ -10,6 +10,8 @@
     <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
+    <key>CFBundleDisplayName</key>
+    <string>Resonance</string>
     <key>CFBundleName</key>
     <string>$(PRODUCT_NAME)</string>
     <key>CFBundlePackageType</key>
@@ -20,6 +22,11 @@
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <key>NSCameraUsageDescription</key>
+    <string>写真とその瞬間の空気感を記録するためにカメラを使用します。</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>写真と一緒に環境音を保存するためにマイクを使用します。</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>録音した音声の内容を文字起こしして検索しやすくするために使用します。</string>
 </dict>
 </plist>
-

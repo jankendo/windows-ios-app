@@ -1,14 +1,24 @@
-# WindowsだけでiOSアプリを組み立てる環境
+# Resonance を Windows から開発する環境
 
-このリポジトリは、**WindowsでSwiftソースを編集し、GitHub ActionsのmacOSランナーでIPAを生成する**ための最小構成です。署名素材が有効なら署名付きIPAを出力し、署名素材が無い・壊れている・失効している場合でも、**Sideloadlyでそのまま再署名できる unsigned IPA** まで自動で作ります。
+このリポジトリは、**Windows で SwiftUI ソースを編集し、GitHub Actions の macOS ランナーで iOS アプリ `Resonance` の IPA を生成する**ための構成です。署名素材が有効なら署名付き IPA を出力し、署名素材が無い・壊れている・失効している場合でも、**Sideloadly で再署名できる unsigned IPA** まで自動で作ります。
 
 ## この構成でできること
 
-1. Windows上で VS Code から SwiftUI アプリを編集する
+1. Windows 上で `Resonance` の SwiftUI / SwiftData コードを編集する
 2. GitHub の **Public** リポジトリへ push する
 3. GitHub Actions で Xcode プロジェクトを自動生成して archive / export する
 4. 署名済みまたは Sideloadly 用 unsigned IPA を Artifact として取得する
-5. Sideloadly 経由で iPhone / iPad にインストールする
+5. iPhone / iPad で写真 + 環境音メモリーアプリを動かす
+
+## Resonance MVP の内容
+
+現状のアプリは、未来 API 依存ではなく**現行 iOS SDK で動く MVP**として実装しています。
+
+1. 写真撮影と 6 秒の環境音キャプチャ
+2. `SwiftData` へのメモリー保存
+3. `Vision` / `SoundAnalysis` / `Speech` を使った自動タグ付け
+4. ライブラリ一覧、詳細表示、音声再生、編集、削除
+5. タイトル / メモ / タグ / 文字起こし / ムードを横断する検索
 
 ## 先に準備するもの
 
@@ -20,16 +30,6 @@
 | 一度だけ使える Mac またはクラウド Mac | `.p12` と `.mobileprovision` 作成 |
 | GitHub Public リポジトリ | 無料の macOS ホストランナー利用 |
 | Sideloadly + Apple公式配布版 iTunes | 実機インストール |
-
-## このPCで確認できたローカル状態
-
-| 項目 | 状態 |
-| --- | --- |
-| Git for Windows | 利用可能 |
-| VS Code | 利用可能 |
-| GitHub CLI | 導入済み |
-| Swift for Windows | 導入済み |
-| Windows SDK | `10.0.18362.0` を追加済み |
 
 ## リポジトリ構成
 
@@ -44,9 +44,19 @@
 │  ├─ build-certificate-base64.txt
 │  └─ build-provision-profile-base64.txt
 ├─ Sources/
+│  ├─ AudioPlayerController.swift
+│  ├─ CameraCaptureService.swift
+│  ├─ CaptureView.swift
 │  ├─ ContentView.swift
 │  ├─ Info.plist
-│  └─ MyFirstAppApp.swift
+│  ├─ LibraryView.swift
+│  ├─ MediaStore.swift
+│  ├─ MemoryAnalysisService.swift
+│  ├─ MemoryDetailView.swift
+│  ├─ MyFirstAppApp.swift
+│  ├─ ResonanceModels.swift
+│  ├─ SearchView.swift
+│  └─ WaveformView.swift
 └─ scripts/
    ├─ encode-signing-assets.ps1
    ├─ complete-github-setup.ps1
@@ -66,14 +76,15 @@ PRODUCT_BUNDLE_IDENTIFIER: a.export.myfirstapp
 
 別の Bundle ID を使う場合も、**必ず `a.export.` で始まる具体値**にしてください。GitHub Actions はワイルドカードプロファイルを検出したとき、この値がプロファイル範囲内か検証してからビルドします。
 
-### 2. アプリ名
+### 2. アプリ名と内部ターゲット名
 
-必要なら `MyFirstApp` を好きな名前に変更してください。変更する場合は次の値を揃えます。
+表示名は `Resonance` です。
+一方で、**CI の安定性維持のため内部の project / target / scheme 名は `MyFirstApp` のまま**にしています。
 
-1. `Config/project.yml` の `name`
-2. ターゲット名とスキーム名
-3. `Sources/MyFirstAppApp.swift` の `@main` 構造体名
-4. ワークフロー内の `APP_NAME`
+1. 表示名: `Sources/Info.plist` の `CFBundleDisplayName = Resonance`
+2. 実行バイナリ名: `Config/project.yml` の `PRODUCT_NAME = Resonance`
+3. 内部 project / target / scheme 名: `MyFirstApp`
+4. ワークフロー内の `APP_NAME`: `MyFirstApp`
 
 ## Apple署名素材の準備
 
@@ -173,7 +184,7 @@ pwsh -File .\scripts\complete-github-setup.ps1 `
 ワークフローは次を自動で行います。
 
 1. `xcodegen` をインストール
-2. `Config/project.yml` から `MyFirstApp.xcodeproj` を生成
+2. `Config/project.yml` から内部 project `MyFirstApp.xcodeproj` を生成
 3. まず **iOS Simulator 向けの署名なしビルド** で、構成自体が正しいかを毎回検証
 4. Secrets が揃っていて有効なら、証明書とプロファイルを復元
 5. 一時キーチェーンへ証明書を投入

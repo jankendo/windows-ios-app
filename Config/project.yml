@@ -3,7 +3,7 @@ name: MyFirstApp
 options:
   minimumXcodeGenVersion: 2.38.0
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "17.0"
 
 targets:
   MyFirstApp:
@@ -15,7 +15,7 @@ targets:
       path: ../Sources/Info.plist
     settings:
       base:
-        PRODUCT_NAME: MyFirstApp
+        PRODUCT_NAME: Resonance
         PRODUCT_BUNDLE_IDENTIFIER: a.export.myfirstapp
         SWIFT_VERSION: 5.0
         GENERATE_INFOPLIST_FILE: NO
@@ -26,4 +26,4 @@ targets:
         DEVELOPMENT_TEAM: 2M6M6BW775
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
-        IPHONEOS_DEPLOYMENT_TARGET: 16.0
+        IPHONEOS_DEPLOYMENT_TARGET: 17.0
