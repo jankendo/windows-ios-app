@@ -132,7 +132,7 @@ struct CaptureView: View {
             Text("写真 + 6秒の環境音")
                 .font(.headline)
 
-            Text("シャッターを押すと、写真と一緒にその場の空気感を残す短い音声クリップを自動保存します。保存後は Vision / SoundAnalysis / Speech を使って検索用のタグを自動生成します。")
+            Text("シャッターを押すと、写真と一緒にその場の空気感を残す短い音声クリップを自動保存します。保存後は Vision / Speech / 軽量音声解析を使って検索用のタグを自動生成します。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
