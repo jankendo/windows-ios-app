@@ -245,23 +245,7 @@ jobs:
 
             if [[ $ARCHIVE_STATUS -eq 0 ]]; then
               export EXPORT_METHOD SIGNING_IDENTITY TEAM_ID BUNDLE_ID PROFILE_NAME
-              python3 - <<'PY'
-              import os
-              import plistlib
-
-              export_options = {
-                  "method": os.environ["EXPORT_METHOD"],
-                  "signingStyle": "manual",
-                  "signingCertificate": os.environ["SIGNING_IDENTITY"],
-                  "teamID": os.environ["TEAM_ID"],
-                  "provisioningProfiles": {
-                      os.environ["BUNDLE_ID"]: os.environ["PROFILE_NAME"],
-                  },
-              }
-
-              with open("ExportOptions.plist", "wb") as f:
-                  plistlib.dump(export_options, f)
-              PY
+              python3 -c "import os, plistlib; plistlib.dump({'method': os.environ['EXPORT_METHOD'], 'signingStyle': 'manual', 'signingCertificate': os.environ['SIGNING_IDENTITY'], 'teamID': os.environ['TEAM_ID'], 'provisioningProfiles': {os.environ['BUNDLE_ID']: os.environ['PROFILE_NAME']}}, open('ExportOptions.plist', 'wb'))"
 
               rm -rf "$EXPORT_PATH"
               xcodebuild -exportArchive \
