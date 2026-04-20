@@ -1,13 +1,13 @@
 # WindowsだけでiOSアプリを組み立てる環境
 
-このリポジトリは、**WindowsでSwiftソースを編集し、GitHub ActionsのmacOSランナーで署名付きIPAを生成する**ための最小構成です。
+このリポジトリは、**WindowsでSwiftソースを編集し、GitHub ActionsのmacOSランナーでIPAを生成する**ための最小構成です。署名素材が有効なら署名付きIPAを出力し、署名素材が無い・壊れている・失効している場合でも、**Sideloadlyでそのまま再署名できる unsigned IPA** まで自動で作ります。
 
 ## この構成でできること
 
 1. Windows上で VS Code から SwiftUI アプリを編集する
 2. GitHub の **Public** リポジトリへ push する
 3. GitHub Actions で Xcode プロジェクトを自動生成して archive / export する
-4. 署名済み IPA を Artifact として取得する
+4. 署名済みまたは Sideloadly 用 unsigned IPA を Artifact として取得する
 5. Sideloadly 経由で iPhone / iPad にインストールする
 
 ## 先に準備するもの
@@ -175,19 +175,19 @@ pwsh -File .\scripts\complete-github-setup.ps1 `
 1. `xcodegen` をインストール
 2. `Config/project.yml` から `MyFirstApp.xcodeproj` を生成
 3. まず **iOS Simulator 向けの署名なしビルド** で、構成自体が正しいかを毎回検証
-4. Secrets が揃っている場合だけ、証明書とプロファイルを復元
+4. Secrets が揃っていて有効なら、証明書とプロファイルを復元
 5. 一時キーチェーンへ証明書を投入
 6. プロファイルから Bundle ID / Profile名 / Team ID を抽出
-7. `xcodebuild archive`
-8. `xcodebuild -exportArchive`
+7. 署名付き `xcodebuild archive` / `xcodebuild -exportArchive` を試行
+8. 署名に失敗した場合は、`CODE_SIGNING_ALLOWED=NO` で unsigned IPA を自動生成
 9. `*.ipa` を Artifact として保存
 10. 一時キーチェーンを削除
 
 ### Secrets 未設定時の挙動
 
-- ワークフローは失敗扱いにせず、**validate job だけで終了**します。
-- そのため、Apple 署名素材をまだ用意できていなくても、XcodeGen と SwiftUI ソースの整合性は先に確認できます。
-- signed IPA が必要になった時点で Secrets を追加すれば、同じワークフローでそのまま IPA 出力へ進めます。
+- ワークフローは **unsigned IPA の生成へ自動フォールバック** します。
+- そのため、Apple 署名素材をまだ用意できていなくても、XcodeGen と SwiftUI ソースの整合性確認だけで止まらず、Sideloadly 用の `.ipa` まで取得できます。
+- 有効な署名素材を追加すると、同じワークフローで signed IPA の生成も自動で試みます。
 
 ## 初回セットアップ
 
@@ -212,6 +212,7 @@ git push -u origin main
 ### Sideloadly の補足
 
 - Windows では Microsoft Store 版ではなく、Apple 公式配布版の iTunes を使ってください。
+- Artifact が unsigned IPA でも、Sideloadly 側で Apple ID 署名してインストールできます。
 - 初回インストール直後は、ホーム画面のアプリを開く前に **VPNとデバイス管理** で Apple ID を信頼する必要があります。
 
 ## 重要な補足
