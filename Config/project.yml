@@ -1,0 +1,29 @@
+name: MyFirstApp
+
+options:
+  minimumXcodeGenVersion: 2.38.0
+  deploymentTarget:
+    iOS: "16.0"
+
+targets:
+  MyFirstApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    info:
+      path: Sources/Info.plist
+    settings:
+      base:
+        PRODUCT_NAME: MyFirstApp
+        PRODUCT_BUNDLE_IDENTIFIER: a.export.myfirstapp
+        SWIFT_VERSION: 5.0
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Sources/Info.plist
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 1.0
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: 2M6M6BW775
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        IPHONEOS_DEPLOYMENT_TARGET: 16.0
