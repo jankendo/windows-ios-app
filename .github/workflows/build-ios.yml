@@ -244,27 +244,24 @@ jobs:
             set -e
 
             if [[ $ARCHIVE_STATUS -eq 0 ]]; then
-              cat > ExportOptions.plist <<EOF
-              <?xml version="1.0" encoding="UTF-8"?>
-              <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-              <plist version="1.0">
-              <dict>
-                <key>method</key>
-                <string>$EXPORT_METHOD</string>
-                <key>signingStyle</key>
-                <string>manual</string>
-                <key>signingCertificate</key>
-                <string>$SIGNING_IDENTITY</string>
-                <key>teamID</key>
-                <string>$TEAM_ID</string>
-                <key>provisioningProfiles</key>
-                <dict>
-                  <key>$BUNDLE_ID</key>
-                  <string>$PROFILE_NAME</string>
-                </dict>
-              </dict>
-              </plist>
-              EOF
+              export EXPORT_METHOD SIGNING_IDENTITY TEAM_ID BUNDLE_ID PROFILE_NAME
+              python3 - <<'PY'
+              import os
+              import plistlib
+
+              export_options = {
+                  "method": os.environ["EXPORT_METHOD"],
+                  "signingStyle": "manual",
+                  "signingCertificate": os.environ["SIGNING_IDENTITY"],
+                  "teamID": os.environ["TEAM_ID"],
+                  "provisioningProfiles": {
+                      os.environ["BUNDLE_ID"]: os.environ["PROFILE_NAME"],
+                  },
+              }
+
+              with open("ExportOptions.plist", "wb") as f:
+                  plistlib.dump(export_options, f)
+              PY
 
               rm -rf "$EXPORT_PATH"
               xcodebuild -exportArchive \
