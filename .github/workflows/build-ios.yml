@@ -111,6 +111,11 @@ jobs:
 
           security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*\"\\(.*\\)\".*/\\1/p' | head -n 1)"
+          if [[ -z "$SIGNING_IDENTITY" ]]; then
+            echo "No code signing identity was found in the imported keychain." >&2
+            exit 1
+          fi
 
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/"
@@ -161,6 +166,7 @@ jobs:
             echo "PROFILE_UUID=$PROFILE_UUID"
             echo "TEAM_ID=$TEAM_ID"
             echo "BUNDLE_ID=$BUNDLE_ID"
+            echo "SIGNING_IDENTITY=$SIGNING_IDENTITY"
             echo "EXPORT_METHOD=$EXPORT_METHOD"
             echo "ARCHIVE_PATH=$RUNNER_TEMP/$APP_NAME.xcarchive"
             echo "EXPORT_PATH=$RUNNER_TEMP/output"
@@ -180,6 +186,7 @@ jobs:
             CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
             clean archive
@@ -198,6 +205,8 @@ jobs:
             <string>$EXPORT_METHOD</string>
             <key>signingStyle</key>
             <string>manual</string>
+            <key>signingCertificate</key>
+            <string>$SIGNING_IDENTITY</string>
             <key>teamID</key>
             <string>$TEAM_ID</string>
             <key>provisioningProfiles</key>
