@@ -111,11 +111,11 @@ jobs:
           security default-keychain -d user -s "$KEYCHAIN_PATH"
 
           security import "$CERT_PATH" -P "$P12_PASSWORD" -A -f pkcs12 -k "$KEYCHAIN_PATH"
-          OPENSSL_PKCS12_ARGS=()
           if openssl pkcs12 -help 2>&1 | grep -q -- ' -legacy'; then
-            OPENSSL_PKCS12_ARGS+=(-legacy)
+            openssl pkcs12 -legacy -in "$CERT_PATH" -clcerts -nokeys -passin "pass:$P12_PASSWORD" -out "$CERT_PEM_PATH"
+          else
+            openssl pkcs12 -in "$CERT_PATH" -clcerts -nokeys -passin "pass:$P12_PASSWORD" -out "$CERT_PEM_PATH"
           fi
-          openssl pkcs12 "${OPENSSL_PKCS12_ARGS[@]}" -in "$CERT_PATH" -clcerts -nokeys -passin "pass:$P12_PASSWORD" -out "$CERT_PEM_PATH"
           security import "$CERT_PEM_PATH" -A -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*\"\\(.*\\)\".*/\\1/p' | head -n 1)"
