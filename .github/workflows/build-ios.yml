@@ -8,6 +8,7 @@ on:
 
 env:
   APP_NAME: MyFirstApp
+  PROJECT_PATH: Config/MyFirstApp.xcodeproj
 
 jobs:
   validate:
@@ -29,7 +30,7 @@ jobs:
           set -euo pipefail
 
           xcodebuild \
-            -project "$APP_NAME.xcodeproj" \
+            -project "$PROJECT_PATH" \
             -scheme "$APP_NAME" \
             -configuration Debug \
             -destination "generic/platform=iOS Simulator" \
@@ -171,7 +172,7 @@ jobs:
           set -euo pipefail
 
           xcodebuild \
-            -project "$APP_NAME.xcodeproj" \
+            -project "$PROJECT_PATH" \
             -scheme "$APP_NAME" \
             -configuration Release \
             -destination generic/platform=iOS \
