@@ -1,4 +1,4 @@
-import SoundAnalysis
+import AVFoundation
 import Speech
 import UIKit
 import Vision
@@ -16,12 +16,11 @@ enum MemoryAnalysisService {
 
     static func analyze(photoData: Data, audioURL: URL?) async -> MemoryAnalysis {
         async let visualTags = imageTags(from: photoData)
-        async let audioTags = soundTags(from: audioURL)
         async let transcript = transcript(from: audioURL)
 
         let resolvedVisualTags = await visualTags
-        let resolvedAudioTags = await audioTags
         let resolvedTranscript = await transcript
+        let resolvedAudioTags = await audioTags(from: audioURL, transcript: resolvedTranscript)
         let mood = inferMood(visualTags: resolvedVisualTags, audioTags: resolvedAudioTags, transcript: resolvedTranscript)
 
         return MemoryAnalysis(
@@ -46,7 +45,7 @@ enum MemoryAnalysisService {
 
             do {
                 try handler.perform([request])
-                let labels = (request.results as? [VNClassificationObservation])?
+                let labels = request.results?
                     .filter { $0.confidence > 0.15 }
                     .prefix(5)
                     .map { $0.identifier.replacingOccurrences(of: "_", with: " ") } ?? []
@@ -57,20 +56,59 @@ enum MemoryAnalysisService {
         }.value
     }
 
-    private static func soundTags(from audioURL: URL?) async -> [String] {
+    private static func audioTags(from audioURL: URL?, transcript: String) async -> [String] {
         guard let audioURL else { return [] }
 
         return await Task.detached(priority: .userInitiated) {
-            do {
-                let analyzer = try SNAudioFileAnalyzer(url: audioURL)
-                let observer = SoundClassificationObserver()
-                let request = try SNClassifySoundRequest()
-                try analyzer.add(request, withObserver: observer)
-                analyzer.analyze()
-                return observer.topLabels
-            } catch {
-                return []
+            var tags = Set<String>()
+
+            if !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                tags.formUnion(["speech", "voice"])
             }
+
+            guard
+                let file = try? AVAudioFile(forReading: audioURL),
+                let buffer = AVAudioPCMBuffer(
+                    pcmFormat: file.processingFormat,
+                    frameCapacity: AVAudioFrameCount(file.length)
+                )
+            else {
+                return Array(tags).sorted()
+            }
+
+            do {
+                try file.read(into: buffer)
+            } catch {
+                return Array(tags).sorted()
+            }
+
+            guard
+                let channelData = buffer.floatChannelData?.pointee,
+                buffer.frameLength > 0
+            else {
+                return Array(tags).sorted()
+            }
+
+            let sampleCount = Int(buffer.frameLength)
+            var sum: Float = 0
+            for index in 0..<sampleCount {
+                sum += abs(channelData[index])
+            }
+
+            let averageAmplitude = sum / Float(sampleCount)
+            if averageAmplitude < 0.015 {
+                tags.insert("quiet")
+            } else if averageAmplitude < 0.05 {
+                tags.insert("ambient")
+            } else {
+                tags.formUnion(["lively", "active"])
+            }
+
+            if Double(sampleCount) / file.processingFormat.sampleRate >= 4.5 {
+                tags.insert("field recording")
+            }
+
+            return Array(tags).sorted()
         }.value
     }
 
@@ -121,28 +159,4 @@ enum MemoryAnalysisService {
         }
         return .reflective
     }
-}
-
-private final class SoundClassificationObserver: NSObject, SNResultsObserving {
-    private(set) var labels: [String] = []
-
-    var topLabels: [String] {
-        Array(Set(labels)).prefix(5).map { $0 }
-    }
-
-    func request(_ request: SNRequest, didProduce result: SNResult) {
-        guard
-            let result = result as? SNClassificationResult,
-            let top = result.classifications.first,
-            top.confidence > 0.25
-        else {
-            return
-        }
-
-        labels.append(top.identifier.replacingOccurrences(of: "_", with: " "))
-    }
-
-    func request(_ request: SNRequest, didFailWithError error: Error) {}
-
-    func requestDidComplete(_ request: SNRequest) {}
 }
