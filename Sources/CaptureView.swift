@@ -52,14 +52,14 @@ final class CaptureFlowModel: ObservableObject {
                     modelContext.insert(entry)
                     try modelContext.save()
 
-                    title = ""
-                    notes = ""
-                    saveMessage = "メモリーを保存しました。"
+                    self.title = ""
+                    self.notes = ""
+                    self.saveMessage = "メモリーを保存しました。"
                 } catch {
-                    errorMessage = error.localizedDescription
+                    self.errorMessage = error.localizedDescription
                 }
 
-                isSaving = false
+                self.isSaving = false
             }
         }
     }

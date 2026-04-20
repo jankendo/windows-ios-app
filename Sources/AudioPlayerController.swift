@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 
 @MainActor
-final class AudioPlayerController: NSObject, ObservableObject, AVAudioPlayerDelegate {
+final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency AVAudioPlayerDelegate {
     @Published private(set) var isPlaying = false
     @Published private(set) var duration: TimeInterval = 0
     @Published var currentTime: TimeInterval = 0

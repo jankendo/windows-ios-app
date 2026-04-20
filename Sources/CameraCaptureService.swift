@@ -32,7 +32,7 @@ enum CaptureError: LocalizedError {
 }
 
 @MainActor
-final class CameraCaptureService: NSObject, ObservableObject, AVCapturePhotoCaptureDelegate {
+final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AVCapturePhotoCaptureDelegate {
     enum PermissionState {
         case unknown
         case ready
