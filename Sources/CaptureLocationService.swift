@@ -37,11 +37,6 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         authorizationStatus = manager.authorizationStatus
     }
 
-    deinit {
-        stopLocationPipeline()
-        stopSpatialSensors()
-    }
-
     func prepare() {
         authorizationStatus = manager.authorizationStatus
         UIDevice.current.beginGeneratingDeviceOrientationNotifications()
