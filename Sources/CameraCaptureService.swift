@@ -98,6 +98,30 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         }
     }
 
+    func suspend() {
+        if isCapturing || pendingCapture != nil {
+            failPendingCapture(CaptureError.sessionNotReady)
+        }
+        progressTimer?.invalidate()
+        progressTimer = nil
+        audioRecorder?.stop()
+        audioRecorder = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.session.isRunning else { return }
+            self.session.stopRunning()
+            DispatchQueue.main.async {
+                self.isSessionRunning = false
+                self.isPreparingSession = false
+                if self.permissionState == .ready {
+                    self.statusText = "記録タブに戻るとカメラを再開できます。"
+                }
+            }
+        }
+    }
+
     func captureMemory(duration: TimeInterval, completion: @escaping (Result<CapturedMemoryDraft, Error>) -> Void) {
         guard duration >= 1 else {
             completion(.failure(CaptureError.invalidDuration))

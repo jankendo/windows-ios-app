@@ -126,6 +126,8 @@ final class CaptureFlowModel: ObservableObject {
 }
 
 struct CaptureView: View {
+    let isActive: Bool
+
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
@@ -183,7 +185,16 @@ struct CaptureView: View {
         .toolbar(.hidden, for: .navigationBar)
         .animation(.easeInOut(duration: 0.25), value: needsStartupOverlay)
         .onAppear {
-            model.prepare()
+            if isActive {
+                model.prepare()
+            }
+        }
+        .onChange(of: isActive) { _, active in
+            if active {
+                model.prepare()
+            } else {
+                model.camera.suspend()
+            }
         }
         .onChange(of: model.camera.isSessionRunning) { _, isRunning in
             if isRunning {
@@ -196,7 +207,7 @@ struct CaptureView: View {
             }
         }
         .onDisappear {
-            environmentService.suspend()
+            model.camera.suspend()
         }
         .fullScreenCover(item: $model.capturedDraft) { draft in
             MemorySceneReviewView(
@@ -736,7 +747,7 @@ struct StatusMessageView: View {
 
 #Preview {
     NavigationStack {
-        CaptureView()
+        CaptureView(isActive: true)
     }
     .modelContainer(for: [MemoryEntry.self], inMemory: true)
 }

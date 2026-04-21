@@ -6,7 +6,7 @@ struct ContentView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             NavigationStack {
-                CaptureView()
+                CaptureView(isActive: selectedTab == .capture)
             }
             .tabItem {
                 Label("記録", systemImage: "camera.viewfinder")

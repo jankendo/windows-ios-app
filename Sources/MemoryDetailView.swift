@@ -14,6 +14,7 @@ struct MemoryDetailView: View {
     @State private var showingDeleteConfirmation = false
     @State private var showingShareSheet = false
     @State private var showingAutoTags = false
+    @State private var showingImmersivePreview = false
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
@@ -188,6 +189,9 @@ struct MemoryDetailView: View {
         .sheet(isPresented: $showingShareSheet) {
             ShareSheet(items: shareItems)
         }
+        .fullScreenCover(isPresented: $showingImmersivePreview) {
+            SavedMemoryImmersivePreviewView(entry: entry)
+        }
         .alert("この記録を削除しますか？", isPresented: $showingDeleteConfirmation) {
             Button("削除", role: .destructive) {
                 deleteEntry()
@@ -300,6 +304,17 @@ struct MemoryDetailView: View {
                                     .font(.caption)
                                     .foregroundStyle(palette.secondaryText)
                             }
+
+                            Button {
+                                showingImmersivePreview = true
+                            } label: {
+                                Label("写真と録音を全画面でプレビュー", systemImage: "arrow.up.left.and.arrow.down.right")
+                                    .font(.subheadline.weight(.semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(palette.accent)
                         }
                     }
                 }
@@ -354,6 +369,149 @@ private struct MemoryHeroImage: View {
         .frame(maxWidth: .infinity)
         .frame(height: 460)
         .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+    }
+}
+
+private struct SavedMemoryImmersivePreviewView: View {
+    let entry: MemoryEntry
+
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var environmentService = CaptureLocationService.shared
+    @StateObject private var player = AudioPlayerController()
+    @State private var controlsVisible = true
+    @State private var dragOffset: CGSize = .zero
+    @State private var drifting = false
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if let image = UIImage(contentsOfFile: entry.photoURL.path) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .scaleEffect(drifting ? 1.08 : 1.02)
+                    .offset(
+                        x: dragOffset.width * 0.22 + environmentService.previewHorizontalShift,
+                        y: dragOffset.height * 0.12 + environmentService.previewVerticalShift
+                    )
+                    .rotation3DEffect(.degrees(Double(-environmentService.previewHorizontalShift) * 0.18), axis: (x: 0, y: 1, z: 0))
+                    .rotation3DEffect(.degrees(Double(environmentService.previewVerticalShift) * 0.12), axis: (x: 1, y: 0, z: 0))
+                    .ignoresSafeArea()
+                    .animation(.easeInOut(duration: 14).repeatForever(autoreverses: true), value: drifting)
+            }
+
+            LinearGradient(
+                colors: [Color.black.opacity(0.18), .clear, Color.black.opacity(0.72)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            if controlsVisible {
+                VStack(spacing: 0) {
+                    HStack {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer()
+
+                        if entry.hasAudio {
+                            ResonanceBadge(
+                                title: "ループ再生中",
+                                systemImage: "waveform",
+                                tint: .white,
+                                atmosphere: entry.atmosphereStyle
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+
+                    Spacer()
+
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack(alignment: .bottom) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Immersive Memory")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.white.opacity(0.72))
+
+                                Text(entry.displayTitle)
+                                    .font(.title2.bold())
+                                    .foregroundStyle(.white)
+
+                                Text("視差効果で写真が揺れ、録音はループ再生されます")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.white.opacity(0.82))
+                            }
+
+                            Spacer()
+
+                            if let audioURL = entry.audioURL {
+                                Button {
+                                    player.togglePlayback(for: audioURL)
+                                } label: {
+                                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                                        .font(.system(size: 42))
+                                        .foregroundStyle(.white)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+
+                        HStack {
+                            Text(entry.createdAt.formatted(date: .complete, time: .shortened))
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.82))
+                            Spacer()
+                            Text("傾きとドラッグで奥行きが動きます")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.74))
+                        }
+                    }
+                    .padding(20)
+                    .background(.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 22)
+                }
+                .transition(.opacity)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                controlsVisible.toggle()
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    dragOffset = value.translation
+                    player.setPan(Float(value.translation.width / 180))
+                }
+                .onEnded { _ in
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                        dragOffset = .zero
+                    }
+                    player.setPan(0)
+                }
+        )
+        .onAppear {
+            drifting = true
+            if let audioURL = entry.audioURL {
+                player.load(url: audioURL, autoPlay: true, loop: true, volume: 0.78)
+            }
+        }
+        .onDisappear {
+            player.stop()
+        }
     }
 }
 
