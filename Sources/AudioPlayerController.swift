@@ -71,8 +71,10 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
     private func startTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            currentTime = player?.currentTime ?? 0
+            Task { @MainActor in
+                guard let self else { return }
+                self.currentTime = self.player?.currentTime ?? 0
+            }
         }
     }
 

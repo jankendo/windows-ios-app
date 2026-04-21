@@ -4,99 +4,237 @@ import UIKit
 
 struct MemoryDetailView: View {
     @Bindable var entry: MemoryEntry
+    @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var allEntries: [MemoryEntry]
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @StateObject private var player = AudioPlayerController()
     @State private var waveformSamples: [CGFloat] = Array(repeating: 0.25, count: 40)
     @State private var showingEditor = false
+    @State private var showingDeleteConfirmation = false
+    @State private var showingShareSheet = false
+    @State private var showingAutoTags = false
+
+    private var shareItems: [Any] {
+        var items: [Any] = [entry.shareSummary, entry.photoURL]
+        if let audioURL = entry.audioURL {
+            items.append(audioURL)
+        }
+        return items
+    }
+
+    private var relatedEntries: [MemoryEntry] {
+        allEntries
+            .filter { $0.id != entry.id }
+            .map { candidate in
+                let sharedTags = Set(candidate.autoTags).intersection(entry.autoTags).count
+                let moodScore = candidate.mood == entry.mood ? 2 : 0
+                return (candidate, sharedTags + moodScore)
+            }
+            .filter { $0.1 > 0 }
+            .sorted { lhs, rhs in
+                if lhs.1 == rhs.1 {
+                    return lhs.0.createdAt > rhs.0.createdAt
+                }
+                return lhs.1 > rhs.1
+            }
+            .map(\.0)
+            .prefix(3)
+            .map { $0 }
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                MemoryHeroImage(entry: entry)
+        ZStack {
+            ResonanceGradientBackground()
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(entry.displayTitle)
-                        .font(.largeTitle.bold())
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    MemoryHeroImage(entry: entry)
 
-                    Text(entry.createdAt.formatted(date: .complete, time: .shortened))
-                        .foregroundStyle(.secondary)
+                    ResonanceCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(entry.displayTitle)
+                                        .font(.largeTitle.bold())
+
+                                    Text(entry.createdAt.formatted(date: .complete, time: .shortened))
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                Button {
+                                    entry.isFavorite.toggle()
+                                    try? modelContext.save()
+                                } label: {
+                                    Image(systemName: entry.isFavorite ? "heart.fill" : "heart")
+                                        .font(.title3)
+                                        .foregroundStyle(entry.isFavorite ? .pink : .secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles")
+                                    if entry.hasAudio {
+                                        ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform")
+                                    }
+                                    if entry.isFavorite {
+                                        ResonanceBadge(title: "お気に入り", systemImage: "heart.fill", tint: .pink)
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     if !entry.notes.isEmpty {
-                        Text(entry.notes)
-                            .font(.body)
-                    }
-                }
-
-                if let audioURL = entry.audioURL {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Soundscape", systemImage: "waveform")
-                            .font(.headline)
-
-                        AudioWaveformView(
-                            samples: waveformSamples,
-                            progress: player.duration > 0 ? player.currentTime / player.duration : 0
-                        )
-
-                        HStack(spacing: 12) {
-                            Button {
-                                player.togglePlayback(for: audioURL)
-                            } label: {
-                                Label(player.isPlaying ? "Pause" : "Play", systemImage: player.isPlaying ? "pause.fill" : "play.fill")
+                        ResonanceCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("メモ")
+                                    .font(.headline)
+                                Text(entry.notes)
+                                    .font(.body)
                             }
-                            .buttonStyle(.borderedProminent)
-
-                            VStack(alignment: .leading) {
-                                Text("Duration: \(Int(entry.audioDuration.rounded())) sec")
-                                Text("Mood: \(entry.mood)")
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                         }
-
-                        Slider(
-                            value: Binding(
-                                get: { player.currentTime },
-                                set: { player.seek(to: $0) }
-                            ),
-                            in: 0...max(max(player.duration, entry.audioDuration), 1)
-                        )
                     }
-                    .padding(18)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 22))
-                }
 
-                metadataSection(title: "Visual tags", tags: entry.visualTags)
-                metadataSection(title: "Audio tags", tags: entry.audioTags)
+                    if let audioURL = entry.audioURL {
+                        ResonanceCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Label("環境音", systemImage: "waveform")
+                                    .font(.headline)
 
-                if !entry.transcript.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Transcript")
-                            .font(.headline)
-                        Text(entry.transcript)
-                            .foregroundStyle(.secondary)
+                                AudioWaveformView(
+                                    samples: waveformSamples,
+                                    progress: player.duration > 0 ? player.currentTime / player.duration : 0
+                                )
+
+                                HStack(spacing: 12) {
+                                    Button {
+                                        player.togglePlayback(for: audioURL)
+                                    } label: {
+                                        Label(player.isPlaying ? "一時停止" : "再生", systemImage: player.isPlaying ? "pause.fill" : "play.fill")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("再生位置")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Text("\(player.currentTime.resonanceClockText) / \(max(player.duration, entry.audioDuration).resonanceClockText)")
+                                            .font(.subheadline.weight(.semibold))
+                                    }
+                                }
+
+                                Slider(
+                                    value: Binding(
+                                        get: { player.currentTime },
+                                        set: { player.seek(to: $0) }
+                                    ),
+                                    in: 0...max(max(player.duration, entry.audioDuration), 1)
+                                )
+
+                                HStack {
+                                    Text(player.currentTime.resonanceClockText)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Text("-\(max(player.duration - player.currentTime, 0).resonanceClockText)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+
+                    if !entry.transcript.isEmpty {
+                        ResonanceCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("文字起こし")
+                                    .font(.headline)
+                                Text(entry.transcript)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    ResonanceCard {
+                        DisclosureGroup(isExpanded: $showingAutoTags) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                if entry.autoTags.isEmpty {
+                                    Text("まだ自動タグはありません。")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    FlexibleTagCloud(tags: entry.autoTags)
+                                }
+                            }
+                            .padding(.top, 12)
+                        } label: {
+                            Label("自動タグ", systemImage: "tag")
+                                .font(.headline)
+                        }
+                    }
+
+                    if !relatedEntries.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("関連する記録")
+                                .font(.headline)
+
+                            ForEach(relatedEntries) { related in
+                                NavigationLink {
+                                    MemoryDetailView(entry: related)
+                                } label: {
+                                    MemoryCardView(entry: related)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
                 }
+                .padding(20)
             }
-            .padding(20)
         }
-        .navigationTitle("Memory")
+        .navigationTitle("記録")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button("Edit") {
-                    showingEditor = true
+                Button {
+                    showingShareSheet = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
                 }
 
-                Button(role: .destructive) {
-                    deleteEntry()
+                Menu {
+                    Button("編集") {
+                        showingEditor = true
+                    }
+
+                    Button(role: .destructive) {
+                        showingDeleteConfirmation = true
+                    } label: {
+                        Label("削除", systemImage: "trash")
+                    }
                 } label: {
-                    Image(systemName: "trash")
+                    Image(systemName: "ellipsis.circle")
                 }
             }
         }
         .sheet(isPresented: $showingEditor) {
             MemoryEditView(entry: entry)
+        }
+        .sheet(isPresented: $showingShareSheet) {
+            ShareSheet(items: shareItems)
+        }
+        .alert("この記録を削除しますか？", isPresented: $showingDeleteConfirmation) {
+            Button("削除", role: .destructive) {
+                deleteEntry()
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("写真、音声、メモ情報がこの端末から削除されます。")
         }
         .onAppear {
             waveformSamples = WaveformExtractor.samples(from: entry.audioURL)
@@ -106,18 +244,6 @@ struct MemoryDetailView: View {
         }
         .onDisappear {
             player.stop()
-        }
-    }
-
-    @ViewBuilder
-    private func metadataSection(title: String, tags: [String]) -> some View {
-        if !tags.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title)
-                    .font(.headline)
-
-                FlexibleTagCloud(tags: tags)
-            }
         }
     }
 
@@ -192,16 +318,16 @@ private struct MemoryEditView: View {
                 TextField("メモ", text: $entry.notes, axis: .vertical)
                     .lineLimit(4...8)
             }
-            .navigationTitle("Edit Memory")
+            .navigationTitle("記録を編集")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") {
+                    Button("閉じる") {
                         dismiss()
                     }
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button("保存") {
                         try? modelContext.save()
                         dismiss()
                     }

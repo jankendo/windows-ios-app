@@ -2,11 +2,12 @@ import Foundation
 import SwiftData
 
 @Model
-final class MemoryEntry {
+final class MemoryEntry: Identifiable {
     var id: UUID
     var createdAt: Date
     var title: String
     var notes: String
+    var isFavorite: Bool
     var photoFileName: String
     var audioFileName: String?
     var audioDuration: Double
@@ -20,6 +21,7 @@ final class MemoryEntry {
         createdAt: Date = .now,
         title: String,
         notes: String,
+        isFavorite: Bool = false,
         photoFileName: String,
         audioFileName: String?,
         audioDuration: Double,
@@ -32,6 +34,7 @@ final class MemoryEntry {
         self.createdAt = createdAt
         self.title = title
         self.notes = notes
+        self.isFavorite = isFavorite
         self.photoFileName = photoFileName
         self.audioFileName = audioFileName
         self.audioDuration = audioDuration
@@ -56,6 +59,10 @@ final class MemoryEntry {
 
     var combinedTags: [String] {
         Array(Set(visualTags + audioTags)).sorted()
+    }
+
+    var autoTags: [String] {
+        combinedTags
     }
 
     var searchableText: String {
@@ -97,6 +104,26 @@ final class MemoryEntry {
         return MediaStore.audioURL(for: audioFileName)
     }
 
+    var notePreview: String {
+        let trimmed = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "メモはありません" }
+        return trimmed
+    }
+
+    var localizedMood: String {
+        MemoryMood(rawValue: mood)?.localizedLabel ?? mood
+    }
+
+    var shareSummary: String {
+        [
+            displayTitle,
+            createdAt.formatted(date: .abbreviated, time: .shortened),
+            notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        ]
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n")
+    }
+
     static func encodeTags(_ tags: [String]) -> String {
         Array(
             Set(
@@ -135,6 +162,21 @@ enum MemoryMood: String, CaseIterable, Identifiable {
     case urban = "Urban"
 
     var id: String { rawValue }
+
+    var localizedLabel: String {
+        switch self {
+        case .calm:
+            return "落ち着き"
+        case .lively:
+            return "にぎやか"
+        case .joyful:
+            return "楽しい"
+        case .reflective:
+            return "しみじみ"
+        case .urban:
+            return "都会的"
+        }
+    }
 }
 
 enum MemorySearchEngine {
@@ -151,6 +193,44 @@ enum MemorySearchEngine {
 
     static func aliases(for term: String) -> [String] {
         synonymTable.first(where: { $0.keywords.contains(term) })?.aliases ?? []
+    }
+
+    static func matchReasons(for entry: MemoryEntry, query: String) -> [String] {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedQuery.isEmpty else { return [] }
+
+        let tokens = queryTokens(from: normalizedQuery).tokens
+        var reasons: [String] = []
+
+        if contains(query: normalizedQuery, tokens: tokens, in: entry.title) {
+            reasons.append("タイトル")
+        }
+        if contains(query: normalizedQuery, tokens: tokens, in: entry.notes) {
+            reasons.append("メモ")
+        }
+        if contains(query: normalizedQuery, tokens: tokens, in: entry.transcript) {
+            reasons.append("文字起こし")
+        }
+        if contains(query: normalizedQuery, tokens: tokens, in: entry.autoTags.joined(separator: " ")) || entry.searchAliasText.contains(normalizedQuery) {
+            reasons.append("タグ")
+        }
+        if contains(query: normalizedQuery, tokens: tokens, in: entry.mood) || contains(query: normalizedQuery, tokens: tokens, in: entry.localizedMood) {
+            reasons.append("ムード")
+        }
+
+        var orderedReasons: [String] = []
+        for reason in reasons where !orderedReasons.contains(reason) {
+            orderedReasons.append(reason)
+        }
+        return orderedReasons
+    }
+
+    private static func contains(query: String, tokens: [String], in text: String) -> Bool {
+        let lowered = text.lowercased()
+        if lowered.contains(query) {
+            return true
+        }
+        return tokens.contains { lowered.contains($0) }
     }
 
     private static func matches(entry: MemoryEntry, query: String, tokens: [String], conceptGroups: [[String]]) -> Bool {

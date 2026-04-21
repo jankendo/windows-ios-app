@@ -9,7 +9,7 @@ struct ContentView: View {
                 CaptureView()
             }
             .tabItem {
-                Label("Capture", systemImage: "camera.viewfinder")
+                Label("記録", systemImage: "camera.viewfinder")
             }
             .tag(ResonanceTab.capture)
 
@@ -17,7 +17,7 @@ struct ContentView: View {
                 LibraryView()
             }
             .tabItem {
-                Label("Library", systemImage: "square.stack.3d.down.right")
+                Label("ライブラリ", systemImage: "square.stack.3d.down.right")
             }
             .tag(ResonanceTab.library)
 
@@ -25,7 +25,7 @@ struct ContentView: View {
                 SearchView()
             }
             .tabItem {
-                Label("Search", systemImage: "waveform.and.magnifyingglass")
+                Label("検索", systemImage: "waveform.and.magnifyingglass")
             }
             .tag(ResonanceTab.search)
         }
