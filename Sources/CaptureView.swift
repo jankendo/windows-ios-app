@@ -13,6 +13,8 @@ final class CaptureFlowModel: ObservableObject {
     @Published var lastSavedEntry: MemoryEntry?
     @Published var errorMessage: String?
     @Published var saveMessage: String?
+    @Published var isGeneratingAICaption = false
+    @Published var captionGenerationMessage: String?
 
     let camera = CameraCaptureService()
     private let locationService = CaptureLocationService.shared
@@ -33,6 +35,7 @@ final class CaptureFlowModel: ObservableObject {
         saveMessage = nil
         lastSavedEntry = nil
         isPreparingReview = false
+        captionGenerationMessage = nil
 
         camera.captureMemory(duration: duration) { [weak self] result in
             guard let self else { return }
@@ -41,11 +44,13 @@ final class CaptureFlowModel: ObservableObject {
                 do {
                     var draft = try result.get()
                     async let placeLabel = self.locationService.currentPlaceLabel(forceRefresh: true)
-                    async let photoCaption = MemoryAnalysisService.imageCaption(from: draft.photoData)
+                    async let photoCaption = MemoryAnalysisService.captionGeneration(from: draft.photoData)
                     async let sensorSnapshot = self.locationService.currentEnvironmentSnapshot(forceRefresh: true)
                     async let resolvedLocation = self.locationService.currentLocation(forceRefresh: true)
+                    let captionGeneration = await photoCaption
                     draft.placeLabel = await placeLabel
-                    draft.photoCaption = await photoCaption
+                    draft.photoCaption = captionGeneration?.text
+                    draft.photoCaptionSource = captionGeneration?.source
                     draft.sensorSnapshot = await sensorSnapshot
                     let weatherLocation =
                         await resolvedLocation
@@ -83,11 +88,24 @@ final class CaptureFlowModel: ObservableObject {
                 let storedMedia = try MediaStore.save(photoData: draft.photoData, audioTempURL: draft.audioTempURL)
                 let storedAudioURL = storedMedia.audioFileName.map(MediaStore.audioURL(for:))
                 let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: storedAudioURL)
-                let resolvedPhotoCaption = await MemoryAnalysisService.imageCaption(
+                let captionGeneration = await MemoryAnalysisService.captionGeneration(
                     from: draft.photoData,
                     title: currentTitle,
                     placeLabel: draft.placeLabel
-                ) ?? draft.photoCaption
+                )
+                let hasVerifiedFoundationCaption =
+                    draft.photoCaptionSource == .foundationModels
+                    && !(draft.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                let shouldPreserveVerifiedFoundationCaption =
+                    hasVerifiedFoundationCaption && captionGeneration?.source != .foundationModels
+                let resolvedPhotoCaption =
+                    shouldPreserveVerifiedFoundationCaption
+                    ? draft.photoCaption
+                    : (captionGeneration?.text ?? draft.photoCaption)
+                let resolvedPhotoCaptionSource =
+                    shouldPreserveVerifiedFoundationCaption
+                    ? draft.photoCaptionSource
+                    : (captionGeneration?.source ?? draft.photoCaptionSource)
 
                 let entry = MemoryEntry(
                     createdAt: draft.capturedAt,
@@ -113,8 +131,13 @@ final class CaptureFlowModel: ObservableObject {
                     minimumDecibels: draft.minimumDecibels,
                     maximumDecibels: draft.maximumDecibels
                 )
+                var finalMetadata = metadata
+                finalMetadata.photoCaptionSourceRaw =
+                    (resolvedPhotoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+                    ? resolvedPhotoCaptionSource?.rawValue
+                    : nil
 
-                try MediaStore.saveAtmosphereMetadata(metadata, for: entry.id)
+                try MediaStore.saveAtmosphereMetadata(finalMetadata, for: entry.id)
                 modelContext.insert(entry)
                 try modelContext.save()
 
@@ -151,12 +174,13 @@ final class CaptureFlowModel: ObservableObject {
         let currentPlaceLabel = draft.placeLabel
         let draftID = draft.id
         let photoData = draft.photoData
+        captionGenerationMessage = nil
 
         captionRefreshTask?.cancel()
         captionRefreshTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 350_000_000)
             guard !Task.isCancelled else { return }
-            let refreshedCaption = await MemoryAnalysisService.imageCaption(
+            let refreshedCaption = await MemoryAnalysisService.captionGeneration(
                 from: photoData,
                 title: currentTitle,
                 placeLabel: currentPlaceLabel
@@ -165,7 +189,8 @@ final class CaptureFlowModel: ObservableObject {
 
             await MainActor.run {
                 guard let self, var currentDraft = self.capturedDraft, currentDraft.id == draftID else { return }
-                currentDraft.photoCaption = refreshedCaption ?? currentDraft.photoCaption
+                currentDraft.photoCaption = refreshedCaption?.text ?? currentDraft.photoCaption
+                currentDraft.photoCaptionSource = refreshedCaption?.source ?? currentDraft.photoCaptionSource
                 self.capturedDraft = currentDraft
             }
         }
@@ -174,6 +199,46 @@ final class CaptureFlowModel: ObservableObject {
     func cancelDraftCaptionRefresh() {
         captionRefreshTask?.cancel()
         captionRefreshTask = nil
+    }
+
+    func regenerateAICaption() {
+        guard let draft = capturedDraft else { return }
+
+        let currentTitle = title
+        let currentPlaceLabel = draft.placeLabel
+        let draftID = draft.id
+        let photoData = draft.photoData
+
+        isGeneratingAICaption = true
+        captionGenerationMessage = nil
+        cancelDraftCaptionRefresh()
+
+        Task { [weak self] in
+            defer {
+                Task { @MainActor in
+                    self?.isGeneratingAICaption = false
+                }
+            }
+
+            do {
+                let generation = try await MemoryAnalysisService.forceFoundationModelsCaption(
+                    from: photoData,
+                    title: currentTitle,
+                    placeLabel: currentPlaceLabel
+                )
+                await MainActor.run {
+                    guard let self, var currentDraft = self.capturedDraft, currentDraft.id == draftID else { return }
+                    currentDraft.photoCaption = generation.text
+                    currentDraft.photoCaptionSource = generation.source
+                    self.capturedDraft = currentDraft
+                    self.captionGenerationMessage = "Apple Intelligence で内容を再作成しました。"
+                }
+            } catch {
+                await MainActor.run {
+                    self?.captionGenerationMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                }
+            }
+        }
     }
 }
 
@@ -283,8 +348,13 @@ struct CaptureView: View {
                 title: $model.title,
                 notes: $model.notes,
                 isSaving: model.isSaving,
+                isRegeneratingCaption: model.isGeneratingAICaption,
+                captionGenerationMessage: model.captionGenerationMessage,
                 onRetake: {
                     model.discardDraft()
+                },
+                onRegenerateCaption: {
+                    model.regenerateAICaption()
                 },
                 onSave: {
                     model.saveDraft(using: modelContext)

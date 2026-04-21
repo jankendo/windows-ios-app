@@ -6,6 +6,11 @@ import Vision
 import FoundationModels
 #endif
 
+struct PhotoCaptionGeneration {
+    let text: String
+    let source: PhotoCaptionSource
+}
+
 enum MemoryAnalysisService {
     static func requestSpeechAuthorizationIfNeeded() async {
         guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
@@ -35,6 +40,10 @@ enum MemoryAnalysisService {
     }
 
     static func imageCaption(from data: Data, title: String? = nil, placeLabel: String? = nil) async -> String? {
+        await captionGeneration(from: data, title: title, placeLabel: placeLabel)?.text
+    }
+
+    static func captionGeneration(from data: Data, title: String? = nil, placeLabel: String? = nil) async -> PhotoCaptionGeneration? {
         let tags = await imageTags(from: data)
         let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let baseCaption = generatedCaption(from: tags) ?? "光と空気のあわいが、まだこの写真の中で静かに呼吸している。"
@@ -48,16 +57,44 @@ enum MemoryAnalysisService {
                 tags: tags,
                 baseCaption: baseCaption
            ) {
-            return aiCaption
+            return PhotoCaptionGeneration(text: aiCaption, source: .foundationModels)
         }
         #endif
 
-        return refinedFallbackCaption(
+        return PhotoCaptionGeneration(
+            text: refinedFallbackCaption(
             title: trimmedTitle,
             placeLabel: placeLabel,
             tags: tags,
             baseCaption: baseCaption
+            ),
+            source: .composedFallback
         )
+    }
+
+    static func forceFoundationModelsCaption(from data: Data, title: String, placeLabel: String? = nil) async throws -> PhotoCaptionGeneration {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else {
+            throw CaptionGenerationError.missingTitle
+        }
+
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, *) {
+            let tags = await imageTags(from: data)
+            let baseCaption = generatedCaption(from: tags) ?? "光と空気のあわいが、まだこの写真の中で静かに呼吸している。"
+            if let aiCaption = await foundationModelCaption(
+                title: trimmedTitle,
+                placeLabel: placeLabel,
+                tags: tags,
+                baseCaption: baseCaption
+            ) {
+                return PhotoCaptionGeneration(text: aiCaption, source: .foundationModels)
+            }
+            throw CaptionGenerationError.foundationModelsUnavailable
+        }
+        #endif
+
+        throw CaptionGenerationError.foundationModelsUnavailable
     }
 
     private static func imageTags(from data: Data) async -> [String] {
@@ -336,4 +373,18 @@ enum MemoryAnalysisService {
         }
     }
     #endif
+}
+
+enum CaptionGenerationError: LocalizedError {
+    case missingTitle
+    case foundationModelsUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .missingTitle:
+            return "AI内容を作るには、先にタイトルを入力してください。"
+        case .foundationModelsUnavailable:
+            return "Apple Intelligence を使った生成を実行できませんでした。設定と対応端末をご確認ください。"
+        }
+    }
 }

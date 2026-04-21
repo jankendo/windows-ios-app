@@ -6,7 +6,10 @@ struct MemorySceneReviewView: View {
     @Binding var title: String
     @Binding var notes: String
     let isSaving: Bool
+    let isRegeneratingCaption: Bool
+    let captionGenerationMessage: String?
     let onRetake: () -> Void
+    let onRegenerateCaption: () -> Void
     let onSave: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -167,6 +170,35 @@ struct MemorySceneReviewView: View {
                         Text(draft.photoCaption ?? atmosphere.poeticLine)
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.84))
+
+                        HStack(spacing: 8) {
+                            if let source = draft.photoCaptionSource {
+                                ResonanceBadge(
+                                    title: source.localizedLabel,
+                                    systemImage: source.systemImage,
+                                    tint: .white,
+                                    atmosphere: atmosphere
+                                )
+                            }
+
+                            Button {
+                                onRegenerateCaption()
+                            } label: {
+                                Label(isRegeneratingCaption ? "AI再作成中..." : "AI内容を再作成", systemImage: "arrow.triangle.2.circlepath")
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(.white.opacity(0.12), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isRegeneratingCaption || isSaving)
+                        }
+
+                        if let captionGenerationMessage, !captionGenerationMessage.isEmpty {
+                            Text(captionGenerationMessage)
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.78))
+                        }
                     }
 
                     AudioWaveformView(

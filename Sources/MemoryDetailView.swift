@@ -234,6 +234,15 @@ struct MemoryDetailView: View {
                         Text(resolvedPhotoCaption ?? entry.descriptiveCaption)
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.84))
+
+                        if let source = entry.photoCaptionSource {
+                            ResonanceBadge(
+                                title: source.localizedLabel,
+                                systemImage: source.systemImage,
+                                tint: .white,
+                                atmosphere: entry.atmosphereStyle
+                            )
+                        }
                     }
 
                     Spacer()
@@ -339,18 +348,19 @@ struct MemoryDetailView: View {
         let needsCaptionRefresh = entry.atmosphereMetadata?.needsPhotoCaptionRefresh ?? true
         guard needsCaptionRefresh || resolvedPhotoCaption == nil else { return }
         guard let imageData = try? Data(contentsOf: entry.photoURL) else { return }
-        guard let caption = await MemoryAnalysisService.imageCaption(
+        guard let generation = await MemoryAnalysisService.captionGeneration(
             from: imageData,
             title: entry.title,
             placeLabel: entry.placeLabel
         ) else { return }
 
         await MainActor.run {
-            resolvedPhotoCaption = caption
+            resolvedPhotoCaption = generation.text
         }
 
         try? MediaStore.updateAtmosphereMetadata(for: entry.id) { metadata in
-            metadata.photoCaption = caption
+            metadata.photoCaption = generation.text
+            metadata.photoCaptionSourceRaw = generation.source.rawValue
             metadata.photoCaptionVersion = MemoryAtmosphereMetadata.currentPhotoCaptionVersion
         }
     }

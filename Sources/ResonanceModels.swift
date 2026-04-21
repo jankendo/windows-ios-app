@@ -66,12 +66,36 @@ enum AtmosphereStyle: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum PhotoCaptionSource: String, Codable {
+    case foundationModels
+    case composedFallback
+
+    var localizedLabel: String {
+        switch self {
+        case .foundationModels:
+            return "Apple Intelligence"
+        case .composedFallback:
+            return "画像解析ベース"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .foundationModels:
+            return "apple.intelligence"
+        case .composedFallback:
+            return "sparkles.rectangle.stack"
+        }
+    }
+}
+
 struct MemoryAtmosphereMetadata: Codable {
-    static let currentPhotoCaptionVersion = 2
+    static let currentPhotoCaptionVersion = 3
 
     var placeLabel: String?
     var waveformFingerprint: [Double]
     var photoCaption: String?
+    var photoCaptionSourceRaw: String?
     var photoCaptionVersion: Int?
     var atmosphereStyleRaw: String
     var captureDuration: Double?
@@ -91,10 +115,14 @@ struct MemoryAtmosphereMetadata: Codable {
         minimumDecibels: Double? = nil,
         maximumDecibels: Double? = nil
     ) {
+        let trimmedCaption = photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCaption = (trimmedCaption?.isEmpty == false) ? trimmedCaption : nil
+
         self.placeLabel = placeLabel
         self.waveformFingerprint = waveformFingerprint
-        self.photoCaption = photoCaption
-        self.photoCaptionVersion = Self.currentPhotoCaptionVersion
+        self.photoCaption = normalizedCaption
+        self.photoCaptionSourceRaw = normalizedCaption == nil ? nil : PhotoCaptionSource.composedFallback.rawValue
+        self.photoCaptionVersion = normalizedCaption == nil ? nil : Self.currentPhotoCaptionVersion
         self.atmosphereStyleRaw = atmosphereStyle.rawValue
         self.captureDuration = captureDuration
         self.sensorSnapshot = sensorSnapshot
@@ -108,7 +136,13 @@ struct MemoryAtmosphereMetadata: Codable {
     }
 
     var needsPhotoCaptionRefresh: Bool {
-        (photoCaptionVersion ?? 0) < Self.currentPhotoCaptionVersion
+        let hasCaption = !(photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        return !hasCaption || (photoCaptionVersion ?? 0) < Self.currentPhotoCaptionVersion
+    }
+
+    var photoCaptionSource: PhotoCaptionSource? {
+        guard let photoCaptionSourceRaw else { return nil }
+        return PhotoCaptionSource(rawValue: photoCaptionSourceRaw)
     }
 }
 
@@ -300,6 +334,10 @@ final class MemoryEntry: Identifiable {
 
     var photoCaption: String? {
         atmosphereMetadata?.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var photoCaptionSource: PhotoCaptionSource? {
+        atmosphereMetadata?.photoCaptionSource
     }
 
     var descriptiveCaption: String {

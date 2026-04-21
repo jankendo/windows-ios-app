@@ -674,7 +674,7 @@ struct LibraryView: View {
                 continue
             }
             guard let imageData = try? Data(contentsOf: entry.photoURL) else { continue }
-            guard let caption = await MemoryAnalysisService.imageCaption(
+            guard let generation = await MemoryAnalysisService.captionGeneration(
                 from: imageData,
                 title: entry.title,
                 placeLabel: entry.placeLabel
@@ -683,7 +683,8 @@ struct LibraryView: View {
                 try MediaStore.updateAtmosphereMetadata(for: entry.id) { metadata in
                     let existingCaption = metadata.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     if existingCaption.isEmpty || metadata.needsPhotoCaptionRefresh {
-                        metadata.photoCaption = caption
+                        metadata.photoCaption = generation.text
+                        metadata.photoCaptionSourceRaw = generation.source.rawValue
                         metadata.photoCaptionVersion = MemoryAtmosphereMetadata.currentPhotoCaptionVersion
                     }
                 }
