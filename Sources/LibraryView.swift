@@ -182,6 +182,11 @@ struct LibraryView: View {
         )
     }
 
+    private var selectedVisibleMapIndex: Int? {
+        guard let selectedMapEntry else { return nil }
+        return visibleMapEntries.firstIndex { $0.id == selectedMapEntry.id }
+    }
+
     private var groupedEntries: [(title: String, entries: [MemoryEntry])] {
         let calendar = Calendar.current
         let today = filteredEntries.filter { calendar.isDateInToday($0.createdAt) }
@@ -508,24 +513,41 @@ struct LibraryView: View {
                     .padding(.vertical, 18)
                     .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             } else {
-                TabView(selection: selectedVisibleMapEntryID) {
-                    ForEach(visibleMapEntries) { entry in
-                        NavigationLink {
-                            MemoryDetailView(entry: entry)
-                        } label: {
-                            MapSelectionCard(entry: entry)
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                        .strokeBorder(selectedMapEntry?.id == entry.id ? palette.accent : .white.opacity(0.08), lineWidth: selectedMapEntry?.id == entry.id ? 2 : 1)
-                                }
+                HStack(spacing: 8) {
+                    if visibleMapEntries.count > 1 {
+                        carouselArrow(systemImage: "chevron.left", isEnabled: (selectedVisibleMapIndex ?? 0) > 0) {
+                            moveVisibleSelection(by: -1)
                         }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 4)
-                        .tag(Optional(entry.id))
+                    }
+
+                    TabView(selection: selectedVisibleMapEntryID) {
+                        ForEach(visibleMapEntries) { entry in
+                            NavigationLink {
+                                MemoryDetailView(entry: entry)
+                            } label: {
+                                MapSelectionCard(entry: entry)
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                            .strokeBorder(selectedMapEntry?.id == entry.id ? palette.accent : .white.opacity(0.08), lineWidth: selectedMapEntry?.id == entry.id ? 2 : 1)
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 4)
+                            .tag(Optional(entry.id))
+                        }
+                    }
+                    .frame(height: 164)
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+
+                    if visibleMapEntries.count > 1 {
+                        carouselArrow(
+                            systemImage: "chevron.right",
+                            isEnabled: (selectedVisibleMapIndex ?? 0) < visibleMapEntries.count - 1
+                        ) {
+                            moveVisibleSelection(by: 1)
+                        }
                     }
                 }
-                .frame(height: 164)
-                .tabViewStyle(.page(indexDisplayMode: .never))
             }
         }
         .padding(.horizontal, 20)
@@ -647,16 +669,22 @@ struct LibraryView: View {
         var updatedAnyCaption = false
 
         for entry in candidateEntries {
-            if let existingCaption = entry.photoCaption, !existingCaption.isEmpty {
+            let needsCaptionRefresh = entry.atmosphereMetadata?.needsPhotoCaptionRefresh ?? true
+            if let existingCaption = entry.photoCaption, !existingCaption.isEmpty, !needsCaptionRefresh {
                 continue
             }
             guard let imageData = try? Data(contentsOf: entry.photoURL) else { continue }
-            guard let caption = await MemoryAnalysisService.imageCaption(from: imageData) else { continue }
+            guard let caption = await MemoryAnalysisService.imageCaption(
+                from: imageData,
+                title: entry.title,
+                placeLabel: entry.placeLabel
+            ) else { continue }
             do {
                 try MediaStore.updateAtmosphereMetadata(for: entry.id) { metadata in
                     let existingCaption = metadata.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    if existingCaption.isEmpty {
+                    if existingCaption.isEmpty || metadata.needsPhotoCaptionRefresh {
                         metadata.photoCaption = caption
+                        metadata.photoCaptionVersion = MemoryAtmosphereMetadata.currentPhotoCaptionVersion
                     }
                 }
                 updatedAnyCaption = true
@@ -672,6 +700,15 @@ struct LibraryView: View {
         }
     }
 
+    private func moveVisibleSelection(by delta: Int) {
+        guard let currentIndex = selectedVisibleMapIndex else { return }
+        let targetIndex = min(max(currentIndex + delta, 0), visibleMapEntries.count - 1)
+        guard targetIndex != currentIndex else { return }
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+            selectedMapEntry = visibleMapEntries[targetIndex]
+        }
+    }
+
     private func menuFilterLabel(title: String, isSelected: Bool) -> some View {
         Text(title)
             .font(.caption.weight(.semibold))
@@ -679,6 +716,19 @@ struct LibraryView: View {
             .padding(.vertical, 8)
             .background(isSelected ? palette.accent : palette.surfaceSecondary, in: Capsule())
             .foregroundStyle(isSelected ? Color.white : palette.primaryText)
+    }
+
+    private func carouselArrow(systemImage: String, isEnabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.white.opacity(isEnabled ? 0.95 : 0.28))
+                .frame(width: 36, height: 96)
+                .background(.black.opacity(isEnabled ? 0.34 : 0.18), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityHidden(visibleMapEntries.count <= 1)
     }
 }
 

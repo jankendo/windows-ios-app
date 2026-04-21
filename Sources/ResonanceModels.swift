@@ -67,9 +67,12 @@ enum AtmosphereStyle: String, CaseIterable, Codable, Identifiable {
 }
 
 struct MemoryAtmosphereMetadata: Codable {
+    static let currentPhotoCaptionVersion = 2
+
     var placeLabel: String?
     var waveformFingerprint: [Double]
     var photoCaption: String?
+    var photoCaptionVersion: Int?
     var atmosphereStyleRaw: String
     var captureDuration: Double?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
@@ -91,6 +94,7 @@ struct MemoryAtmosphereMetadata: Codable {
         self.placeLabel = placeLabel
         self.waveformFingerprint = waveformFingerprint
         self.photoCaption = photoCaption
+        self.photoCaptionVersion = Self.currentPhotoCaptionVersion
         self.atmosphereStyleRaw = atmosphereStyle.rawValue
         self.captureDuration = captureDuration
         self.sensorSnapshot = sensorSnapshot
@@ -101,6 +105,10 @@ struct MemoryAtmosphereMetadata: Codable {
 
     var atmosphereStyle: AtmosphereStyle {
         AtmosphereStyle(rawValue: atmosphereStyleRaw) ?? .day
+    }
+
+    var needsPhotoCaptionRefresh: Bool {
+        (photoCaptionVersion ?? 0) < Self.currentPhotoCaptionVersion
     }
 }
 

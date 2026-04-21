@@ -2,6 +2,9 @@ import AVFoundation
 import Speech
 import UIKit
 import Vision
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 
 enum MemoryAnalysisService {
     static func requestSpeechAuthorizationIfNeeded() async {
@@ -31,9 +34,30 @@ enum MemoryAnalysisService {
         )
     }
 
-    static func imageCaption(from data: Data) async -> String? {
+    static func imageCaption(from data: Data, title: String? = nil, placeLabel: String? = nil) async -> String? {
         let tags = await imageTags(from: data)
-        return generatedCaption(from: tags)
+        let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let baseCaption = generatedCaption(from: tags) ?? "光と空気のあわいが、まだこの写真の中で静かに呼吸している。"
+
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, *),
+           !trimmedTitle.isEmpty,
+           let aiCaption = await foundationModelCaption(
+                title: trimmedTitle,
+                placeLabel: placeLabel,
+                tags: tags,
+                baseCaption: baseCaption
+           ) {
+            return aiCaption
+        }
+        #endif
+
+        return refinedFallbackCaption(
+            title: trimmedTitle,
+            placeLabel: placeLabel,
+            tags: tags,
+            baseCaption: baseCaption
+        )
     }
 
     private static func imageTags(from data: Data) async -> [String] {
@@ -260,4 +284,58 @@ enum MemoryAnalysisService {
         }
         return "この瞬間の空気だけが、少し遅れて心に届く"
     }
+
+    private static func refinedFallbackCaption(title: String, placeLabel: String?, tags: [String], baseCaption: String) -> String {
+        let normalizedTags = tags.map { $0.lowercased() }
+        guard !title.isEmpty else { return baseCaption }
+
+        let subject = localizedPrimarySubject(from: normalizedTags) ?? "景色"
+        let locationPhrase = placeLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let titleLine: String
+
+        if let locationPhrase, !locationPhrase.isEmpty {
+            titleLine = "「\(title)」という名前に、\(locationPhrase)で触れた\(subject)の気配が静かに重なっている"
+        } else {
+            titleLine = "「\(title)」という名前に、目の前の\(subject)がそっと意味を結んでいる"
+        }
+
+        return "\(titleLine)。\(poeticAfterglow(from: normalizedTags))。"
+    }
+
+    #if canImport(FoundationModels)
+    @available(iOS 26.0, *)
+    private static func foundationModelCaption(title: String, placeLabel: String?, tags: [String], baseCaption: String) async -> String? {
+        let languageModel = SystemLanguageModel.default
+        guard languageModel.isAvailable else { return nil }
+
+        let instructions = """
+        You write one short poetic Japanese caption for a photo memory app.
+        Use the user's title as the emotional anchor.
+        Keep the output to exactly two Japanese sentences.
+        Do not use bullet points, quotes, emoji, or headings.
+        Avoid generic filler and avoid repeating the same sentence across different photos.
+        """
+
+        let visualHints = tags.prefix(6).joined(separator: ", ")
+        let placePrompt = placeLabel?.isEmpty == false ? "場所ヒント: \(placeLabel!)." : ""
+        let prompt = """
+        タイトル: \(title)
+        視覚ヒント: \(visualHints.isEmpty ? "なし" : visualHints)
+        参考文: \(baseCaption)
+        \(placePrompt)
+        写真の空気感を保ちながら、タイトルに寄り添った日本語の文章を生成してください。
+        """
+
+        do {
+            let session = LanguageModelSession(model: languageModel) {
+                Instructions(instructions)
+            }
+            let response = try await session.respond(to: prompt)
+            let caption = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return caption.isEmpty ? nil : caption
+        } catch {
+            return nil
+        }
+    }
+    #endif
 }

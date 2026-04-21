@@ -17,6 +17,7 @@ final class CaptureFlowModel: ObservableObject {
     let camera = CameraCaptureService()
     private let locationService = CaptureLocationService.shared
     private let weatherService = AmbientWeatherCaptureService.shared
+    private var captionRefreshTask: Task<Void, Never>?
 
     func prepare() {
         camera.prepare()
@@ -54,6 +55,7 @@ final class CaptureFlowModel: ObservableObject {
                     }
                     self.isPreparingReview = false
                     self.capturedDraft = draft
+                    self.scheduleDraftCaptionRefresh()
                 } catch {
                     self.isPreparingReview = false
                     self.errorMessage = error.localizedDescription
@@ -71,6 +73,7 @@ final class CaptureFlowModel: ObservableObject {
         errorMessage = nil
         saveMessage = nil
         isSaving = true
+        cancelDraftCaptionRefresh()
 
         let currentTitle = title
         let currentNotes = notes
@@ -80,6 +83,11 @@ final class CaptureFlowModel: ObservableObject {
                 let storedMedia = try MediaStore.save(photoData: draft.photoData, audioTempURL: draft.audioTempURL)
                 let storedAudioURL = storedMedia.audioFileName.map(MediaStore.audioURL(for:))
                 let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: storedAudioURL)
+                let resolvedPhotoCaption = await MemoryAnalysisService.imageCaption(
+                    from: draft.photoData,
+                    title: currentTitle,
+                    placeLabel: draft.placeLabel
+                ) ?? draft.photoCaption
 
                 let entry = MemoryEntry(
                     createdAt: draft.capturedAt,
@@ -97,7 +105,7 @@ final class CaptureFlowModel: ObservableObject {
                 let metadata = MemoryAtmosphereMetadata(
                     placeLabel: draft.placeLabel,
                     waveformFingerprint: WaveformExtractor.samples(from: storedAudioURL, sampleCount: 28).map { Double($0) },
-                    photoCaption: draft.photoCaption,
+                    photoCaption: resolvedPhotoCaption,
                     atmosphereStyle: draft.atmosphereStyle,
                     captureDuration: draft.audioDuration,
                     sensorSnapshot: draft.sensorSnapshot,
@@ -124,6 +132,7 @@ final class CaptureFlowModel: ObservableObject {
     }
 
     func discardDraft() {
+        cancelDraftCaptionRefresh()
         if let audioURL = capturedDraft?.audioTempURL {
             try? FileManager.default.removeItem(at: audioURL)
         }
@@ -133,6 +142,38 @@ final class CaptureFlowModel: ObservableObject {
     func resetSuccessState() {
         lastSavedEntry = nil
         saveMessage = nil
+    }
+
+    func scheduleDraftCaptionRefresh() {
+        guard let draft = capturedDraft else { return }
+
+        let currentTitle = title
+        let currentPlaceLabel = draft.placeLabel
+        let draftID = draft.id
+        let photoData = draft.photoData
+
+        captionRefreshTask?.cancel()
+        captionRefreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            let refreshedCaption = await MemoryAnalysisService.imageCaption(
+                from: photoData,
+                title: currentTitle,
+                placeLabel: currentPlaceLabel
+            )
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard let self, var currentDraft = self.capturedDraft, currentDraft.id == draftID else { return }
+                currentDraft.photoCaption = refreshedCaption ?? currentDraft.photoCaption
+                self.capturedDraft = currentDraft
+            }
+        }
+    }
+
+    func cancelDraftCaptionRefresh() {
+        captionRefreshTask?.cancel()
+        captionRefreshTask = nil
     }
 }
 
@@ -227,7 +268,14 @@ struct CaptureView: View {
             }
         }
         .onDisappear {
+            model.cancelDraftCaptionRefresh()
             model.camera.suspend()
+        }
+        .onChange(of: model.title) { _, _ in
+            model.scheduleDraftCaptionRefresh()
+        }
+        .onChange(of: model.capturedDraft?.id) { _, _ in
+            model.scheduleDraftCaptionRefresh()
         }
         .fullScreenCover(item: $model.capturedDraft) { draft in
             MemorySceneReviewView(

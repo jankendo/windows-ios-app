@@ -336,9 +336,14 @@ struct MemoryDetailView: View {
     }
 
     private func backfillPhotoCaptionIfNeeded() async {
-        guard resolvedPhotoCaption == nil else { return }
+        let needsCaptionRefresh = entry.atmosphereMetadata?.needsPhotoCaptionRefresh ?? true
+        guard needsCaptionRefresh || resolvedPhotoCaption == nil else { return }
         guard let imageData = try? Data(contentsOf: entry.photoURL) else { return }
-        guard let caption = await MemoryAnalysisService.imageCaption(from: imageData) else { return }
+        guard let caption = await MemoryAnalysisService.imageCaption(
+            from: imageData,
+            title: entry.title,
+            placeLabel: entry.placeLabel
+        ) else { return }
 
         await MainActor.run {
             resolvedPhotoCaption = caption
@@ -346,6 +351,7 @@ struct MemoryDetailView: View {
 
         try? MediaStore.updateAtmosphereMetadata(for: entry.id) { metadata in
             metadata.photoCaption = caption
+            metadata.photoCaptionVersion = MemoryAtmosphereMetadata.currentPhotoCaptionVersion
         }
     }
 }
