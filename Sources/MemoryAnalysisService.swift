@@ -32,31 +32,8 @@ enum MemoryAnalysisService {
     }
 
     static func imageCaption(from data: Data) async -> String? {
-        guard #available(iOS 18.0, *) else { return nil }
-
-        return await Task.detached(priority: .userInitiated) {
-            guard
-                let image = UIImage(data: data),
-                let resizedImage = resizedCaptionImage(from: image),
-                let cgImage = resizedImage.cgImage
-            else {
-                return nil
-            }
-
-            let request = VNGenerateImageCaptionsRequest()
-            let handler = VNImageRequestHandler(cgImage: cgImage)
-
-            do {
-                try handler.perform([request])
-                let caption = (request.results as? [VNCaptionObservation])?
-                    .sorted { $0.confidence > $1.confidence }
-                    .first?
-                    .caption
-                return normalizedCaption(caption)
-            } catch {
-                return nil
-            }
-        }.value
+        let tags = await imageTags(from: data)
+        return generatedCaption(from: tags)
     }
 
     private static func imageTags(from data: Data) async -> [String] {
@@ -194,20 +171,86 @@ enum MemoryAnalysisService {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func resizedCaptionImage(from image: UIImage) -> UIImage? {
-        let maxDimension: CGFloat = 1_536
-        let longestEdge = max(image.size.width, image.size.height)
-        guard longestEdge > 0 else { return nil }
+    private static func generatedCaption(from tags: [String]) -> String? {
+        let normalizedTags = tags.map { $0.lowercased() }
+        guard !normalizedTags.isEmpty else { return nil }
 
-        if longestEdge <= maxDimension {
-            return image
+        if containsAny(["sunset", "sunrise", "evening", "dusk"], in: normalizedTags) {
+            return "空の色がゆっくり移ろっていく瞬間。"
+        }
+        if containsAny(["beach", "coast", "ocean", "sea", "shore", "water"], in: normalizedTags) {
+            return "水辺のひらけた空気が静かに広がる風景。"
+        }
+        if containsAny(["mountain", "ridge", "valley", "hill"], in: normalizedTags) {
+            return "地形の奥行きが気配ごと残る眺め。"
+        }
+        if containsAny(["tree", "forest", "woodland", "park", "garden"], in: normalizedTags) {
+            return "緑の重なりとやわらかな空気が感じられる場面。"
+        }
+        if containsAny(["coffee", "espresso", "cup", "cafe"], in: normalizedTags) {
+            return "手元の温度まで思い出せそうな静かな一杯。"
+        }
+        if containsAny(["street", "city", "building", "tower", "car", "road"], in: normalizedTags) {
+            return "街の輪郭と流れがそのまま残る都市のワンシーン。"
+        }
+        if containsAny(["dog", "cat", "bird", "animal"], in: normalizedTags) {
+            return "小さな動きまで目に浮かぶ生きものの気配。"
+        }
+        if containsAny(["person", "portrait", "face", "child", "people"], in: normalizedTags) {
+            return "その場の表情と距離感まで思い出せる一枚。"
+        }
+        if containsAny(["flower", "plant", "leaf"], in: normalizedTags) {
+            return "色と質感がやさしく残る、静かな近景。"
+        }
+        if let primarySubject = localizedPrimarySubject(from: normalizedTags) {
+            return "\(primarySubject)が印象に残るシーン。"
         }
 
-        let scale = maxDimension / longestEdge
-        let targetSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: targetSize)
-        return renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        return nil
+    }
+
+    private static func containsAny(_ candidates: [String], in tags: [String]) -> Bool {
+        candidates.contains { candidate in
+            tags.contains { $0.contains(candidate) }
         }
+    }
+
+    private static func localizedPrimarySubject(from tags: [String]) -> String? {
+        let mappings: [(String, String)] = [
+            ("sky", "空"),
+            ("cloud", "雲"),
+            ("sun", "光"),
+            ("water", "水辺"),
+            ("beach", "海辺"),
+            ("ocean", "海"),
+            ("sea", "海"),
+            ("mountain", "山並み"),
+            ("tree", "樹木"),
+            ("forest", "森"),
+            ("park", "公園"),
+            ("garden", "庭"),
+            ("street", "通り"),
+            ("city", "街"),
+            ("building", "建物"),
+            ("coffee", "コーヒー"),
+            ("cup", "カップ"),
+            ("food", "食べもの"),
+            ("person", "人物"),
+            ("portrait", "表情"),
+            ("child", "子ども"),
+            ("dog", "犬"),
+            ("cat", "猫"),
+            ("bird", "鳥"),
+            ("flower", "花"),
+            ("plant", "植物")
+        ]
+
+        for tag in tags {
+            if let subject = mappings.first(where: { tag.contains($0.0) })?.1 {
+                return subject
+            }
+        }
+
+        return nil
     }
 }
