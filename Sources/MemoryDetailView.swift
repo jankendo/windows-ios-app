@@ -77,6 +77,9 @@ struct MemoryDetailView: View {
                                     .foregroundStyle(palette.primaryText)
 
                                 SensorDetailRow(title: "場所", value: entry.placeLabel ?? "取得なし")
+                                if let weatherSummary = entry.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
+                                    SensorDetailRow(title: "天気", value: weatherSummary)
+                                }
 
                                 if let latitude = sensorSnapshot.latitude, let longitude = sensorSnapshot.longitude {
                                     SensorDetailRow(title: "座標", value: String(format: "%.5f, %.5f", latitude, longitude))
@@ -240,6 +243,9 @@ struct MemoryDetailView: View {
                         }
                         if entry.hasAudio {
                             ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform", tint: .white, atmosphere: entry.atmosphereStyle)
+                        }
+                        if let weatherSummary = entry.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
+                            ResonanceBadge(title: weatherSummary, systemImage: entry.weatherSnapshot?.symbolName ?? "cloud.sun.fill", tint: .white, atmosphere: entry.atmosphereStyle)
                         }
                     }
                 }

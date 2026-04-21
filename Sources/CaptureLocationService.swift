@@ -103,6 +103,13 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         )
     }
 
+    func currentLocation() async -> CLLocation? {
+        if authorizationStatus.allowsLocationAccess, latestLocation == nil {
+            await refreshLocation()
+        }
+        return latestLocation ?? manager.location
+    }
+
     private func startLocationPipeline() {
         guard !isLocationPipelineActive else { return }
         isLocationPipelineActive = true

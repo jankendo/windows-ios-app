@@ -144,6 +144,15 @@ struct MemorySceneReviewView: View {
                         atmosphere: atmosphere
                     )
                 }
+
+                if let weatherSummary = draft.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
+                    ResonanceBadge(
+                        title: weatherSummary,
+                        systemImage: draft.weatherSnapshot?.symbolName ?? "cloud.sun.fill",
+                        tint: .white,
+                        atmosphere: atmosphere
+                    )
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -165,10 +174,11 @@ struct MemorySceneReviewView: View {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFit()
-                            .frame(maxWidth: .infinity)
-                            .frame(maxHeight: maxHeight)
-                            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                            .frame(maxWidth: .infinity, maxHeight: maxHeight)
+                            .padding(12)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: maxHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                 }
             }
         }

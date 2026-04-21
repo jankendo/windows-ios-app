@@ -213,6 +213,9 @@ struct ResonanceBadge: View {
 
         Label(title, systemImage: systemImage)
             .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .minimumScaleFactor(0.84)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(

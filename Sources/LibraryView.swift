@@ -130,32 +130,14 @@ struct LibraryView: View {
         ZStack {
             ResonanceGradientBackground()
 
-            ScrollView {
-                VStack(spacing: 18) {
-                    summaryCard
-                    modePicker
-                    filterBar
-
-                    if entries.isEmpty {
-                        emptyState
-                    } else if filteredEntries.isEmpty {
-                        ResonanceEmptyState(
-                            title: "条件に合う記録がありません",
-                            message: "時期や空気感の条件を少し変えると、別の記録に出会えるかもしれません。",
-                            symbol: "line.3.horizontal.decrease.circle"
-                        )
-                    } else {
-                        if selectedMode == .timeline {
-                            timelineSection
-                        } else {
-                            mapSection
-                        }
-                    }
-                }
-                .padding(20)
+            if selectedMode == .map {
+                mapExperience
+            } else {
+                timelineExperience
             }
         }
         .navigationTitle("ライブラリ")
+        .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingFilterSheet) {
             AdvancedLibraryFilterSheet(
                 selectedMood: $selectedMood,
@@ -175,6 +157,78 @@ struct LibraryView: View {
         .onChange(of: favoritesOnly) { _, _ in syncMapSelection() }
         .onChange(of: hasAudioOnly) { _, _ in syncMapSelection() }
         .onChange(of: sortOption) { _, _ in syncMapSelection() }
+    }
+
+    private var timelineExperience: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                summaryCard
+                modePicker
+                filterBar
+
+                if entries.isEmpty {
+                    emptyState
+                } else if filteredEntries.isEmpty {
+                    ResonanceEmptyState(
+                        title: "条件に合う記録がありません",
+                        message: "時期や空気感の条件を少し変えると、別の記録に出会えるかもしれません。",
+                        symbol: "line.3.horizontal.decrease.circle"
+                    )
+                } else {
+                    timelineSection
+                }
+            }
+            .padding(20)
+        }
+    }
+
+    private var mapExperience: some View {
+        ZStack {
+            if mapEntries.isEmpty {
+                VStack(spacing: 18) {
+                    mapTopChrome
+                    Spacer()
+                    ResonanceEmptyState(
+                        title: "地図に表示できる記録がありません",
+                        message: "位置情報が付いた記録を保存すると、ここから場所ごとに思い出を選べます。",
+                        symbol: "map"
+                    )
+                    .padding(.horizontal, 20)
+                    Spacer()
+                }
+            } else {
+                Map(coordinateRegion: $mapRegion, annotationItems: mapEntries) { entry in
+                    MapAnnotation(coordinate: entry.coordinate ?? mapRegion.center) {
+                        Button {
+                            withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
+                                selectedMapEntry = entry
+                            }
+                        } label: {
+                            VStack(spacing: 6) {
+                                MemoryThumbnail(entry: entry, width: selectedMapEntry?.id == entry.id ? 56 : 48, height: selectedMapEntry?.id == entry.id ? 56 : 48)
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                            .strokeBorder(selectedMapEntry?.id == entry.id ? palette.accent : Color.white, lineWidth: 2)
+                                    }
+                                    .shadow(color: .black.opacity(0.28), radius: 12, y: 6)
+
+                                Image(systemName: "mappin.circle.fill")
+                                    .font(selectedMapEntry?.id == entry.id ? .title2 : .title3)
+                                    .foregroundStyle(selectedMapEntry?.id == entry.id ? palette.accent : .white)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .ignoresSafeArea(edges: .bottom)
+                .overlay(alignment: .top) {
+                    mapTopChrome
+                }
+                .overlay(alignment: .bottom) {
+                    mapBottomChrome
+                }
+            }
+        }
     }
 
     private var summaryCard: some View {
@@ -333,6 +387,60 @@ struct LibraryView: View {
         }
     }
 
+    private var mapTopChrome: some View {
+        VStack(spacing: 12) {
+            modePicker
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Spatial Map")
+                        .font(.headline)
+                        .foregroundStyle(palette.primaryText)
+                    Spacer()
+                    Text("\(mapEntries.count)件")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(palette.secondaryText)
+                }
+
+                filterBar
+            }
+            .padding(14)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .strokeBorder(.white.opacity(0.14))
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+    }
+
+    private var mapBottomChrome: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("地図の中で、その場の空気を探す")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.82))
+                Spacer()
+                Text("\(mapEntries.count) memories")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.68))
+            }
+            .padding(.horizontal, 4)
+
+            if let selectedMapEntry {
+                NavigationLink {
+                    MemoryDetailView(entry: selectedMapEntry)
+                } label: {
+                    MapSelectionCard(entry: selectedMapEntry)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 18)
+    }
+
     private var emptyState: some View {
         ResonanceEmptyState(
             title: "まだ記録はありません",
@@ -469,9 +577,22 @@ private struct MapSelectionCard: View {
                         .lineLimit(1)
                 }
 
-                HStack(spacing: 8) {
-                    ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", atmosphere: entry.atmosphereStyle)
-                    ResonanceBadge(title: entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName, atmosphere: entry.atmosphereStyle)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", atmosphere: entry.atmosphereStyle)
+                        ResonanceBadge(title: entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName, atmosphere: entry.atmosphereStyle)
+                        if let weatherSummary = entry.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
+                            ResonanceBadge(title: weatherSummary, systemImage: entry.weatherSnapshot?.symbolName ?? "cloud.sun.fill", atmosphere: entry.atmosphereStyle)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", atmosphere: entry.atmosphereStyle)
+                        ResonanceBadge(title: entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName, atmosphere: entry.atmosphereStyle)
+                        if let weatherSummary = entry.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
+                            ResonanceBadge(title: weatherSummary, systemImage: entry.weatherSnapshot?.symbolName ?? "cloud.sun.fill", atmosphere: entry.atmosphereStyle)
+                        }
+                    }
                 }
             }
 
@@ -602,6 +723,8 @@ struct FilterChip: View {
         Button(action: action) {
             Text(title)
                 .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(isSelected ? palette.accent : palette.surfaceSecondary, in: Capsule())

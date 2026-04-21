@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftData
 import SwiftUI
 import UIKit
@@ -14,6 +15,7 @@ final class CaptureFlowModel: ObservableObject {
 
     let camera = CameraCaptureService()
     private let locationService = CaptureLocationService.shared
+    private let weatherService = AmbientWeatherCaptureService.shared
 
     func prepare() {
         camera.prepare()
@@ -37,8 +39,12 @@ final class CaptureFlowModel: ObservableObject {
                     var draft = try result.get()
                     async let placeLabel = self.locationService.currentPlaceLabel()
                     async let sensorSnapshot = self.locationService.currentEnvironmentSnapshot()
+                    async let resolvedLocation = self.locationService.currentLocation()
                     draft.placeLabel = await placeLabel
                     draft.sensorSnapshot = await sensorSnapshot
+                    if let location = await resolvedLocation {
+                        draft.weatherSnapshot = await self.weatherService.currentWeatherSnapshot(for: location)
+                    }
                     self.capturedDraft = draft
                 } catch {
                     self.errorMessage = error.localizedDescription
@@ -80,7 +86,8 @@ final class CaptureFlowModel: ObservableObject {
                     waveformFingerprint: WaveformExtractor.samples(from: storedAudioURL, sampleCount: 28).map { Double($0) },
                     atmosphereStyle: draft.atmosphereStyle,
                     captureDuration: draft.audioDuration,
-                    sensorSnapshot: draft.sensorSnapshot
+                    sensorSnapshot: draft.sensorSnapshot,
+                    weatherSnapshot: draft.weatherSnapshot
                 )
 
                 try MediaStore.saveAtmosphereMetadata(metadata, for: entry.id)
@@ -211,7 +218,7 @@ struct CaptureView: View {
 
     private var topChrome: some View {
         VStack(spacing: 12) {
-            HStack(alignment: .top) {
+            HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Resonance")
                         .font(.headline.weight(.semibold))
@@ -224,6 +231,20 @@ struct CaptureView: View {
 
                 Spacer()
 
+                Button {
+                    showingCaptureSettings = true
+                } label: {
+                    ResonanceBadge(
+                        title: "Ambient \(Int(captureDurationSeconds.rounded()))s",
+                        systemImage: "slider.horizontal.3",
+                        tint: .white,
+                        atmosphere: atmosphere
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ResonanceBadge(
                         title: atmosphere.localizedLabel,
@@ -241,17 +262,14 @@ struct CaptureView: View {
                         )
                     }
 
-                    Button {
-                        showingCaptureSettings = true
-                    } label: {
+                    if let weatherSummary = recentEntry?.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
                         ResonanceBadge(
-                            title: "Ambient \(Int(captureDurationSeconds.rounded()))s",
-                            systemImage: "slider.horizontal.3",
+                            title: weatherSummary,
+                            systemImage: recentEntry?.weatherSnapshot?.symbolName ?? "cloud.sun.fill",
                             tint: .white,
                             atmosphere: atmosphere
                         )
                     }
-                    .buttonStyle(.plain)
                 }
             }
 
@@ -315,20 +333,43 @@ struct CaptureView: View {
 
     private var captureInfoPill: some View {
         Group {
-            if model.camera.isCapturing {
-                VStack(alignment: .leading, spacing: 10) {
+            if model.camera.isCapturing || model.camera.isProcessingCapture {
+                VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Label("環境音を録音中", systemImage: "waveform")
+                        Label(model.camera.isCapturing ? "Capturing the air" : "Composing your memory", systemImage: model.camera.isCapturing ? "waveform.and.mic" : "sparkles")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.white)
+                            .symbolEffect(.pulse, options: .repeating, isActive: model.camera.isCapturing || model.camera.isProcessingCapture)
                         Spacer()
-                        Text("\(model.camera.remainingRecordingSeconds)秒")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(palette.accent)
+                        if model.camera.isCapturing {
+                            Text("\(model.camera.remainingRecordingSeconds)秒")
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(palette.accent)
+                                .contentTransition(.numericText())
+                        } else {
+                            Text("整え中")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white.opacity(0.82))
+                        }
                     }
 
-                    ProgressView(value: model.camera.captureProgress)
-                        .tint(palette.accent)
+                    Text(model.camera.isCapturing ? "シャッターのあとも、その場の空気を静かに集めています。" : "写真と音、場所と空気をひとつのシーンとしてまとめています。")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.82))
+
+                    AudioWaveformView(
+                        samples: model.camera.liveMeterSamples,
+                        progress: model.camera.isCapturing ? model.camera.captureProgress : 1,
+                        activeColor: palette.accent,
+                        inactiveColor: Color.white.opacity(0.18),
+                        minimumBarHeight: 10
+                    )
+                    .frame(height: 42)
+
+                    if model.camera.isCapturing {
+                        ProgressView(value: model.camera.captureProgress)
+                            .tint(palette.accent)
+                    }
                 }
                 .padding(16)
                 .background(.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -363,7 +404,12 @@ struct CaptureView: View {
 
             Spacer()
 
-            CameraShutterButton(isEnabled: model.camera.isReadyToCapture && !model.isSaving && !model.camera.isCapturing) {
+            CameraShutterButton(
+                isEnabled: model.camera.isReadyToCapture && !model.isSaving && !model.camera.isCapturing,
+                isRecording: model.camera.isCapturing || model.camera.isProcessingCapture,
+                progress: model.camera.captureProgress,
+                accent: palette.accent
+            ) {
                 model.capture(duration: captureDurationSeconds)
             }
 
@@ -496,7 +542,7 @@ struct CaptureView: View {
                 .font(.headline)
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
-            Text("許可すると、写真と6秒の空気感をひとつの記録として残せます。")
+            Text("許可すると、写真と環境音、そしてその場の空気感をひとつの記録として残せます。")
                 .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.white.opacity(0.78))
@@ -566,13 +612,17 @@ struct CaptureView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            HStack(spacing: 8) {
+            let columns = [GridItem(.adaptive(minimum: 92), spacing: 10)]
+
+            LazyVGrid(columns: columns, spacing: 10) {
                 ForEach([3.0, 6.0, 10.0, 15.0], id: \.self) { duration in
                     Button("\(Int(duration))秒") {
                         captureDurationSeconds = duration
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(captureDurationSeconds == duration ? palette.accent : .gray)
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .background(captureDurationSeconds == duration ? palette.accent : palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .foregroundStyle(captureDurationSeconds == duration ? Color.white : palette.primaryText)
                 }
             }
 
@@ -597,11 +647,21 @@ struct CaptureView: View {
 
 private struct CameraShutterButton: View {
     let isEnabled: Bool
+    let isRecording: Bool
+    let progress: Double
+    let accent: Color
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             ZStack {
+                Circle()
+                    .trim(from: 0, to: isRecording ? max(progress, 0.08) : 1)
+                    .stroke(accent.opacity(isRecording ? 0.95 : 0), style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 96, height: 96)
+                    .animation(.easeInOut(duration: 0.2), value: progress)
+
                 Circle()
                     .strokeBorder(.white.opacity(isEnabled ? 0.95 : 0.35), lineWidth: 6)
                     .frame(width: 88, height: 88)
@@ -610,7 +670,12 @@ private struct CameraShutterButton: View {
                     .fill(isEnabled ? Color.white : Color.white.opacity(0.35))
                     .frame(width: 70, height: 70)
                     .overlay {
-                        if !isEnabled {
+                        if isRecording {
+                            Image(systemName: "waveform")
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(.black.opacity(0.6))
+                                .symbolEffect(.pulse, options: .repeating, isActive: true)
+                        } else if !isEnabled {
                             ProgressView()
                                 .tint(.black.opacity(0.55))
                         }

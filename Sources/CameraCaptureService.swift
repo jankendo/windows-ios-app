@@ -10,6 +10,7 @@ struct CapturedMemoryDraft: Identifiable {
     let audioDuration: TimeInterval
     var placeLabel: String?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
+    var weatherSnapshot: MemoryWeatherSnapshot?
 
     var atmosphereStyle: AtmosphereStyle {
         AtmosphereStyle(date: capturedAt)
@@ -56,9 +57,11 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     @Published private(set) var permissionState: PermissionState = .unknown
     @Published private(set) var isSessionRunning = false
     @Published private(set) var isCapturing = false
+    @Published private(set) var isProcessingCapture = false
     @Published private(set) var isPreparingSession = true
     @Published private(set) var captureProgress = 0.0
     @Published private(set) var remainingRecordingSeconds = 6
+    @Published private(set) var liveMeterSamples: [CGFloat] = Array(repeating: 0.18, count: 24)
     @Published var statusText = "写真と環境音を一緒に保存できます。"
 
     let session = AVCaptureSession()
@@ -119,6 +122,8 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         let pending = PendingCapture(audioURL: audioRecorder?.url, capturedAt: .now, completion: completion)
         pendingCapture = pending
         isCapturing = true
+        isProcessingCapture = false
+        resetLiveMeter()
         statusText = "写真を撮影し、\(Int(duration.rounded()))秒の環境音を録音しています。"
         startCaptureProgress(duration: duration)
 
@@ -239,6 +244,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         ]
 
         audioRecorder = try AVAudioRecorder(url: fileURL, settings: settings)
+        audioRecorder?.isMeteringEnabled = true
         audioRecorder?.record()
     }
 
@@ -258,6 +264,13 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
                 let elapsed = min(Date().timeIntervalSince(startedAt), duration)
                 self.captureProgress = duration > 0 ? elapsed / duration : 1
                 self.remainingRecordingSeconds = max(Int(ceil(duration - elapsed)), 0)
+                self.audioRecorder?.updateMeters()
+                let averagePower = self.audioRecorder?.averagePower(forChannel: 0) ?? -60
+                let normalizedLevel = max(0.08, min(1, CGFloat((averagePower + 60) / 60)))
+                self.liveMeterSamples.append(normalizedLevel)
+                if self.liveMeterSamples.count > 24 {
+                    self.liveMeterSamples.removeFirst(self.liveMeterSamples.count - 24)
+                }
 
                 if elapsed >= duration {
                     timer.invalidate()
@@ -273,11 +286,17 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         remainingRecordingSeconds = 6
     }
 
+    private func resetLiveMeter() {
+        liveMeterSamples = Array(repeating: 0.18, count: 24)
+    }
+
     private func finishAudioCapture() {
         pendingCapture?.audioFinished = true
         audioRecorder?.stop()
         audioRecorder = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        isProcessingCapture = true
+        statusText = "記憶のシーンを整えています。"
         resetCaptureProgress()
         completePendingCaptureIfPossible()
     }
@@ -300,7 +319,9 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
 
         self.pendingCapture = nil
         isCapturing = false
+        isProcessingCapture = false
         statusText = "レビューして保存できます。"
+        resetLiveMeter()
         completion(.success(CapturedMemoryDraft(photoData: photoData, audioTempURL: audioURL, capturedAt: capturedAt, audioDuration: audioDuration, placeLabel: nil)))
     }
 
@@ -309,9 +330,11 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         let completion = pendingCapture?.completion
         pendingCapture = nil
         isCapturing = false
+        isProcessingCapture = false
         audioRecorder?.stop()
         audioRecorder = nil
         resetCaptureProgress()
+        resetLiveMeter()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         if let audioURL {
             try? FileManager.default.removeItem(at: audioURL)

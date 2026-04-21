@@ -72,23 +72,40 @@ struct MemoryAtmosphereMetadata: Codable {
     var atmosphereStyleRaw: String
     var captureDuration: Double?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
+    var weatherSnapshot: MemoryWeatherSnapshot?
 
     init(
         placeLabel: String?,
         waveformFingerprint: [Double],
         atmosphereStyle: AtmosphereStyle,
         captureDuration: Double? = nil,
-        sensorSnapshot: CaptureEnvironmentSnapshot? = nil
+        sensorSnapshot: CaptureEnvironmentSnapshot? = nil,
+        weatherSnapshot: MemoryWeatherSnapshot? = nil
     ) {
         self.placeLabel = placeLabel
         self.waveformFingerprint = waveformFingerprint
         self.atmosphereStyleRaw = atmosphereStyle.rawValue
         self.captureDuration = captureDuration
         self.sensorSnapshot = sensorSnapshot
+        self.weatherSnapshot = weatherSnapshot
     }
 
     var atmosphereStyle: AtmosphereStyle {
         AtmosphereStyle(rawValue: atmosphereStyleRaw) ?? .day
+    }
+}
+
+struct MemoryWeatherSnapshot: Codable {
+    var conditionLabel: String
+    var temperatureCelsius: Double?
+    var apparentTemperatureCelsius: Double?
+    var symbolName: String?
+
+    var compactSummary: String {
+        let roundedTemperature = temperatureCelsius.map { "\($0.rounded(.toNearestOrEven).formatted(.number.precision(.fractionLength(0))))°C" }
+        return [conditionLabel, roundedTemperature]
+            .compactMap { $0 }
+            .joined(separator: " · ")
     }
 }
 
@@ -206,6 +223,8 @@ final class MemoryEntry: Identifiable {
             localizedMood,
             atmosphereStyle.localizedLabel,
             placeLabel ?? "",
+            weatherSnapshot?.conditionLabel ?? "",
+            weatherSnapshot?.compactSummary ?? "",
             visualTagsRaw.replacingOccurrences(of: "|", with: " "),
             audioTagsRaw.replacingOccurrences(of: "|", with: " ")
         ]
@@ -269,6 +288,10 @@ final class MemoryEntry: Identifiable {
         atmosphereMetadata?.sensorSnapshot
     }
 
+    var weatherSnapshot: MemoryWeatherSnapshot? {
+        atmosphereMetadata?.weatherSnapshot
+    }
+
     var coordinate: CLLocationCoordinate2D? {
         sensorSnapshot?.coordinate
     }
@@ -290,6 +313,9 @@ final class MemoryEntry: Identifiable {
 
         if let placeLabel {
             highlights.append(placeLabel)
+        }
+        if let weatherSummary = weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
+            highlights.append(weatherSummary)
         }
         if let altitude = sensorSnapshot?.altitude {
             highlights.append(String(format: "標高 %.0fm", altitude))

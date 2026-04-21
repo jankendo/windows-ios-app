@@ -1,6 +1,14 @@
 import SwiftData
 import SwiftUI
 
+private struct MemorySearchSuggestion: Identifiable {
+    let term: String
+    let count: Int
+    let systemImage: String
+
+    var id: String { term }
+}
+
 struct SearchView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
@@ -13,35 +21,47 @@ struct SearchView: View {
             .filter { !favoritesOnly || $0.isFavorite }
     }
 
-    private var suggestedTerms: [String] {
-        let atmosphereTerms = ["雨音", "夜風", "カフェのざわめき", "海辺", "駅", "静けさ", "夕暮れ", "朝の空気"]
-        let tags = entries
-            .flatMap(\.autoTags)
-            .reduce(into: [String: Int]()) { partialResult, tag in
-                partialResult[tag, default: 0] += 1
-            }
-            .sorted { lhs, rhs in
-                if lhs.value == rhs.value {
-                    return lhs.key < rhs.key
-                }
-                return lhs.value > rhs.value
-            }
-            .map(\.key)
+    private var suggestedTerms: [MemorySearchSuggestion] {
+        guard !entries.isEmpty else {
+            return [
+                MemorySearchSuggestion(term: "海辺", count: 0, systemImage: "water.waves"),
+                MemorySearchSuggestion(term: "夕暮れ", count: 0, systemImage: "sunset.fill"),
+                MemorySearchSuggestion(term: "静けさ", count: 0, systemImage: "sparkles"),
+                MemorySearchSuggestion(term: "カフェ", count: 0, systemImage: "cup.and.saucer.fill")
+            ]
+        }
 
-        let places = entries
-            .compactMap(\.placeLabel)
-            .reduce(into: [String: Int]()) { partialResult, place in
-                partialResult[place, default: 0] += 1
-            }
-            .sorted { lhs, rhs in
-                if lhs.value == rhs.value {
-                    return lhs.key < rhs.key
-                }
-                return lhs.value > rhs.value
-            }
-            .map(\.key)
+        var suggestions: [String: MemorySearchSuggestion] = [:]
 
-        return Array((atmosphereTerms + MemoryMood.allCases.map(\.localizedLabel) + places + tags).prefix(10))
+        func merge(_ term: String?, systemImage: String) {
+            guard let term = term?.trimmingCharacters(in: .whitespacesAndNewlines), !term.isEmpty else { return }
+
+            if let existing = suggestions[term] {
+                suggestions[term] = MemorySearchSuggestion(term: existing.term, count: existing.count + 1, systemImage: existing.systemImage)
+            } else {
+                suggestions[term] = MemorySearchSuggestion(term: term, count: 1, systemImage: systemImage)
+            }
+        }
+
+        for entry in entries {
+            merge(entry.placeLabel, systemImage: "location.fill")
+            merge(entry.localizedMood, systemImage: "sparkles")
+            merge(entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName)
+            merge(entry.weatherSnapshot?.conditionLabel, systemImage: entry.weatherSnapshot?.symbolName ?? "cloud.sun.fill")
+            for tag in entry.autoTags.prefix(4) {
+                merge(tag, systemImage: "tag.fill")
+            }
+        }
+
+        return suggestions.values
+            .sorted { lhs, rhs in
+                if lhs.count == rhs.count {
+                    return lhs.term < rhs.term
+                }
+                return lhs.count > rhs.count
+            }
+            .prefix(12)
+            .map { $0 }
     }
 
     private var palette: ResonancePalette {
@@ -100,8 +120,8 @@ struct SearchView: View {
         .navigationTitle("検索")
         .searchable(text: $searchText, prompt: "音、気分、メモで検索")
         .searchSuggestions {
-            ForEach(suggestedTerms, id: \.self) { term in
-                Text(term).searchCompletion(term)
+            ForEach(suggestedTerms) { suggestion in
+                Text(suggestion.term).searchCompletion(suggestion.term)
             }
         }
     }
@@ -122,12 +142,12 @@ struct SearchView: View {
     private var suggestionSection: some View {
         ResonanceCard {
             VStack(alignment: .leading, spacing: 14) {
-                Text(searchText.isEmpty ? "おすすめの探し方" : "検索ヒント")
+                Text(searchText.isEmpty ? "記録から探す" : "検索ヒント")
                     .font(.headline)
                     .foregroundStyle(palette.primaryText)
 
                 if searchText.isEmpty {
-                    Text("まずは音、場所、時間帯の言葉から探すと、その場の空気感にたどり着きやすいです。")
+                    Text(entries.isEmpty ? "まだ記録が少ないので、探し方の例を表示しています。" : "あなたの記録に実際に存在する言葉だけを並べています。場所、ムード、音、空気感からそのまま辿れます。")
                         .font(.subheadline)
                         .foregroundStyle(palette.secondaryText)
                 } else {
@@ -136,14 +156,32 @@ struct SearchView: View {
                         .foregroundStyle(palette.secondaryText)
                 }
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(suggestedTerms, id: \.self) { term in
-                            Button(term) {
-                                searchText = term
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 10)], spacing: 10) {
+                    ForEach(suggestedTerms) { suggestion in
+                        Button {
+                            searchText = suggestion.term
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: suggestion.systemImage)
+                                    .foregroundStyle(palette.accent)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(suggestion.term)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(palette.primaryText)
+                                        .lineLimit(1)
+                                    if suggestion.count > 0 {
+                                        Text("\(suggestion.count)件")
+                                            .font(.caption)
+                                            .foregroundStyle(palette.secondaryText)
+                                    }
+                                }
+                                Spacer(minLength: 0)
                             }
-                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .background(palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
