@@ -291,27 +291,25 @@ struct LibraryView: View {
                     symbol: "map"
                 )
             } else {
-                ZStack(alignment: .bottom) {
-                    Map(coordinateRegion: $mapRegion, annotationItems: mapEntries) { entry in
-                        if let coordinate = entry.coordinate {
-                            MapAnnotation(coordinate: coordinate) {
-                                Button {
-                                    selectedMapEntry = entry
-                                } label: {
-                                    VStack(spacing: 6) {
-                                        MemoryThumbnail(entry: entry, width: 44, height: 44)
-                                            .overlay {
-                                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                                    .strokeBorder(selectedMapEntry?.id == entry.id ? palette.accent : Color.white, lineWidth: 2)
-                                            }
+                 ZStack(alignment: .bottom) {
+                     Map(coordinateRegion: $mapRegion, annotationItems: mapEntries) { entry in
+                        MapAnnotation(coordinate: entry.coordinate ?? mapRegion.center) {
+                            Button {
+                                selectedMapEntry = entry
+                            } label: {
+                                VStack(spacing: 6) {
+                                    MemoryThumbnail(entry: entry, width: 44, height: 44)
+                                        .overlay {
+                                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                .strokeBorder(selectedMapEntry?.id == entry.id ? palette.accent : Color.white, lineWidth: 2)
+                                        }
 
-                                        Image(systemName: "mappin.circle.fill")
-                                            .font(.title3)
-                                            .foregroundStyle(selectedMapEntry?.id == entry.id ? palette.accent : .white)
-                                    }
+                                    Image(systemName: "mappin.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(selectedMapEntry?.id == entry.id ? palette.accent : .white)
                                 }
-                                .buttonStyle(.plain)
                             }
+                            .buttonStyle(.plain)
                         }
                     }
                     .frame(height: 420)
