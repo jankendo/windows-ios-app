@@ -210,7 +210,7 @@ final class MemoryEntry: Identifiable {
     }
 
     var waveformFingerprint: [CGFloat] {
-        let storedSamples = atmosphereMetadata?.waveformFingerprint.map(CGFloat.init) ?? []
+        let storedSamples = atmosphereMetadata?.waveformFingerprint.map { CGFloat($0) } ?? []
         if !storedSamples.isEmpty {
             return storedSamples
         }

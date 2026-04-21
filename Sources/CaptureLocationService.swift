@@ -80,27 +80,33 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         return parts.first
     }
 
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        authorizationStatus = manager.authorizationStatus
-        if authorizationStatus.allowsLocationAccess {
-            manager.requestLocation()
-        } else {
-            latestLocation = nil
-            latestPlaceLabel = nil
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            authorizationStatus = manager.authorizationStatus
+            if authorizationStatus.allowsLocationAccess {
+                manager.requestLocation()
+            } else {
+                latestLocation = nil
+                latestPlaceLabel = nil
+                locationContinuation?.resume()
+                locationContinuation = nil
+            }
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        Task { @MainActor in
+            latestLocation = locations.last
             locationContinuation?.resume()
             locationContinuation = nil
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        latestLocation = locations.last
-        locationContinuation?.resume()
-        locationContinuation = nil
-    }
-
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        locationContinuation?.resume()
-        locationContinuation = nil
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        Task { @MainActor in
+            locationContinuation?.resume()
+            locationContinuation = nil
+        }
     }
 }
 
