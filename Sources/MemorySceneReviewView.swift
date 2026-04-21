@@ -380,7 +380,7 @@ private struct ImmersiveMemoryPlaybackView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .scaleEffect(1.06)
+                    .scaleEffect(1.12)
                     .offset(
                         x: dragOffset.width * 0.22 + environmentService.previewHorizontalShift,
                         y: dragOffset.height * 0.12 + environmentService.previewVerticalShift

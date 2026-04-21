@@ -161,10 +161,10 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
             motionManager.deviceMotionUpdateInterval = 1.0 / 120.0
             motionManager.startDeviceMotionUpdates(to: motionQueue) { [weak self] motion, _ in
                 guard let self, let motion else { return }
-                let roll = max(-1.0, min(1.0, motion.attitude.roll / 0.45))
-                let pitch = max(-1.0, min(1.0, motion.attitude.pitch / 0.45))
-                let targetHorizontalShift = CGFloat(roll * 18)
-                let targetVerticalShift = CGFloat(pitch * 14)
+                let horizontalTilt = max(-1.0, min(1.0, motion.gravity.x / 0.42))
+                let verticalTilt = max(-1.0, min(1.0, (-motion.gravity.z) / 0.56))
+                let targetHorizontalShift = CGFloat(horizontalTilt * 18)
+                let targetVerticalShift = CGFloat(verticalTilt * 14)
                 let pitchDegrees = motion.attitude.pitch * 180 / .pi
                 let rollDegrees = motion.attitude.roll * 180 / .pi
                 let yawDegrees = motion.attitude.yaw * 180 / .pi
