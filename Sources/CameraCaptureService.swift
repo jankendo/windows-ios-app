@@ -9,6 +9,7 @@ struct CapturedMemoryDraft: Identifiable {
     let capturedAt: Date
     let audioDuration: TimeInterval
     var placeLabel: String?
+    var photoCaption: String?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
     var weatherSnapshot: MemoryWeatherSnapshot?
     var minimumDecibels: Double?
@@ -390,6 +391,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             capturedAt: capturedAt,
             audioDuration: audioDuration,
             placeLabel: nil,
+            photoCaption: nil,
             sensorSnapshot: nil,
             weatherSnapshot: nil,
             minimumDecibels: minimumCapturedDecibels.map(Double.init),

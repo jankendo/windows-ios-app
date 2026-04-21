@@ -67,6 +67,12 @@ enum MediaStore {
         metadataCache[entryID] = metadata
     }
 
+    static func updateAtmosphereMetadata(for entryID: UUID, transform: (inout MemoryAtmosphereMetadata) -> Void) throws {
+        guard var metadata = loadAtmosphereMetadata(for: entryID) else { return }
+        transform(&metadata)
+        try saveAtmosphereMetadata(metadata, for: entryID)
+    }
+
     static func loadAtmosphereMetadata(for entryID: UUID) -> MemoryAtmosphereMetadata? {
         if let cached = metadataCache[entryID] {
             return cached

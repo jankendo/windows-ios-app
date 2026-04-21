@@ -15,6 +15,7 @@ struct MemoryDetailView: View {
     @State private var showingShareSheet = false
     @State private var showingAutoTags = false
     @State private var showingImmersivePreview = false
+    @State private var resolvedPhotoCaption: String?
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
@@ -202,8 +203,12 @@ struct MemoryDetailView: View {
         }
         .onAppear {
             waveformSamples = entry.waveformFingerprint
+            resolvedPhotoCaption = entry.photoCaption
             if let audioURL = entry.audioURL {
                 player.load(url: audioURL)
+            }
+            Task {
+                await backfillPhotoCaptionIfNeeded()
             }
         }
         .onDisappear {
@@ -226,7 +231,7 @@ struct MemoryDetailView: View {
                             .font(.largeTitle.bold())
                             .foregroundStyle(.white)
 
-                        Text(entry.atmosphereStyle.poeticLine)
+                        Text(resolvedPhotoCaption ?? entry.descriptiveCaption)
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.84))
                     }
@@ -328,6 +333,20 @@ struct MemoryDetailView: View {
         modelContext.delete(entry)
         try? modelContext.save()
         dismiss()
+    }
+
+    private func backfillPhotoCaptionIfNeeded() async {
+        guard resolvedPhotoCaption == nil else { return }
+        guard let imageData = try? Data(contentsOf: entry.photoURL) else { return }
+        guard let caption = await MemoryAnalysisService.imageCaption(from: imageData) else { return }
+
+        await MainActor.run {
+            resolvedPhotoCaption = caption
+        }
+
+        try? MediaStore.updateAtmosphereMetadata(for: entry.id) { metadata in
+            metadata.photoCaption = caption
+        }
     }
 }
 

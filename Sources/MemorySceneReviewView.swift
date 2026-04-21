@@ -164,7 +164,7 @@ struct MemorySceneReviewView: View {
                             .font(.title.bold())
                             .foregroundStyle(.white)
 
-                        Text(atmosphere.poeticLine)
+                        Text(draft.photoCaption ?? atmosphere.poeticLine)
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.84))
                     }

@@ -40,9 +40,11 @@ final class CaptureFlowModel: ObservableObject {
                 do {
                     var draft = try result.get()
                     async let placeLabel = self.locationService.currentPlaceLabel(forceRefresh: true)
+                    async let photoCaption = MemoryAnalysisService.imageCaption(from: draft.photoData)
                     async let sensorSnapshot = self.locationService.currentEnvironmentSnapshot(forceRefresh: true)
                     async let resolvedLocation = self.locationService.currentLocation(forceRefresh: true)
                     draft.placeLabel = await placeLabel
+                    draft.photoCaption = await photoCaption
                     draft.sensorSnapshot = await sensorSnapshot
                     let weatherLocation =
                         await resolvedLocation
@@ -95,6 +97,7 @@ final class CaptureFlowModel: ObservableObject {
                 let metadata = MemoryAtmosphereMetadata(
                     placeLabel: draft.placeLabel,
                     waveformFingerprint: WaveformExtractor.samples(from: storedAudioURL, sampleCount: 28).map { Double($0) },
+                    photoCaption: draft.photoCaption,
                     atmosphereStyle: draft.atmosphereStyle,
                     captureDuration: draft.audioDuration,
                     sensorSnapshot: draft.sensorSnapshot,

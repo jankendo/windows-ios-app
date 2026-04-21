@@ -69,6 +69,7 @@ enum AtmosphereStyle: String, CaseIterable, Codable, Identifiable {
 struct MemoryAtmosphereMetadata: Codable {
     var placeLabel: String?
     var waveformFingerprint: [Double]
+    var photoCaption: String?
     var atmosphereStyleRaw: String
     var captureDuration: Double?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
@@ -79,6 +80,7 @@ struct MemoryAtmosphereMetadata: Codable {
     init(
         placeLabel: String?,
         waveformFingerprint: [Double],
+        photoCaption: String? = nil,
         atmosphereStyle: AtmosphereStyle,
         captureDuration: Double? = nil,
         sensorSnapshot: CaptureEnvironmentSnapshot? = nil,
@@ -88,6 +90,7 @@ struct MemoryAtmosphereMetadata: Codable {
     ) {
         self.placeLabel = placeLabel
         self.waveformFingerprint = waveformFingerprint
+        self.photoCaption = photoCaption
         self.atmosphereStyleRaw = atmosphereStyle.rawValue
         self.captureDuration = captureDuration
         self.sensorSnapshot = sensorSnapshot
@@ -228,6 +231,7 @@ final class MemoryEntry: Identifiable {
             mood,
             localizedMood,
             atmosphereStyle.localizedLabel,
+            photoCaption ?? "",
             placeLabel ?? "",
             weatherSnapshot?.conditionLabel ?? "",
             weatherSnapshot?.compactSummary ?? "",
@@ -284,6 +288,17 @@ final class MemoryEntry: Identifiable {
 
     var placeLabel: String? {
         atmosphereMetadata?.placeLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var photoCaption: String? {
+        atmosphereMetadata?.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var descriptiveCaption: String {
+        if let photoCaption, !photoCaption.isEmpty {
+            return photoCaption
+        }
+        return atmosphereStyle.poeticLine
     }
 
     var captureDurationSetting: Double {
@@ -348,6 +363,7 @@ final class MemoryEntry: Identifiable {
         [
             displayTitle,
             createdAt.formatted(date: .abbreviated, time: .shortened),
+            photoCaption,
             placeLabel,
             notes.trimmingCharacters(in: .whitespacesAndNewlines)
         ]

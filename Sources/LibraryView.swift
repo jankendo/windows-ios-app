@@ -108,6 +108,30 @@ struct LibraryView: View {
         }
     }
 
+    private var visibleMapEntries: [MemoryEntry] {
+        mapEntries.filter { entry in
+            guard let coordinate = entry.coordinate else { return false }
+
+            let latitudeHalfSpan = mapRegion.span.latitudeDelta / 2
+            let longitudeHalfSpan = mapRegion.span.longitudeDelta / 2
+            let latitudePadding = max(latitudeHalfSpan * 0.08, 0.002)
+            let longitudePadding = max(longitudeHalfSpan * 0.08, 0.002)
+            let latitudeRange = (mapRegion.center.latitude - latitudeHalfSpan - latitudePadding)...(mapRegion.center.latitude + latitudeHalfSpan + latitudePadding)
+            let longitudeRange = (mapRegion.center.longitude - longitudeHalfSpan - longitudePadding)...(mapRegion.center.longitude + longitudeHalfSpan + longitudePadding)
+
+            return latitudeRange.contains(coordinate.latitude) && longitudeRange.contains(coordinate.longitude)
+        }
+    }
+
+    private var selectedVisibleMapEntryID: Binding<UUID?> {
+        Binding(
+            get: { selectedMapEntry?.id },
+            set: { newValue in
+                selectedMapEntry = visibleMapEntries.first { $0.id == newValue }
+            }
+        )
+    }
+
     private var groupedEntries: [(title: String, entries: [MemoryEntry])] {
         let calendar = Calendar.current
         let today = filteredEntries.filter { calendar.isDateInToday($0.createdAt) }
@@ -157,6 +181,10 @@ struct LibraryView: View {
         .onChange(of: favoritesOnly) { _, _ in syncMapSelection() }
         .onChange(of: hasAudioOnly) { _, _ in syncMapSelection() }
         .onChange(of: sortOption) { _, _ in syncMapSelection() }
+        .onChange(of: mapRegion.center.latitude) { _, _ in syncVisibleMapSelection() }
+        .onChange(of: mapRegion.center.longitude) { _, _ in syncVisibleMapSelection() }
+        .onChange(of: mapRegion.span.latitudeDelta) { _, _ in syncVisibleMapSelection() }
+        .onChange(of: mapRegion.span.longitudeDelta) { _, _ in syncVisibleMapSelection() }
     }
 
     private var timelineExperience: some View {
@@ -418,23 +446,42 @@ struct LibraryView: View {
     private var mapBottomChrome: some View {
         VStack(spacing: 10) {
             HStack {
-                Text("地図の中で、その場の空気を探す")
+                Text("画面内の記録をスワイプで選ぶ")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.82))
                 Spacer()
-                Text("\(mapEntries.count) memories")
+                Text("画面内 \(visibleMapEntries.count)件")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.68))
             }
             .padding(.horizontal, 4)
 
-            if let selectedMapEntry {
-                NavigationLink {
-                    MemoryDetailView(entry: selectedMapEntry)
-                } label: {
-                    MapSelectionCard(entry: selectedMapEntry)
+            if visibleMapEntries.isEmpty {
+                Text("この画面内には記録がありません")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.84))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 18)
+                    .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            } else {
+                TabView(selection: selectedVisibleMapEntryID) {
+                    ForEach(visibleMapEntries) { entry in
+                        NavigationLink {
+                            MemoryDetailView(entry: entry)
+                        } label: {
+                            MapSelectionCard(entry: entry)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                        .strokeBorder(selectedMapEntry?.id == entry.id ? palette.accent : .white.opacity(0.08), lineWidth: selectedMapEntry?.id == entry.id ? 2 : 1)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 4)
+                        .tag(Optional(entry.id))
+                    }
                 }
-                .buttonStyle(.plain)
+                .frame(height: 164)
+                .tabViewStyle(.page(indexDisplayMode: .never))
             }
         }
         .padding(.horizontal, 20)
@@ -496,10 +543,16 @@ struct LibraryView: View {
 
     private func syncMapSelection() {
         updateMapRegion()
-        if let selectedMapEntry, !mapEntries.contains(where: { $0.id == selectedMapEntry.id }) {
-            self.selectedMapEntry = mapEntries.first
+        syncVisibleMapSelection()
+    }
+
+    private func syncVisibleMapSelection() {
+        if visibleMapEntries.isEmpty {
+            selectedMapEntry = nil
+        } else if let selectedMapEntry, !visibleMapEntries.contains(where: { $0.id == selectedMapEntry.id }) {
+            self.selectedMapEntry = visibleMapEntries.first
         } else if selectedMapEntry == nil {
-            selectedMapEntry = mapEntries.first
+            selectedMapEntry = visibleMapEntries.first
         }
     }
 

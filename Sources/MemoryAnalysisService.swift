@@ -31,6 +31,34 @@ enum MemoryAnalysisService {
         )
     }
 
+    static func imageCaption(from data: Data) async -> String? {
+        guard #available(iOS 18.0, *) else { return nil }
+
+        return await Task.detached(priority: .userInitiated) {
+            guard
+                let image = UIImage(data: data),
+                let resizedImage = resizedCaptionImage(from: image),
+                let cgImage = resizedImage.cgImage
+            else {
+                return nil
+            }
+
+            let request = VNGenerateImageCaptionsRequest()
+            let handler = VNImageRequestHandler(cgImage: cgImage)
+
+            do {
+                try handler.perform([request])
+                let caption = (request.results as? [VNCaptionObservation])?
+                    .sorted { $0.confidence > $1.confidence }
+                    .first?
+                    .caption
+                return normalizedCaption(caption)
+            } catch {
+                return nil
+            }
+        }.value
+    }
+
     private static func imageTags(from data: Data) async -> [String] {
         await Task.detached(priority: .userInitiated) {
             guard
@@ -158,5 +186,28 @@ enum MemoryAnalysisService {
             return .urban
         }
         return .reflective
+    }
+
+    private static func normalizedCaption(_ caption: String?) -> String? {
+        guard let caption else { return nil }
+        let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func resizedCaptionImage(from image: UIImage) -> UIImage? {
+        let maxDimension: CGFloat = 1_536
+        let longestEdge = max(image.size.width, image.size.height)
+        guard longestEdge > 0 else { return nil }
+
+        if longestEdge <= maxDimension {
+            return image
+        }
+
+        let scale = maxDimension / longestEdge
+        let targetSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
     }
 }
