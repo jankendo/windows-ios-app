@@ -9,6 +9,8 @@ on:
 env:
   APP_NAME: MyFirstApp
   PROJECT_PATH: Config/MyFirstApp.xcodeproj
+  IPA_NAME: Resonance
+  IPA_ARTIFACT_NAME: resonance-ipa
 
 jobs:
   validate:
@@ -190,7 +192,7 @@ jobs:
           set -euo pipefail
 
           EXPORT_PATH="${EXPORT_PATH:-$RUNNER_TEMP/output}"
-          IPA_PATH="$EXPORT_PATH/$APP_NAME.ipa"
+          IPA_PATH="$EXPORT_PATH/$IPA_NAME.ipa"
           DERIVED_DATA_PATH="$RUNNER_TEMP/DerivedDataUnsigned"
 
           build_unsigned_ipa() {
@@ -275,7 +277,7 @@ jobs:
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ios-app-ipa
+          name: ${{ env.IPA_ARTIFACT_NAME }}
           path: ${{ runner.temp }}/output/*.ipa
           retention-days: 7
 
