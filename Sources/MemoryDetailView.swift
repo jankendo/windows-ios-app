@@ -380,7 +380,6 @@ private struct SavedMemoryImmersivePreviewView: View {
     @StateObject private var player = AudioPlayerController()
     @State private var controlsVisible = true
     @State private var dragOffset: CGSize = .zero
-    @State private var drifting = false
 
     var body: some View {
         ZStack {
@@ -390,7 +389,7 @@ private struct SavedMemoryImmersivePreviewView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .scaleEffect(drifting ? 1.08 : 1.02)
+                    .scaleEffect(1.06)
                     .offset(
                         x: dragOffset.width * 0.22 + environmentService.previewHorizontalShift,
                         y: dragOffset.height * 0.12 + environmentService.previewVerticalShift
@@ -398,9 +397,6 @@ private struct SavedMemoryImmersivePreviewView: View {
                     .rotation3DEffect(.degrees(Double(-environmentService.previewHorizontalShift) * 0.18), axis: (x: 0, y: 1, z: 0))
                     .rotation3DEffect(.degrees(Double(environmentService.previewVerticalShift) * 0.12), axis: (x: 1, y: 0, z: 0))
                     .ignoresSafeArea()
-                    .animation(.easeInOut(duration: 14).repeatForever(autoreverses: true), value: drifting)
-                    .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.9), value: environmentService.previewHorizontalShift)
-                    .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.9), value: environmentService.previewVerticalShift)
             }
 
             LinearGradient(
@@ -497,7 +493,6 @@ private struct SavedMemoryImmersivePreviewView: View {
                 }
         )
         .onAppear {
-            drifting = true
             if let audioURL = entry.audioURL {
                 player.load(url: audioURL, autoPlay: true, loop: true, volume: 0.78)
             }

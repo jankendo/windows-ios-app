@@ -12,13 +12,19 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     @Published private(set) var isLocationReady = false
     @Published private(set) var isMotionReady = false
     @Published private(set) var isPressureReady = false
-    @Published private(set) var previewHorizontalShift: CGFloat = 0
-    @Published private(set) var previewVerticalShift: CGFloat = 0
+    @Published private(set) var previewParallax: CGSize = .zero
 
     private let manager = CLLocationManager()
     private let geocoder = CLGeocoder()
     private let motionManager = CMMotionManager()
     private let altimeter = CMAltimeter()
+    private let motionQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "CaptureLocationService.motion"
+        queue.qualityOfService = .userInteractive
+        queue.maxConcurrentOperationCount = 1
+        return queue
+    }()
     private let preferredHorizontalAccuracy: CLLocationAccuracy = 6
     private let cachedLocationFreshnessLimit: TimeInterval = 8
     private let preciseLocationRetryInterval: TimeInterval = 30
@@ -121,6 +127,14 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         return latestLocation ?? manager.location
     }
 
+    var previewHorizontalShift: CGFloat {
+        previewParallax.width
+    }
+
+    var previewVerticalShift: CGFloat {
+        previewParallax.height
+    }
+
     private func startLocationPipeline() {
         guard !isLocationPipelineActive else { return }
         isLocationPipelineActive = true
@@ -144,19 +158,30 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
 
     private func startSpatialSensors() {
         if motionManager.isDeviceMotionAvailable, !motionManager.isDeviceMotionActive {
-            motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
-            motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
+            motionManager.deviceMotionUpdateInterval = 1.0 / 120.0
+            motionManager.startDeviceMotionUpdates(to: motionQueue) { [weak self] motion, _ in
                 guard let self, let motion else { return }
-                self.latestPitchDegrees = motion.attitude.pitch * 180 / .pi
-                self.latestRollDegrees = motion.attitude.roll * 180 / .pi
-                self.latestYawDegrees = motion.attitude.yaw * 180 / .pi
                 let roll = max(-1.0, min(1.0, motion.attitude.roll / 0.45))
                 let pitch = max(-1.0, min(1.0, motion.attitude.pitch / 0.45))
                 let targetHorizontalShift = CGFloat(roll * 18)
                 let targetVerticalShift = CGFloat(pitch * 14)
-                self.previewHorizontalShift = (self.previewHorizontalShift * 0.82) + (targetHorizontalShift * 0.18)
-                self.previewVerticalShift = (self.previewVerticalShift * 0.82) + (targetVerticalShift * 0.18)
-                self.isMotionReady = true
+                let pitchDegrees = motion.attitude.pitch * 180 / .pi
+                let rollDegrees = motion.attitude.roll * 180 / .pi
+                let yawDegrees = motion.attitude.yaw * 180 / .pi
+
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let currentParallax = self.previewParallax
+                    let smoothedHorizontalShift = currentParallax.width + ((targetHorizontalShift - currentParallax.width) * 0.5)
+                    let smoothedVerticalShift = currentParallax.height + ((targetVerticalShift - currentParallax.height) * 0.5)
+                    self.previewParallax = CGSize(width: smoothedHorizontalShift, height: smoothedVerticalShift)
+                    self.latestPitchDegrees = pitchDegrees
+                    self.latestRollDegrees = rollDegrees
+                    self.latestYawDegrees = yawDegrees
+                    if !self.isMotionReady {
+                        self.isMotionReady = true
+                    }
+                }
             }
         }
 
@@ -180,8 +205,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         UIDevice.current.endGeneratingDeviceOrientationNotifications()
         isMotionReady = false
         isPressureReady = false
-        previewHorizontalShift = 0
-        previewVerticalShift = 0
+        previewParallax = .zero
     }
 
     private func refreshLocation() async {
