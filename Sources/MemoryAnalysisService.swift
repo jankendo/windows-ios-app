@@ -282,6 +282,50 @@ enum MemoryAnalysisService {
         return nil
     }
 
+    private static func localizedVisualHints(from tags: [String]) -> [String] {
+        let mappings: [(String, String)] = [
+            ("sky", "空"),
+            ("cloud", "雲"),
+            ("sun", "光"),
+            ("water", "水辺"),
+            ("beach", "海辺"),
+            ("ocean", "海"),
+            ("sea", "海"),
+            ("mountain", "山並み"),
+            ("tree", "樹木"),
+            ("forest", "森"),
+            ("park", "公園"),
+            ("garden", "庭"),
+            ("street", "通り"),
+            ("city", "街"),
+            ("building", "建物"),
+            ("coffee", "コーヒー"),
+            ("cup", "カップ"),
+            ("food", "食べもの"),
+            ("person", "人物"),
+            ("portrait", "表情"),
+            ("child", "子ども"),
+            ("dog", "犬"),
+            ("cat", "猫"),
+            ("bird", "鳥"),
+            ("flower", "花"),
+            ("plant", "植物")
+        ]
+
+        var hints: [String] = []
+        for tag in tags {
+            if let localized = mappings.first(where: { tag.contains($0.0) })?.1, !hints.contains(localized) {
+                hints.append(localized)
+            }
+        }
+
+        if hints.isEmpty {
+            hints = tags.prefix(4).map { $0.replacingOccurrences(of: "_", with: " ") }
+        }
+
+        return Array(hints.prefix(4))
+    }
+
     private static func poeticScene(from tags: [String]) -> String {
         let scenes: [([String], String)] = [
             (["sunset", "sunrise", "evening", "dusk"], "空の色がほどけながら、光の余韻がゆっくりひろがっている"),
@@ -345,22 +389,27 @@ enum MemoryAnalysisService {
         let languageModel = SystemLanguageModel.default
         guard languageModel.isAvailable else { return nil }
 
+        let localizedHints = localizedVisualHints(from: tags.map { $0.lowercased() })
         let instructions = """
         You write one short poetic Japanese caption for a photo memory app.
-        Use the user's title as the emotional anchor.
+        You must combine both the user's title and the actual photo analysis.
         Keep the output to exactly two Japanese sentences.
         Do not use bullet points, quotes, emoji, or headings.
         Avoid generic filler and avoid repeating the same sentence across different photos.
+        Do not write from the title alone. The photo-derived hints must appear in the meaning of the caption.
+        Stay grounded in the provided visual hints and atmosphere.
         """
 
-        let visualHints = tags.prefix(6).joined(separator: ", ")
+        let visualHints = localizedHints.joined(separator: "、")
         let placePrompt = placeLabel?.isEmpty == false ? "場所ヒント: \(placeLabel!)." : ""
         let prompt = """
         タイトル: \(title)
-        視覚ヒント: \(visualHints.isEmpty ? "なし" : visualHints)
-        参考文: \(baseCaption)
+        写真から読み取れた要素: \(visualHints.isEmpty ? "明確な要素なし" : visualHints)
+        写真の情景要約: \(baseCaption)
         \(placePrompt)
-        写真の空気感を保ちながら、タイトルに寄り添った日本語の文章を生成してください。
+        1文目ではタイトルと写真の被写体・情景を結びつけてください。
+        2文目では写真から感じられる空気感や余韻を書いてください。
+        写真解析にない要素を勝手に足さず、タイトルだけを言い換える文章にもせず、日本語で静かに美しく生成してください。
         """
 
         do {

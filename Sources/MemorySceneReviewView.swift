@@ -538,52 +538,10 @@ private struct ImmersiveMemoryPlaybackView: View {
         }
         .safeAreaInset(edge: .bottom) {
             if controlsVisible {
-                VStack(alignment: .leading, spacing: 16) {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .top, spacing: 16) {
-                            immersiveTexts
-                            immersivePlayButton
-                        }
-
-                        VStack(alignment: .leading, spacing: 16) {
-                            immersiveTexts
-                            HStack {
-                                Spacer()
-                                immersivePlayButton
-                            }
-                        }
-                    }
-
-                    AudioWaveformView(
-                        samples: waveformSamples,
-                        progress: player.duration > 0 ? player.currentTime / player.duration : 0,
-                        activeColor: .white,
-                        inactiveColor: Color.white.opacity(0.14),
-                        minimumBarHeight: 10
-                    )
-                    .frame(height: 38)
-                    .accessibilityHidden(true)
-
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(player.currentTime.resonanceClockText)
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.74))
-
-                        Spacer(minLength: 12)
-
-                        Text("そっと動かすと、気配が静かに揺れます")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.68))
-                            .multilineTextAlignment(.trailing)
-                    }
+                ViewThatFits(in: .vertical) {
+                    immersivePanel(compact: false)
+                    immersivePanel(compact: true)
                 }
-                .padding(18)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 30, style: .continuous)
-                        .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
-                }
-                .shadow(color: palette.shadow.opacity(colorScheme == .dark ? 0.55 : 0.18), radius: 28, y: 16)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 10)
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
@@ -639,25 +597,78 @@ private struct ImmersiveMemoryPlaybackView: View {
         }
     }
 
-    private var immersiveTexts: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func immersiveTexts(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 6 : 8) {
             Text(immersiveTitle)
-                .font(.title3.weight(.semibold))
+                .font(compact ? .headline.weight(.semibold) : .title3.weight(.semibold))
                 .foregroundStyle(.white)
-                .lineLimit(2)
+                .lineLimit(compact ? 1 : 2)
+                .minimumScaleFactor(0.9)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(immersiveCaption)
-                .font(.subheadline)
+                .font(compact ? .caption : .subheadline)
                 .foregroundStyle(.white.opacity(0.86))
-                .lineLimit(3)
+                .lineLimit(compact ? 2 : 3)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(atmosphere.restorativeLine)
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.68))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+            if !compact {
+                Text(atmosphere.restorativeLine)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.68))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    private func immersivePanel(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 12 : 16) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 14) {
+                    immersiveTexts(compact: compact)
+                    immersivePlayButton
+                }
+
+                VStack(alignment: .leading, spacing: compact ? 12 : 16) {
+                    immersiveTexts(compact: compact)
+                    HStack {
+                        Spacer()
+                        immersivePlayButton
+                    }
+                }
+            }
+
+            AudioWaveformView(
+                samples: waveformSamples,
+                progress: player.duration > 0 ? player.currentTime / player.duration : 0,
+                activeColor: .white,
+                inactiveColor: Color.white.opacity(0.14),
+                minimumBarHeight: compact ? 8 : 10
+            )
+            .frame(height: compact ? 30 : 38)
+            .accessibilityHidden(true)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(player.currentTime.resonanceClockText)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.74))
+
+                Spacer(minLength: 12)
+
+                Text(compact ? "そっと揺れます" : "そっと動かすと、気配が静かに揺れます")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(compact ? 1 : 2)
+            }
+        }
+        .padding(compact ? 15 : 18)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
+        }
+        .shadow(color: palette.shadow.opacity(colorScheme == .dark ? 0.55 : 0.18), radius: 28, y: 16)
     }
 }

@@ -496,53 +496,10 @@ private struct SavedMemoryImmersivePreviewView: View {
         }
         .safeAreaInset(edge: .bottom) {
             if controlsVisible {
-                VStack(alignment: .leading, spacing: 16) {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .top, spacing: 16) {
-                            previewTexts
-                            previewPlayButton
-                        }
-
-                        VStack(alignment: .leading, spacing: 16) {
-                            previewTexts
-
-                            HStack {
-                                Spacer()
-                                previewPlayButton
-                            }
-                        }
-                    }
-
-                    AudioWaveformView(
-                        samples: entry.waveformFingerprint,
-                        progress: player.duration > 0 ? player.currentTime / player.duration : 0,
-                        activeColor: .white,
-                        inactiveColor: Color.white.opacity(0.14),
-                        minimumBarHeight: 10
-                    )
-                    .frame(height: 38)
-                    .accessibilityHidden(true)
-
-                    HStack {
-                        Text(player.currentTime.resonanceClockText)
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.74))
-
-                        Spacer(minLength: 12)
-
-                        Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.white.opacity(0.68))
-                            .multilineTextAlignment(.trailing)
-                    }
+                ViewThatFits(in: .vertical) {
+                    previewPanel(compact: false)
+                    previewPanel(compact: true)
                 }
-                .padding(18)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 30, style: .continuous)
-                        .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
-                }
-                .shadow(color: palette.shadow.opacity(colorScheme == .dark ? 0.55 : 0.18), radius: 28, y: 16)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 10)
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
@@ -598,26 +555,80 @@ private struct SavedMemoryImmersivePreviewView: View {
         }
     }
 
-    private var previewTexts: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func previewTexts(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 6 : 8) {
             Text(entry.displayTitle)
-                .font(.title3.weight(.semibold))
+                .font(compact ? .headline.weight(.semibold) : .title3.weight(.semibold))
                 .foregroundStyle(.white)
-                .lineLimit(2)
+                .lineLimit(compact ? 1 : 2)
+                .minimumScaleFactor(0.9)
                 .fixedSize(horizontal: false, vertical: true)
 
             Text(entry.descriptiveCaption)
-                .font(.subheadline)
+                .font(compact ? .caption : .subheadline)
                 .foregroundStyle(.white.opacity(0.86))
-                .lineLimit(3)
+                .lineLimit(compact ? 2 : 3)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(entry.atmosphereStyle.restorativeLine)
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.68))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+            if !compact {
+                Text(entry.atmosphereStyle.restorativeLine)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.68))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    private func previewPanel(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 12 : 16) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 14) {
+                    previewTexts(compact: compact)
+                    previewPlayButton
+                }
+
+                VStack(alignment: .leading, spacing: compact ? 12 : 16) {
+                    previewTexts(compact: compact)
+
+                    HStack {
+                        Spacer()
+                        previewPlayButton
+                    }
+                }
+            }
+
+            AudioWaveformView(
+                samples: entry.waveformFingerprint,
+                progress: player.duration > 0 ? player.currentTime / player.duration : 0,
+                activeColor: .white,
+                inactiveColor: Color.white.opacity(0.14),
+                minimumBarHeight: compact ? 8 : 10
+            )
+            .frame(height: compact ? 30 : 38)
+            .accessibilityHidden(true)
+
+            HStack {
+                Text(player.currentTime.resonanceClockText)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.74))
+
+                Spacer(minLength: 12)
+
+                Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.68))
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(1)
+            }
+        }
+        .padding(compact ? 15 : 18)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
+        }
+        .shadow(color: palette.shadow.opacity(colorScheme == .dark ? 0.55 : 0.18), radius: 28, y: 16)
     }
 }
 
