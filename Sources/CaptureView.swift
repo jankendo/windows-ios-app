@@ -42,7 +42,10 @@ final class CaptureFlowModel: ObservableObject {
                     async let resolvedLocation = self.locationService.currentLocation()
                     draft.placeLabel = await placeLabel
                     draft.sensorSnapshot = await sensorSnapshot
-                    if let location = await resolvedLocation {
+                    let weatherLocation =
+                        await resolvedLocation
+                        ?? draft.sensorSnapshot?.coordinate.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
+                    if let location = weatherLocation {
                         draft.weatherSnapshot = await self.weatherService.currentWeatherSnapshot(for: location)
                     }
                     self.capturedDraft = draft
@@ -279,7 +282,7 @@ struct CaptureView: View {
                     .foregroundStyle(.white.opacity(0.84))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .background(.black.opacity(0.22), in: Capsule())
+                    .background(.black.opacity(0.44), in: Capsule())
 
                 Spacer()
 
@@ -288,7 +291,7 @@ struct CaptureView: View {
                     .foregroundStyle(.white.opacity(0.84))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .background(.black.opacity(0.22), in: Capsule())
+                    .background(.black.opacity(0.44), in: Capsule())
             }
         }
         .padding(.horizontal, 18)
@@ -372,10 +375,10 @@ struct CaptureView: View {
                     }
                 }
                 .padding(16)
-                .background(.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .background(.black.opacity(0.56), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .strokeBorder(.white.opacity(0.14))
+                        .strokeBorder(.white.opacity(0.18))
                 }
             } else {
                 HStack(spacing: 10) {
@@ -389,10 +392,10 @@ struct CaptureView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                .background(.black.opacity(0.28), in: Capsule())
+                .background(.black.opacity(0.5), in: Capsule())
                 .overlay {
                     Capsule()
-                        .strokeBorder(.white.opacity(0.14))
+                        .strokeBorder(.white.opacity(0.18))
                 }
             }
         }
@@ -463,10 +466,10 @@ struct CaptureView: View {
             }
             .frame(width: 72)
             .padding(.vertical, 10)
-            .background(.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(.white.opacity(0.14))
+                    .strokeBorder(.white.opacity(0.18))
             }
         }
         .buttonStyle(.plain)
@@ -580,10 +583,10 @@ struct CaptureView: View {
             }
         }
         .padding(28)
-        .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 32, style: .continuous))
+        .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 32, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .strokeBorder(.white.opacity(0.12))
+                .strokeBorder(.white.opacity(0.18))
         }
         .padding(24)
     }
@@ -641,7 +644,7 @@ struct CaptureView: View {
             Spacer()
         }
         .padding(24)
-        .presentationBackground(.ultraThinMaterial)
+        .presentationBackground(.regularMaterial)
     }
 }
 

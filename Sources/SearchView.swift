@@ -74,7 +74,6 @@ struct SearchView: View {
 
             ScrollView {
                 VStack(spacing: 18) {
-                    searchHeader
                     suggestionSection
                     moodFilterSection
 
@@ -122,19 +121,6 @@ struct SearchView: View {
         .searchSuggestions {
             ForEach(suggestedTerms) { suggestion in
                 Text(suggestion.term).searchCompletion(suggestion.term)
-            }
-        }
-    }
-
-    private var searchHeader: some View {
-        ResonanceCard {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("記録を探す")
-                    .font(.headline)
-                    .foregroundStyle(palette.primaryText)
-                Text("タイトル、メモ、文字起こし、自動タグ、ムードから横断して探せます。")
-                    .font(.subheadline)
-                    .foregroundStyle(palette.secondaryText)
             }
         }
     }

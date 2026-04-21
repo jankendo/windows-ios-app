@@ -23,6 +23,7 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 1.0
         CODE_SIGN_STYLE: Manual
+        CODE_SIGN_ENTITLEMENTS: ../Sources/Resonance.entitlements
         DEVELOPMENT_TEAM: 2M6M6BW775
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO

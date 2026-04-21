@@ -25,36 +25,36 @@ struct ResonancePalette {
         case .dark:
             return ResonancePalette(
                 backgroundGradient: style.darkBackgroundGradient,
-                surfacePrimary: Color.white.opacity(0.09),
-                surfaceSecondary: Color.white.opacity(0.06),
-                elevatedSurface: Color.white.opacity(0.14),
-                stroke: Color.white.opacity(0.11),
-                primaryText: Color.white.opacity(0.96),
-                secondaryText: Color.white.opacity(0.72),
-                tertiaryText: Color.white.opacity(0.56),
+                surfacePrimary: Color(uiColor: .secondarySystemBackground),
+                surfaceSecondary: Color(uiColor: .tertiarySystemBackground),
+                elevatedSurface: Color(uiColor: .systemBackground),
+                stroke: Color(uiColor: .separator).opacity(0.42),
+                primaryText: Color(uiColor: .label),
+                secondaryText: Color(uiColor: .secondaryLabel),
+                tertiaryText: Color(uiColor: .tertiaryLabel),
                 accent: accent,
-                accentSoft: accent.opacity(0.24),
+                accentSoft: accent.opacity(0.2),
                 shadow: Color.black.opacity(0.38),
-                inputFill: Color.black.opacity(0.28),
-                heroScrimTop: Color.black.opacity(0.1),
-                heroScrimBottom: Color.black.opacity(0.78)
+                inputFill: Color(uiColor: .tertiarySystemBackground),
+                heroScrimTop: Color.black.opacity(0.18),
+                heroScrimBottom: Color.black.opacity(0.82)
             )
         default:
             return ResonancePalette(
                 backgroundGradient: style.lightBackgroundGradient,
-                surfacePrimary: Color.white.opacity(0.78),
-                surfaceSecondary: Color.white.opacity(0.56),
-                elevatedSurface: Color.white.opacity(0.9),
-                stroke: Color.white.opacity(0.46),
-                primaryText: Color.black.opacity(0.88),
-                secondaryText: Color.black.opacity(0.62),
-                tertiaryText: Color.black.opacity(0.46),
+                surfacePrimary: Color(uiColor: .systemBackground),
+                surfaceSecondary: Color(uiColor: .secondarySystemBackground),
+                elevatedSurface: Color(uiColor: .systemBackground),
+                stroke: Color(uiColor: .separator).opacity(0.32),
+                primaryText: Color(uiColor: .label),
+                secondaryText: Color(uiColor: .secondaryLabel),
+                tertiaryText: Color(uiColor: .tertiaryLabel),
                 accent: accent,
-                accentSoft: accent.opacity(0.14),
+                accentSoft: accent.opacity(0.12),
                 shadow: Color.black.opacity(0.1),
-                inputFill: Color.white.opacity(0.74),
-                heroScrimTop: Color.black.opacity(0.06),
-                heroScrimBottom: Color.black.opacity(0.5)
+                inputFill: Color(uiColor: .secondarySystemBackground),
+                heroScrimTop: Color.black.opacity(0.08),
+                heroScrimBottom: Color.black.opacity(0.56)
             )
         }
     }

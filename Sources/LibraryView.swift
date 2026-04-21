@@ -405,10 +405,10 @@ struct LibraryView: View {
                 filterBar
             }
             .padding(14)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .strokeBorder(.white.opacity(0.14))
+                    .strokeBorder(palette.stroke)
             }
         }
         .padding(.horizontal, 20)

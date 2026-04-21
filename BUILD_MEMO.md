@@ -86,6 +86,12 @@ pwsh -File .\scripts\publish-github-secrets.ps1 `
 - モーション / フィットネス（端末姿勢・気圧由来の空間情報）
 - 取得可能なら WeatherKit による天気 / 気温（未設定や利用不可時は自動でスキップ）
 
+## WeatherKit メモ
+
+- 現在の project は **WeatherKit entitlement** を含む構成
+- Apple Developer 側で WeatherKit capability が利用可能な状態であることが前提
+- entitlement や利用条件が満たされない場合、天気 / 気温は **表示されずに自動スキップ** される
+
 ## 補足
 
 - 内部 project / target / scheme 名は CI 安定性のため **`MyFirstApp`** を維持

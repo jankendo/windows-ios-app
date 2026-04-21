@@ -25,6 +25,9 @@ actor AmbientWeatherCaptureService {
                 symbolName: current.symbolName
             )
         } catch {
+#if DEBUG
+            print("WeatherKit fetch failed: \(error.localizedDescription)")
+#endif
             return nil
         }
 #else

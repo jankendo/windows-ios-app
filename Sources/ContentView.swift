@@ -17,7 +17,7 @@ struct ContentView: View {
                 LibraryView()
             }
             .tabItem {
-                Label("ライブラリ", systemImage: "square.stack.3d.down.right")
+                Label("ライブラリ", systemImage: "photo.stack")
             }
             .tag(ResonanceTab.library)
 
@@ -25,13 +25,11 @@ struct ContentView: View {
                 SearchView()
             }
             .tabItem {
-                Label("検索", systemImage: "waveform.and.magnifyingglass")
+                Label("検索", systemImage: "magnifyingglass")
             }
             .tag(ResonanceTab.search)
         }
         .tint(.indigo)
-        .toolbarBackground(.visible, for: .tabBar)
-        .toolbarBackground(.ultraThinMaterial, for: .tabBar)
     }
 }
 
