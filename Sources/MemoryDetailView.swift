@@ -69,7 +69,7 @@ struct MemoryDetailView: View {
                         }
                     }
 
-                    if let sensorSnapshot = entry.sensorSnapshot {
+                    if entry.sensorSnapshot != nil || entry.minimumDecibels != nil || entry.maximumDecibels != nil || entry.weatherSnapshot != nil {
                         ResonanceCard(atmosphere: entry.atmosphereStyle) {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("空間センサー")
@@ -81,19 +81,27 @@ struct MemoryDetailView: View {
                                     SensorDetailRow(title: "天気", value: weatherSummary)
                                 }
 
-                                if let latitude = sensorSnapshot.latitude, let longitude = sensorSnapshot.longitude {
-                                    SensorDetailRow(title: "座標", value: String(format: "%.5f, %.5f", latitude, longitude))
+                                if let sensorSnapshot = entry.sensorSnapshot,
+                                   let latitude = sensorSnapshot.latitude,
+                                   let longitude = sensorSnapshot.longitude {
+                                    SensorDetailRow(title: "座標", value: String(format: "%.6f, %.6f", latitude, longitude))
                                 }
-                                if let altitude = sensorSnapshot.altitude {
+                                if let horizontalAccuracy = entry.sensorSnapshot?.horizontalAccuracy {
+                                    SensorDetailRow(title: "水平精度", value: String(format: "±%.1f m", horizontalAccuracy))
+                                }
+                                if let altitude = entry.sensorSnapshot?.altitude {
                                     SensorDetailRow(title: "標高", value: String(format: "%.0f m", altitude))
                                 }
-                                if let pressure = sensorSnapshot.pressureKilopascals {
+                                if let pressure = entry.sensorSnapshot?.pressureKilopascals {
                                     SensorDetailRow(title: "気圧", value: String(format: "%.1f kPa", pressure))
                                 }
-                                if let heading = sensorSnapshot.heading {
+                                if let minimumDecibels = entry.minimumDecibels, let maximumDecibels = entry.maximumDecibels {
+                                    SensorDetailRow(title: "音量", value: String(format: "最小 %.1f dB / 最大 %.1f dB", minimumDecibels, maximumDecibels))
+                                }
+                                if let heading = entry.sensorSnapshot?.heading {
                                     SensorDetailRow(title: "方角", value: String(format: "%.0f°", heading))
                                 }
-                                if let orientation = sensorSnapshot.deviceOrientationLabel {
+                                if let orientation = entry.sensorSnapshot?.deviceOrientationLabel {
                                     SensorDetailRow(title: "端末向き", value: orientation)
                                 }
                             }

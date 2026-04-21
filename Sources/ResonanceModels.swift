@@ -73,6 +73,8 @@ struct MemoryAtmosphereMetadata: Codable {
     var captureDuration: Double?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
     var weatherSnapshot: MemoryWeatherSnapshot?
+    var minimumDecibels: Double?
+    var maximumDecibels: Double?
 
     init(
         placeLabel: String?,
@@ -80,7 +82,9 @@ struct MemoryAtmosphereMetadata: Codable {
         atmosphereStyle: AtmosphereStyle,
         captureDuration: Double? = nil,
         sensorSnapshot: CaptureEnvironmentSnapshot? = nil,
-        weatherSnapshot: MemoryWeatherSnapshot? = nil
+        weatherSnapshot: MemoryWeatherSnapshot? = nil,
+        minimumDecibels: Double? = nil,
+        maximumDecibels: Double? = nil
     ) {
         self.placeLabel = placeLabel
         self.waveformFingerprint = waveformFingerprint
@@ -88,6 +92,8 @@ struct MemoryAtmosphereMetadata: Codable {
         self.captureDuration = captureDuration
         self.sensorSnapshot = sensorSnapshot
         self.weatherSnapshot = weatherSnapshot
+        self.minimumDecibels = minimumDecibels
+        self.maximumDecibels = maximumDecibels
     }
 
     var atmosphereStyle: AtmosphereStyle {
@@ -290,6 +296,14 @@ final class MemoryEntry: Identifiable {
 
     var weatherSnapshot: MemoryWeatherSnapshot? {
         atmosphereMetadata?.weatherSnapshot
+    }
+
+    var minimumDecibels: Double? {
+        atmosphereMetadata?.minimumDecibels
+    }
+
+    var maximumDecibels: Double? {
+        atmosphereMetadata?.maximumDecibels
     }
 
     var coordinate: CLLocationCoordinate2D? {

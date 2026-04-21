@@ -16,6 +16,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     private let geocoder = CLGeocoder()
     private let motionManager = CMMotionManager()
     private let altimeter = CMAltimeter()
+    private let preferredHorizontalAccuracy: CLLocationAccuracy = 10
 
     private var latestLocation: CLLocation?
     private var latestPlaceLabel: String?
@@ -32,8 +33,10 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     private override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = 5
+        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        manager.distanceFilter = kCLDistanceFilterNone
+        manager.activityType = .otherNavigation
+        manager.pausesLocationUpdatesAutomatically = false
         authorizationStatus = manager.authorizationStatus
     }
 
@@ -76,7 +79,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     }
 
     func currentEnvironmentSnapshot() async -> CaptureEnvironmentSnapshot? {
-        if authorizationStatus.allowsLocationAccess, latestLocation == nil {
+        if authorizationStatus.allowsLocationAccess, needsHigherPrecisionLocation {
             await refreshLocation()
         }
 
@@ -104,7 +107,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     }
 
     func currentLocation() async -> CLLocation? {
-        if authorizationStatus.allowsLocationAccess, latestLocation == nil {
+        if authorizationStatus.allowsLocationAccess, needsHigherPrecisionLocation {
             await refreshLocation()
         }
         return latestLocation ?? manager.location
@@ -169,7 +172,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         guard authorizationStatus.allowsLocationAccess else { return }
         guard locationContinuation == nil else { return }
 
-        if let currentLocation = manager.location {
+        if let currentLocation = manager.location, currentLocation.horizontalAccuracy > 0, currentLocation.horizontalAccuracy <= preferredHorizontalAccuracy {
             latestLocation = currentLocation
             isLocationReady = true
             return
@@ -179,15 +182,11 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
             locationContinuation = continuation
             locationTimeoutTask?.cancel()
             locationTimeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
                 await MainActor.run {
                     self?.resumeLocationContinuationIfNeeded()
                 }
             }
-            if isLocationPipelineActive {
-                return
-            }
-
             manager.requestLocation()
         }
     }
@@ -231,7 +230,13 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         Task { @MainActor in
-            latestLocation = locations.last
+            let bestLocation = (locations + [latestLocation].compactMap { $0 })
+                .filter { $0.horizontalAccuracy > 0 }
+                .min { lhs, rhs in
+                    lhs.horizontalAccuracy < rhs.horizontalAccuracy
+                }
+                ?? locations.last
+            latestLocation = bestLocation
             isLocationReady = latestLocation != nil
             resumeLocationContinuationIfNeeded()
         }
@@ -247,6 +252,13 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         Task { @MainActor in
             resumeLocationContinuationIfNeeded()
         }
+    }
+}
+
+private extension CaptureLocationService {
+    var needsHigherPrecisionLocation: Bool {
+        guard let latestLocation else { return true }
+        return latestLocation.horizontalAccuracy <= 0 || latestLocation.horizontalAccuracy > preferredHorizontalAccuracy
     }
 }
 

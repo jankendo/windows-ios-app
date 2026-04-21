@@ -90,7 +90,9 @@ final class CaptureFlowModel: ObservableObject {
                     atmosphereStyle: draft.atmosphereStyle,
                     captureDuration: draft.audioDuration,
                     sensorSnapshot: draft.sensorSnapshot,
-                    weatherSnapshot: draft.weatherSnapshot
+                    weatherSnapshot: draft.weatherSnapshot,
+                    minimumDecibels: draft.minimumDecibels,
+                    maximumDecibels: draft.maximumDecibels
                 )
 
                 try MediaStore.saveAtmosphereMetadata(metadata, for: entry.id)
@@ -131,6 +133,7 @@ struct CaptureView: View {
     @AppStorage("captureDurationSeconds") private var captureDurationSeconds = 6.0
     @StateObject private var model = CaptureFlowModel()
     @State private var showingCaptureSettings = false
+    @State private var hasCompletedInitialStartup = false
 
     private var atmosphere: AtmosphereStyle {
         model.capturedDraft?.atmosphereStyle ?? AtmosphereStyle(date: .now)
@@ -150,7 +153,9 @@ struct CaptureView: View {
     }
 
     private var needsStartupOverlay: Bool {
-        model.camera.permissionState != .denied && (model.camera.permissionState == .unknown || !model.camera.isSessionRunning || model.camera.isPreparingSession)
+        !hasCompletedInitialStartup
+            && model.camera.permissionState != .denied
+            && (model.camera.permissionState == .unknown || !model.camera.isSessionRunning || model.camera.isPreparingSession)
     }
 
     var body: some View {
@@ -179,6 +184,16 @@ struct CaptureView: View {
         .animation(.easeInOut(duration: 0.25), value: needsStartupOverlay)
         .onAppear {
             model.prepare()
+        }
+        .onChange(of: model.camera.isSessionRunning) { _, isRunning in
+            if isRunning {
+                hasCompletedInitialStartup = true
+            }
+        }
+        .onChange(of: model.camera.permissionState) { _, state in
+            if state == .denied {
+                hasCompletedInitialStartup = true
+            }
         }
         .onDisappear {
             environmentService.suspend()

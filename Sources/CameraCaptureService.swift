@@ -11,6 +11,8 @@ struct CapturedMemoryDraft: Identifiable {
     var placeLabel: String?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
     var weatherSnapshot: MemoryWeatherSnapshot?
+    var minimumDecibels: Double?
+    var maximumDecibels: Double?
 
     var atmosphereStyle: AtmosphereStyle {
         AtmosphereStyle(date: capturedAt)
@@ -73,6 +75,8 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     private var isConfigured = false
     private var isConfiguring = false
     private var progressTimer: Timer?
+    private var minimumCapturedDecibels: Float?
+    private var maximumCapturedDecibels: Float?
 
     var isReadyToCapture: Bool {
         permissionState == .ready && isSessionRunning && !isCapturing
@@ -132,6 +136,9 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         if photoOutput.isHighResolutionCaptureEnabled {
             settings.isHighResolutionPhotoEnabled = true
         }
+        if photoOutput.isDepthDataDeliveryEnabled {
+            settings.isDepthDataDeliveryEnabled = true
+        }
         photoOutput.capturePhoto(with: settings, delegate: self)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
@@ -141,13 +148,25 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
 
     private func configureSessionIfNeeded() {
         guard !isConfigured else {
-            if !isSessionRunning {
+            if isSessionRunning {
+                isPreparingSession = false
+                statusText = "カメラの準備ができました。"
+            } else {
                 sessionQueue.async { [weak self] in
                     guard let self else { return }
-                    guard !self.session.isRunning else { return }
+                    guard !self.session.isRunning else {
+                        DispatchQueue.main.async {
+                            self.isSessionRunning = true
+                            self.isPreparingSession = false
+                            self.statusText = "カメラの準備ができました。"
+                        }
+                        return
+                    }
                     self.session.startRunning()
                     DispatchQueue.main.async {
                         self.isSessionRunning = true
+                        self.isPreparingSession = false
+                        self.statusText = "カメラの準備ができました。"
                     }
                 }
             }
@@ -166,7 +185,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             session.sessionPreset = .photo
 
             guard
-                let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+                let camera = Self.preferredBackCamera(),
                 let input = try? AVCaptureDeviceInput(device: camera),
                 session.canAddInput(input)
             else {
@@ -194,6 +213,9 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             session.addOutput(photoOutput)
             photoOutput.maxPhotoQualityPrioritization = .quality
             photoOutput.isHighResolutionCaptureEnabled = true
+            if photoOutput.isDepthDataDeliverySupported {
+                photoOutput.isDepthDataDeliveryEnabled = true
+            }
 
             session.commitConfiguration()
             session.startRunning()
@@ -239,13 +261,15 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 44_100,
-            AVNumberOfChannelsKey: 1,
+            AVNumberOfChannelsKey: 2,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
         ]
 
         audioRecorder = try AVAudioRecorder(url: fileURL, settings: settings)
         audioRecorder?.isMeteringEnabled = true
         audioRecorder?.record()
+        minimumCapturedDecibels = nil
+        maximumCapturedDecibels = nil
     }
 
     private func startCaptureProgress(duration: TimeInterval) {
@@ -265,8 +289,10 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
                 self.captureProgress = duration > 0 ? elapsed / duration : 1
                 self.remainingRecordingSeconds = max(Int(ceil(duration - elapsed)), 0)
                 self.audioRecorder?.updateMeters()
-                let averagePower = self.audioRecorder?.averagePower(forChannel: 0) ?? -60
+                let averagePower = self.averageMeterPower()
                 let normalizedLevel = max(0.08, min(1, CGFloat((averagePower + 60) / 60)))
+                self.minimumCapturedDecibels = min(self.minimumCapturedDecibels ?? averagePower, averagePower)
+                self.maximumCapturedDecibels = max(self.maximumCapturedDecibels ?? averagePower, averagePower)
                 self.liveMeterSamples.append(normalizedLevel)
                 if self.liveMeterSamples.count > 24 {
                     self.liveMeterSamples.removeFirst(self.liveMeterSamples.count - 24)
@@ -288,6 +314,18 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
 
     private func resetLiveMeter() {
         liveMeterSamples = Array(repeating: 0.18, count: 24)
+    }
+
+    private func averageMeterPower() -> Float {
+        guard let audioRecorder else { return -60 }
+
+        let configuredChannelCount = (audioRecorder.settings[AVNumberOfChannelsKey] as? NSNumber)?.intValue ?? 1
+        let channelCount = max(Int(configuredChannelCount), 1)
+        let totalPower = (0..<channelCount).reduce(Float(0)) { partialResult, channel in
+            partialResult + audioRecorder.averagePower(forChannel: channel)
+        }
+
+        return totalPower / Float(channelCount)
     }
 
     private func finishAudioCapture() {
@@ -322,7 +360,19 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         isProcessingCapture = false
         statusText = "レビューして保存できます。"
         resetLiveMeter()
-        completion(.success(CapturedMemoryDraft(photoData: photoData, audioTempURL: audioURL, capturedAt: capturedAt, audioDuration: audioDuration, placeLabel: nil)))
+        completion(.success(CapturedMemoryDraft(
+            photoData: photoData,
+            audioTempURL: audioURL,
+            capturedAt: capturedAt,
+            audioDuration: audioDuration,
+            placeLabel: nil,
+            sensorSnapshot: nil,
+            weatherSnapshot: nil,
+            minimumDecibels: minimumCapturedDecibels.map(Double.init),
+            maximumDecibels: maximumCapturedDecibels.map(Double.init)
+        )))
+        minimumCapturedDecibels = nil
+        maximumCapturedDecibels = nil
     }
 
     private func failPendingCapture(_ error: Error) {
@@ -339,6 +389,8 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         if let audioURL {
             try? FileManager.default.removeItem(at: audioURL)
         }
+        minimumCapturedDecibels = nil
+        maximumCapturedDecibels = nil
         statusText = error.localizedDescription
         completion?(.failure(error))
     }
@@ -357,6 +409,15 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         pendingCapture?.photoData = data
         statusText = "写真を撮影しました。環境音を録音中です。"
         completePendingCaptureIfPossible()
+    }
+}
+
+private extension CameraCaptureService {
+    static func preferredBackCamera() -> AVCaptureDevice? {
+        AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back)
+            ?? AVCaptureDevice.default(.builtInDualWideCamera, for: .video, position: .back)
+            ?? AVCaptureDevice.default(.builtInDualCamera, for: .video, position: .back)
+            ?? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
     }
 }
 

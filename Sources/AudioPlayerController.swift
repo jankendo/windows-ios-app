@@ -30,6 +30,10 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
         currentTime = time
     }
 
+    func setPan(_ pan: Float) {
+        player?.pan = max(-1, min(1, pan))
+    }
+
     func stop() {
         player?.stop()
         player = nil
