@@ -270,7 +270,7 @@ final class MemoryEntry: Identifiable {
 
     var notePreview: String {
         let trimmed = notes.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "メモはありません" }
+        guard !trimmed.isEmpty else { return descriptiveCaption }
         return trimmed
     }
 

@@ -165,48 +165,15 @@ enum MemoryAnalysisService {
         return .reflective
     }
 
-    private static func normalizedCaption(_ caption: String?) -> String? {
-        guard let caption else { return nil }
-        let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
     private static func generatedCaption(from tags: [String]) -> String? {
         let normalizedTags = tags.map { $0.lowercased() }
-        guard !normalizedTags.isEmpty else { return nil }
-
-        if containsAny(["sunset", "sunrise", "evening", "dusk"], in: normalizedTags) {
-            return "空の色がゆっくり移ろっていく瞬間。"
-        }
-        if containsAny(["beach", "coast", "ocean", "sea", "shore", "water"], in: normalizedTags) {
-            return "水辺のひらけた空気が静かに広がる風景。"
-        }
-        if containsAny(["mountain", "ridge", "valley", "hill"], in: normalizedTags) {
-            return "地形の奥行きが気配ごと残る眺め。"
-        }
-        if containsAny(["tree", "forest", "woodland", "park", "garden"], in: normalizedTags) {
-            return "緑の重なりとやわらかな空気が感じられる場面。"
-        }
-        if containsAny(["coffee", "espresso", "cup", "cafe"], in: normalizedTags) {
-            return "手元の温度まで思い出せそうな静かな一杯。"
-        }
-        if containsAny(["street", "city", "building", "tower", "car", "road"], in: normalizedTags) {
-            return "街の輪郭と流れがそのまま残る都市のワンシーン。"
-        }
-        if containsAny(["dog", "cat", "bird", "animal"], in: normalizedTags) {
-            return "小さな動きまで目に浮かぶ生きものの気配。"
-        }
-        if containsAny(["person", "portrait", "face", "child", "people"], in: normalizedTags) {
-            return "その場の表情と距離感まで思い出せる一枚。"
-        }
-        if containsAny(["flower", "plant", "leaf"], in: normalizedTags) {
-            return "色と質感がやさしく残る、静かな近景。"
-        }
-        if let primarySubject = localizedPrimarySubject(from: normalizedTags) {
-            return "\(primarySubject)が印象に残るシーン。"
+        guard !normalizedTags.isEmpty else {
+            return "光と空気のあわいが、まだこの写真の中で静かに呼吸している。"
         }
 
-        return nil
+        let scene = poeticScene(from: normalizedTags)
+        let afterglow = poeticAfterglow(from: normalizedTags)
+        return "\(scene)。\(afterglow)。"
     }
 
     private static func containsAny(_ candidates: [String], in tags: [String]) -> Bool {
@@ -252,5 +219,45 @@ enum MemoryAnalysisService {
         }
 
         return nil
+    }
+
+    private static func poeticScene(from tags: [String]) -> String {
+        let scenes: [([String], String)] = [
+            (["sunset", "sunrise", "evening", "dusk"], "空の色がほどけながら、光の余韻がゆっくりひろがっている"),
+            (["night", "moon", "star"], "夜の静けさが深まり、わずかな光だけが輪郭を残している"),
+            (["beach", "coast", "ocean", "sea", "shore", "water"], "水辺のひかりが揺れて、湿度を含んだ空気まで写り込んでいる"),
+            (["mountain", "ridge", "valley", "hill"], "地形の重なりが遠くまで続き、空気の奥行きまで感じられる"),
+            (["tree", "forest", "woodland", "park", "garden"], "緑の層を抜けるやわらかな空気が、静かな深さをつくっている"),
+            (["coffee", "espresso", "cup", "cafe", "food"], "手元の小さな温度が、その場の時間までやさしく包んでいる"),
+            (["street", "city", "building", "tower", "car", "road"], "街の輪郭のあいだを、光と気配の流れがゆっくり通り過ぎていく"),
+            (["dog", "cat", "bird", "animal"], "生きものの気配がふっと走り、その場の空気にやわらかな動きを残している"),
+            (["person", "portrait", "face", "child", "people"], "人の表情と距離感が、そのまま空気の温度として立ち上がっている"),
+            (["flower", "plant", "leaf"], "色と質感の繊細な重なりが、静かな呼吸のようにひらいている")
+        ]
+
+        if let scene = scenes.first(where: { containsAny($0.0, in: tags) })?.1 {
+            return scene
+        }
+        if let primarySubject = localizedPrimarySubject(from: tags) {
+            return "\(primarySubject)の輪郭に、その場の空気が静かににじんでいる"
+        }
+        return "目の前の景色に触れた空気が、やわらかな層になって残っている"
+    }
+
+    private static func poeticAfterglow(from tags: [String]) -> String {
+        let afterglows: [([String], String)] = [
+            (["sunset", "sunrise", "sky", "cloud", "sun"], "見上げたときの明るさまで思い出せる"),
+            (["beach", "coast", "ocean", "sea", "shore", "water"], "波の気配が耳の奥でまだ続いている"),
+            (["street", "city", "building", "tower", "car", "road"], "足音や遠いざわめきが、写真の外側にまで残っていく"),
+            (["tree", "forest", "woodland", "park", "garden", "flower", "plant", "leaf"], "風の通り道まで静かに想像できる"),
+            (["coffee", "espresso", "cup", "cafe", "food"], "その場にあった温度と間合いまでやさしく戻ってくる"),
+            (["person", "portrait", "face", "child", "people"], "言葉になる前の気持ちまでそっと浮かび上がる"),
+            (["dog", "cat", "bird", "animal"], "小さな動きが今もすぐそばにいるように感じられる")
+        ]
+
+        if let afterglow = afterglows.first(where: { containsAny($0.0, in: tags) })?.1 {
+            return afterglow
+        }
+        return "この瞬間の空気だけが、少し遅れて心に届く"
     }
 }

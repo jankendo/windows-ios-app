@@ -60,6 +60,15 @@ private enum MemoryDateFilter: String, CaseIterable, Identifiable {
     }
 }
 
+private struct MapPinGroup: Identifiable {
+    let id: String
+    let coordinate: CLLocationCoordinate2D
+    let entries: [MemoryEntry]
+
+    var count: Int { entries.count }
+    var representativeEntry: MemoryEntry? { entries.first }
+}
+
 struct LibraryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
@@ -77,6 +86,7 @@ struct LibraryView: View {
         center: CLLocationCoordinate2D(latitude: 35.681236, longitude: 139.767125),
         span: MKCoordinateSpan(latitudeDelta: 0.2, longitudeDelta: 0.2)
     )
+    @State private var captionRefreshToken = 0
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme)
@@ -123,6 +133,46 @@ struct LibraryView: View {
         }
     }
 
+    private var mapPinGroups: [MapPinGroup] {
+        guard !mapEntries.isEmpty else { return [] }
+
+        let latitudeBucket = max(mapRegion.span.latitudeDelta / 10, 0.003)
+        let longitudeBucket = max(mapRegion.span.longitudeDelta / 10, 0.003)
+        var grouped: [String: [MemoryEntry]] = [:]
+
+        for entry in mapEntries {
+            guard let coordinate = entry.coordinate else { continue }
+            let latitudeIndex = Int(floor(coordinate.latitude / latitudeBucket))
+            let longitudeIndex = Int(floor(coordinate.longitude / longitudeBucket))
+            let key = "\(latitudeIndex):\(longitudeIndex)"
+            grouped[key, default: []].append(entry)
+        }
+
+        return grouped.map { key, entries in
+            let sortedEntries = entries.sorted { $0.createdAt > $1.createdAt }
+            let coordinates = sortedEntries.compactMap(\.coordinate)
+            let representativeCoordinate = coordinates.first ?? mapRegion.center
+            let latitude = coordinates.isEmpty
+                ? representativeCoordinate.latitude
+                : coordinates.map(\.latitude).reduce(0, +) / Double(coordinates.count)
+            let longitude = coordinates.isEmpty
+                ? representativeCoordinate.longitude
+                : coordinates.map(\.longitude).reduce(0, +) / Double(coordinates.count)
+
+            return MapPinGroup(
+                id: key,
+                coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
+                entries: sortedEntries
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.count == rhs.count {
+                return (lhs.representativeEntry?.createdAt ?? .distantPast) > (rhs.representativeEntry?.createdAt ?? .distantPast)
+            }
+            return lhs.count > rhs.count
+        }
+    }
+
     private var selectedVisibleMapEntryID: Binding<UUID?> {
         Binding(
             get: { selectedMapEntry?.id },
@@ -151,6 +201,7 @@ struct LibraryView: View {
     }
 
     var body: some View {
+        let _ = captionRefreshToken
         ZStack {
             ResonanceGradientBackground()
 
@@ -172,15 +223,15 @@ struct LibraryView: View {
             .presentationDetents([.medium])
         }
         .onAppear {
-            syncMapSelection()
+            refreshLibraryState()
         }
-        .onChange(of: entries.count) { _, _ in syncMapSelection() }
-        .onChange(of: selectedDateFilter) { _, _ in syncMapSelection() }
-        .onChange(of: selectedMood) { _, _ in syncMapSelection() }
-        .onChange(of: selectedAtmosphere) { _, _ in syncMapSelection() }
-        .onChange(of: favoritesOnly) { _, _ in syncMapSelection() }
-        .onChange(of: hasAudioOnly) { _, _ in syncMapSelection() }
-        .onChange(of: sortOption) { _, _ in syncMapSelection() }
+        .onChange(of: entries.count) { _, _ in refreshLibraryState() }
+        .onChange(of: selectedDateFilter) { _, _ in refreshLibraryState() }
+        .onChange(of: selectedMood) { _, _ in refreshLibraryState() }
+        .onChange(of: selectedAtmosphere) { _, _ in refreshLibraryState() }
+        .onChange(of: favoritesOnly) { _, _ in refreshLibraryState() }
+        .onChange(of: hasAudioOnly) { _, _ in refreshLibraryState() }
+        .onChange(of: sortOption) { _, _ in refreshLibraryState() }
         .onChange(of: mapRegion.center.latitude) { _, _ in syncVisibleMapSelection() }
         .onChange(of: mapRegion.center.longitude) { _, _ in syncVisibleMapSelection() }
         .onChange(of: mapRegion.span.latitudeDelta) { _, _ in syncVisibleMapSelection() }
@@ -225,25 +276,18 @@ struct LibraryView: View {
                     Spacer()
                 }
             } else {
-                Map(coordinateRegion: $mapRegion, annotationItems: mapEntries) { entry in
-                    MapAnnotation(coordinate: entry.coordinate ?? mapRegion.center) {
+                Map(coordinateRegion: $mapRegion, annotationItems: mapPinGroups) { group in
+                    MapAnnotation(coordinate: group.coordinate) {
                         Button {
                             withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
-                                selectedMapEntry = entry
+                                handleMapPinSelection(group)
                             }
                         } label: {
-                            VStack(spacing: 6) {
-                                MemoryThumbnail(entry: entry, width: selectedMapEntry?.id == entry.id ? 56 : 48, height: selectedMapEntry?.id == entry.id ? 56 : 48)
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                            .strokeBorder(selectedMapEntry?.id == entry.id ? palette.accent : Color.white, lineWidth: 2)
-                                    }
-                                    .shadow(color: .black.opacity(0.28), radius: 12, y: 6)
-
-                                Image(systemName: "mappin.circle.fill")
-                                    .font(selectedMapEntry?.id == entry.id ? .title2 : .title3)
-                                    .foregroundStyle(selectedMapEntry?.id == entry.id ? palette.accent : .white)
-                            }
+                            ClusteredMapPinView(
+                                group: group,
+                                isSelected: group.entries.contains(where: { $0.id == selectedMapEntry?.id }),
+                                palette: palette
+                            )
                         }
                         .buttonStyle(.plain)
                     }
@@ -556,6 +600,78 @@ struct LibraryView: View {
         }
     }
 
+    private func refreshLibraryState() {
+        syncMapSelection()
+        Task {
+            await backfillVisiblePhotoCaptionsIfNeeded()
+        }
+    }
+
+    private func handleMapPinSelection(_ group: MapPinGroup) {
+        if let currentlySelected = selectedMapEntry,
+           let matchingEntry = group.entries.first(where: { $0.id == currentlySelected.id }) {
+            selectedMapEntry = matchingEntry
+        } else {
+            selectedMapEntry = group.representativeEntry
+        }
+
+        guard group.count > 1 else { return }
+        mapRegion = focusedRegion(for: group)
+    }
+
+    private func focusedRegion(for group: MapPinGroup) -> MKCoordinateRegion {
+        let coordinates = group.entries.compactMap(\.coordinate)
+        guard !coordinates.isEmpty else { return mapRegion }
+
+        let latitudes = coordinates.map(\.latitude)
+        let longitudes = coordinates.map(\.longitude)
+        let minLatitude = latitudes.min() ?? group.coordinate.latitude
+        let maxLatitude = latitudes.max() ?? group.coordinate.latitude
+        let minLongitude = longitudes.min() ?? group.coordinate.longitude
+        let maxLongitude = longitudes.max() ?? group.coordinate.longitude
+
+        return MKCoordinateRegion(
+            center: group.coordinate,
+            span: MKCoordinateSpan(
+                latitudeDelta: max((maxLatitude - minLatitude) * 2.4, mapRegion.span.latitudeDelta * 0.42, 0.012),
+                longitudeDelta: max((maxLongitude - minLongitude) * 2.4, mapRegion.span.longitudeDelta * 0.42, 0.012)
+            )
+        )
+    }
+
+    private func backfillVisiblePhotoCaptionsIfNeeded() async {
+        let candidateEntries = Array((Array(filteredEntries.prefix(12)) + Array(visibleMapEntries.prefix(8))).reduce(into: [UUID: MemoryEntry]()) { partialResult, entry in
+            partialResult[entry.id] = entry
+        }.values)
+
+        var updatedAnyCaption = false
+
+        for entry in candidateEntries {
+            if let existingCaption = entry.photoCaption, !existingCaption.isEmpty {
+                continue
+            }
+            guard let imageData = try? Data(contentsOf: entry.photoURL) else { continue }
+            guard let caption = await MemoryAnalysisService.imageCaption(from: imageData) else { continue }
+            do {
+                try MediaStore.updateAtmosphereMetadata(for: entry.id) { metadata in
+                    let existingCaption = metadata.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if existingCaption.isEmpty {
+                        metadata.photoCaption = caption
+                    }
+                }
+                updatedAnyCaption = true
+            } catch {
+                continue
+            }
+        }
+
+        if updatedAnyCaption {
+            await MainActor.run {
+                captionRefreshToken += 1
+            }
+        }
+    }
+
     private func menuFilterLabel(title: String, isSelected: Bool) -> some View {
         Text(title)
             .font(.caption.weight(.semibold))
@@ -630,6 +746,11 @@ private struct MapSelectionCard: View {
                         .lineLimit(1)
                 }
 
+                Text(entry.descriptiveCaption)
+                    .font(.caption)
+                    .foregroundStyle(palette.secondaryText)
+                    .lineLimit(2)
+
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
                         ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", atmosphere: entry.atmosphereStyle)
@@ -658,6 +779,53 @@ private struct MapSelectionCard: View {
                 .strokeBorder(palette.stroke)
         }
         .shadow(color: palette.shadow, radius: 16, y: 8)
+    }
+}
+
+private struct ClusteredMapPinView: View {
+    let group: MapPinGroup
+    let isSelected: Bool
+    let palette: ResonancePalette
+
+    var body: some View {
+        if group.count <= 1, let entry = group.representativeEntry {
+            VStack(spacing: 6) {
+                MemoryThumbnail(entry: entry, width: isSelected ? 56 : 48, height: isSelected ? 56 : 48)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(isSelected ? palette.accent : Color.white, lineWidth: 2)
+                    }
+                    .shadow(color: .black.opacity(0.28), radius: 12, y: 6)
+
+                Image(systemName: "mappin.circle.fill")
+                    .font(isSelected ? .title2 : .title3)
+                    .foregroundStyle(isSelected ? palette.accent : .white)
+            }
+        } else {
+            VStack(spacing: 6) {
+                ZStack {
+                    Circle()
+                        .fill(.black.opacity(0.78))
+                    Circle()
+                        .strokeBorder(isSelected ? palette.accent : Color.white.opacity(0.94), lineWidth: isSelected ? 3 : 2)
+
+                    VStack(spacing: 2) {
+                        Image(systemName: "square.stack.3d.up.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(isSelected ? palette.accent : .white)
+                        Text("\(group.count)")
+                            .font(.caption.bold())
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: isSelected ? 62 : 56, height: isSelected ? 62 : 56)
+                .shadow(color: .black.opacity(0.28), radius: 12, y: 6)
+
+                Image(systemName: "mappin.circle.fill")
+                    .font(isSelected ? .title2 : .title3)
+                    .foregroundStyle(isSelected ? palette.accent : .white)
+            }
+        }
     }
 }
 
