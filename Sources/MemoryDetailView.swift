@@ -77,9 +77,7 @@ struct MemoryDetailView: View {
                                     .foregroundStyle(palette.primaryText)
 
                                 SensorDetailRow(title: "場所", value: entry.placeLabel ?? "取得なし")
-                                if let weatherSummary = entry.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
-                                    SensorDetailRow(title: "天気", value: weatherSummary)
-                                }
+                                SensorDetailRow(title: "天気", value: entry.weatherSnapshot?.compactSummary ?? "取得なし")
 
                                 if let sensorSnapshot = entry.sensorSnapshot,
                                    let latitude = sensorSnapshot.latitude,

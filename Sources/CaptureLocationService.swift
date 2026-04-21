@@ -8,15 +8,20 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     static let shared = CaptureLocationService()
 
     @Published private(set) var authorizationStatus: CLAuthorizationStatus = .notDetermined
+    @Published private(set) var accuracyAuthorization: CLAccuracyAuthorization = .reducedAccuracy
     @Published private(set) var isLocationReady = false
     @Published private(set) var isMotionReady = false
     @Published private(set) var isPressureReady = false
+    @Published private(set) var previewHorizontalShift: CGFloat = 0
+    @Published private(set) var previewVerticalShift: CGFloat = 0
 
     private let manager = CLLocationManager()
     private let geocoder = CLGeocoder()
     private let motionManager = CMMotionManager()
     private let altimeter = CMAltimeter()
-    private let preferredHorizontalAccuracy: CLLocationAccuracy = 10
+    private let preferredHorizontalAccuracy: CLLocationAccuracy = 6
+    private let cachedLocationFreshnessLimit: TimeInterval = 8
+    private let preciseLocationRetryInterval: TimeInterval = 30
 
     private var latestLocation: CLLocation?
     private var latestPlaceLabel: String?
@@ -29,6 +34,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     private var locationContinuation: CheckedContinuation<Void, Never>?
     private var locationTimeoutTask: Task<Void, Never>?
     private var isLocationPipelineActive = false
+    private var lastPreciseLocationRequestAt: Date?
 
     private override init() {
         super.init()
@@ -38,6 +44,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         manager.activityType = .otherNavigation
         manager.pausesLocationUpdatesAutomatically = false
         authorizationStatus = manager.authorizationStatus
+        accuracyAuthorization = manager.accuracyAuthorization
     }
 
     func prepare() {
@@ -50,6 +57,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
             manager.requestWhenInUseAuthorization()
         case .authorizedAlways, .authorizedWhenInUse:
             startLocationPipeline()
+            requestPreciseLocationIfNeeded()
         default:
             break
         }
@@ -60,10 +68,10 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         stopSpatialSensors()
     }
 
-    func currentPlaceLabel() async -> String? {
+    func currentPlaceLabel(forceRefresh: Bool = false) async -> String? {
         guard authorizationStatus.allowsLocationAccess else { return nil }
 
-        if latestLocation == nil {
+        if forceRefresh || latestLocation == nil || needsHigherPrecisionLocation {
             await refreshLocation()
         }
 
@@ -78,8 +86,8 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         return label
     }
 
-    func currentEnvironmentSnapshot() async -> CaptureEnvironmentSnapshot? {
-        if authorizationStatus.allowsLocationAccess, needsHigherPrecisionLocation {
+    func currentEnvironmentSnapshot(forceRefresh: Bool = false) async -> CaptureEnvironmentSnapshot? {
+        if authorizationStatus.allowsLocationAccess, forceRefresh || needsHigherPrecisionLocation {
             await refreshLocation()
         }
 
@@ -106,8 +114,8 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         )
     }
 
-    func currentLocation() async -> CLLocation? {
-        if authorizationStatus.allowsLocationAccess, needsHigherPrecisionLocation {
+    func currentLocation(forceRefresh: Bool = false) async -> CLLocation? {
+        if authorizationStatus.allowsLocationAccess, forceRefresh || needsHigherPrecisionLocation {
             await refreshLocation()
         }
         return latestLocation ?? manager.location
@@ -142,6 +150,10 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
                 self.latestPitchDegrees = motion.attitude.pitch * 180 / .pi
                 self.latestRollDegrees = motion.attitude.roll * 180 / .pi
                 self.latestYawDegrees = motion.attitude.yaw * 180 / .pi
+                let roll = max(-1.0, min(1.0, motion.attitude.roll / 0.45))
+                let pitch = max(-1.0, min(1.0, motion.attitude.pitch / 0.45))
+                self.previewHorizontalShift = CGFloat(roll * 18)
+                self.previewVerticalShift = CGFloat(pitch * 14)
                 self.isMotionReady = true
             }
         }
@@ -166,23 +178,33 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         UIDevice.current.endGeneratingDeviceOrientationNotifications()
         isMotionReady = false
         isPressureReady = false
+        previewHorizontalShift = 0
+        previewVerticalShift = 0
     }
 
     private func refreshLocation() async {
         guard authorizationStatus.allowsLocationAccess else { return }
         guard locationContinuation == nil else { return }
+        requestPreciseLocationIfNeeded()
 
-        if let currentLocation = manager.location, currentLocation.horizontalAccuracy > 0, currentLocation.horizontalAccuracy <= preferredHorizontalAccuracy {
-            latestLocation = currentLocation
-            isLocationReady = true
-            return
+        if let currentLocation = manager.location, isFreshEnough(currentLocation) {
+            if manager.accuracyAuthorization == .reducedAccuracy {
+                latestLocation = currentLocation
+                isLocationReady = true
+                return
+            }
+            if currentLocation.horizontalAccuracy > 0, currentLocation.horizontalAccuracy <= preferredHorizontalAccuracy {
+                latestLocation = currentLocation
+                isLocationReady = true
+                return
+            }
         }
 
         await withCheckedContinuation { continuation in
             locationContinuation = continuation
             locationTimeoutTask?.cancel()
             locationTimeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
                 await MainActor.run {
                     self?.resumeLocationContinuationIfNeeded()
                 }
@@ -213,11 +235,45 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         return parts.first
     }
 
+    private func requestPreciseLocationIfNeeded() {
+        guard authorizationStatus.allowsLocationAccess else { return }
+        guard manager.accuracyAuthorization == .reducedAccuracy else { return }
+        if let lastPreciseLocationRequestAt,
+           Date().timeIntervalSince(lastPreciseLocationRequestAt) < preciseLocationRetryInterval {
+            return
+        }
+        lastPreciseLocationRequestAt = .now
+        manager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: "ResonancePreciseCapture") { _ in }
+    }
+
+    private func isFreshEnough(_ location: CLLocation) -> Bool {
+        abs(location.timestamp.timeIntervalSinceNow) <= cachedLocationFreshnessLimit
+    }
+
+    private func updateStoredLocation(_ location: CLLocation?) {
+        guard let location else { return }
+        if let latestLocation, latestLocation.distance(from: location) > 5 {
+            latestPlaceLabel = nil
+        }
+        latestLocation = location
+        isLocationReady = true
+    }
+
+    private func shouldResumeLocationWait(with location: CLLocation?) -> Bool {
+        guard let location else { return false }
+        if manager.accuracyAuthorization == .reducedAccuracy {
+            return true
+        }
+        return location.horizontalAccuracy > 0 && location.horizontalAccuracy <= preferredHorizontalAccuracy
+    }
+
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor in
             authorizationStatus = manager.authorizationStatus
+            accuracyAuthorization = manager.accuracyAuthorization
             if authorizationStatus.allowsLocationAccess {
                 startLocationPipeline()
+                requestPreciseLocationIfNeeded()
             } else {
                 isLocationReady = false
                 latestLocation = nil
@@ -236,9 +292,10 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
             let bestLocation = preciseLocations.min { lhs, rhs in
                 lhs.horizontalAccuracy < rhs.horizontalAccuracy
             } ?? candidateLocations.last
-            latestLocation = bestLocation
-            isLocationReady = latestLocation != nil
-            resumeLocationContinuationIfNeeded()
+            updateStoredLocation(bestLocation)
+            if shouldResumeLocationWait(with: bestLocation) {
+                resumeLocationContinuationIfNeeded()
+            }
         }
     }
 
@@ -258,7 +315,12 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
 private extension CaptureLocationService {
     var needsHigherPrecisionLocation: Bool {
         guard let latestLocation else { return true }
-        return latestLocation.horizontalAccuracy <= 0 || latestLocation.horizontalAccuracy > preferredHorizontalAccuracy
+        if accuracyAuthorization == .reducedAccuracy {
+            return !isFreshEnough(latestLocation)
+        }
+        return !isFreshEnough(latestLocation)
+            || latestLocation.horizontalAccuracy <= 0
+            || latestLocation.horizontalAccuracy > preferredHorizontalAccuracy
     }
 }
 

@@ -15,21 +15,26 @@ actor AmbientWeatherCaptureService {
         guard let location else { return nil }
 
 #if canImport(WeatherKit)
-        do {
-            let weather = try await service.weather(for: location)
-            let current = weather.currentWeather
-            return MemoryWeatherSnapshot(
-                conditionLabel: localizedConditionLabel(for: String(describing: current.condition)),
-                temperatureCelsius: current.temperature.converted(to: .celsius).value,
-                apparentTemperatureCelsius: current.apparentTemperature.converted(to: .celsius).value,
-                symbolName: current.symbolName
-            )
-        } catch {
+        for attempt in 0..<2 {
+            do {
+                let weather = try await service.weather(for: location)
+                let current = weather.currentWeather
+                return MemoryWeatherSnapshot(
+                    conditionLabel: localizedConditionLabel(for: String(describing: current.condition)),
+                    temperatureCelsius: current.temperature.converted(to: .celsius).value,
+                    apparentTemperatureCelsius: current.apparentTemperature.converted(to: .celsius).value,
+                    symbolName: current.symbolName
+                )
+            } catch {
 #if DEBUG
-            print("WeatherKit fetch failed: \(error.localizedDescription)")
+                print("WeatherKit fetch failed (attempt \(attempt + 1)): \(error.localizedDescription)")
 #endif
-            return nil
+                if attempt == 0 {
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                }
+            }
         }
+        return nil
 #else
         return nil
 #endif

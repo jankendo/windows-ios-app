@@ -30,6 +30,11 @@
     <string>端末の向きや空間情報を一緒に記録して、その場の空気感をより豊かに保存するために使用します。</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>その瞬間の空気感を場所と結びつけて記録するために位置情報を使用します。</string>
+    <key>NSLocationTemporaryUsageDescriptionDictionary</key>
+    <dict>
+        <key>ResonancePreciseCapture</key>
+        <string>撮影した瞬間を純正マップに近い精度で結びつけ、天気や気温も正確に記録するために正確な位置情報を使用します。</string>
+    </dict>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>録音した音声の内容を文字起こしして検索しやすくするために使用します。</string>
 </dict>

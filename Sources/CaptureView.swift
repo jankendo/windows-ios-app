@@ -37,9 +37,9 @@ final class CaptureFlowModel: ObservableObject {
             Task { @MainActor in
                 do {
                     var draft = try result.get()
-                    async let placeLabel = self.locationService.currentPlaceLabel()
-                    async let sensorSnapshot = self.locationService.currentEnvironmentSnapshot()
-                    async let resolvedLocation = self.locationService.currentLocation()
+                    async let placeLabel = self.locationService.currentPlaceLabel(forceRefresh: true)
+                    async let sensorSnapshot = self.locationService.currentEnvironmentSnapshot(forceRefresh: true)
+                    async let resolvedLocation = self.locationService.currentLocation(forceRefresh: true)
                     draft.placeLabel = await placeLabel
                     draft.sensorSnapshot = await sensorSnapshot
                     let weatherLocation =
