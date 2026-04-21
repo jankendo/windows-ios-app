@@ -230,12 +230,12 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         Task { @MainActor in
-            let bestLocation = (locations + [latestLocation].compactMap { $0 })
-                .filter { $0.horizontalAccuracy > 0 }
-                .min { lhs, rhs in
-                    lhs.horizontalAccuracy < rhs.horizontalAccuracy
-                }
-                ?? locations.last
+            let historicalLocations = latestLocation.map { [$0] } ?? []
+            let candidateLocations = locations + historicalLocations
+            let preciseLocations = candidateLocations.filter { $0.horizontalAccuracy > 0 }
+            let bestLocation = preciseLocations.min { lhs, rhs in
+                lhs.horizontalAccuracy < rhs.horizontalAccuracy
+            } ?? candidateLocations.last
             latestLocation = bestLocation
             isLocationReady = latestLocation != nil
             resumeLocationContinuationIfNeeded()
