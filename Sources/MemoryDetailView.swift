@@ -399,6 +399,8 @@ private struct SavedMemoryImmersivePreviewView: View {
                     .rotation3DEffect(.degrees(Double(environmentService.previewVerticalShift) * 0.12), axis: (x: 1, y: 0, z: 0))
                     .ignoresSafeArea()
                     .animation(.easeInOut(duration: 14).repeatForever(autoreverses: true), value: drifting)
+                    .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.9), value: environmentService.previewHorizontalShift)
+                    .animation(.interactiveSpring(response: 0.18, dampingFraction: 0.9), value: environmentService.previewVerticalShift)
             }
 
             LinearGradient(
@@ -407,80 +409,71 @@ private struct SavedMemoryImmersivePreviewView: View {
                 endPoint: .bottom
             )
             .ignoresSafeArea()
-
+        }
+        .safeAreaInset(edge: .top) {
             if controlsVisible {
-                VStack(spacing: 0) {
-                    HStack {
-                        Button {
-                            dismiss()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 32))
-                                .foregroundStyle(.white)
-                        }
-                        .buttonStyle(.plain)
-
-                        Spacer()
-
-                        if entry.hasAudio {
-                            ResonanceBadge(
-                                title: "ループ再生中",
-                                systemImage: "waveform",
-                                tint: .white,
-                                atmosphere: entry.atmosphereStyle
-                            )
-                        }
+                HStack {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.white)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
+                    .buttonStyle(.plain)
 
                     Spacer()
 
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack(alignment: .bottom) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Immersive Memory")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.white.opacity(0.72))
-
-                                Text(entry.displayTitle)
-                                    .font(.title2.bold())
-                                    .foregroundStyle(.white)
-
-                                Text("視差効果で写真が揺れ、録音はループ再生されます")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.white.opacity(0.82))
-                            }
-
-                            Spacer()
-
-                            if let audioURL = entry.audioURL {
-                                Button {
-                                    player.togglePlayback(for: audioURL)
-                                } label: {
-                                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                                        .font(.system(size: 42))
-                                        .foregroundStyle(.white)
-                                }
-                                .buttonStyle(.plain)
-                            }
+                    if entry.hasAudio {
+                        ResonanceBadge(
+                            title: "ループ再生中",
+                            systemImage: "waveform",
+                            tint: .white,
+                            atmosphere: entry.atmosphereStyle
+                        )
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .transition(.opacity)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if controlsVisible {
+                VStack(alignment: .leading, spacing: 14) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .bottom, spacing: 16) {
+                            previewTexts
+                            previewPlayButton
                         }
 
-                        HStack {
-                            Text(entry.createdAt.formatted(date: .complete, time: .shortened))
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.82))
-                            Spacer()
-                            Text("傾きとドラッグで奥行きが動きます")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.white.opacity(0.74))
+                        VStack(alignment: .leading, spacing: 14) {
+                            previewTexts
+
+                            HStack {
+                                Spacer()
+                                previewPlayButton
+                            }
                         }
                     }
-                    .padding(20)
-                    .background(.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 22)
+
+                    HStack {
+                        Text(entry.createdAt.formatted(date: .complete, time: .shortened))
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.82))
+
+                        Spacer(minLength: 12)
+
+                        Text("傾きとドラッグで奥行きが動きます")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.74))
+                            .multilineTextAlignment(.trailing)
+                    }
                 }
+                .padding(20)
+                .background(.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
                 .transition(.opacity)
             }
         }
@@ -511,6 +504,39 @@ private struct SavedMemoryImmersivePreviewView: View {
         }
         .onDisappear {
             player.stop()
+        }
+    }
+
+    @ViewBuilder
+    private var previewPlayButton: some View {
+        if let audioURL = entry.audioURL {
+            Button {
+                player.togglePlayback(for: audioURL)
+            } label: {
+                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 42))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var previewTexts: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Immersive Memory")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.72))
+
+            Text(entry.displayTitle)
+                .font(.title3.bold())
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("視差効果で写真が揺れ、録音はループ再生されます")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.82))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

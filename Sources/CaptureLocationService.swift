@@ -144,7 +144,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
 
     private func startSpatialSensors() {
         if motionManager.isDeviceMotionAvailable, !motionManager.isDeviceMotionActive {
-            motionManager.deviceMotionUpdateInterval = 0.25
+            motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
             motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
                 guard let self, let motion else { return }
                 self.latestPitchDegrees = motion.attitude.pitch * 180 / .pi
@@ -152,8 +152,10 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
                 self.latestYawDegrees = motion.attitude.yaw * 180 / .pi
                 let roll = max(-1.0, min(1.0, motion.attitude.roll / 0.45))
                 let pitch = max(-1.0, min(1.0, motion.attitude.pitch / 0.45))
-                self.previewHorizontalShift = CGFloat(roll * 18)
-                self.previewVerticalShift = CGFloat(pitch * 14)
+                let targetHorizontalShift = CGFloat(roll * 18)
+                let targetVerticalShift = CGFloat(pitch * 14)
+                self.previewHorizontalShift = (self.previewHorizontalShift * 0.82) + (targetHorizontalShift * 0.18)
+                self.previewVerticalShift = (self.previewVerticalShift * 0.82) + (targetVerticalShift * 0.18)
                 self.isMotionReady = true
             }
         }

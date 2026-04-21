@@ -8,6 +8,7 @@ final class CaptureFlowModel: ObservableObject {
     @Published var title = ""
     @Published var notes = ""
     @Published var isSaving = false
+    @Published var isPreparingReview = false
     @Published var capturedDraft: CapturedMemoryDraft?
     @Published var lastSavedEntry: MemoryEntry?
     @Published var errorMessage: String?
@@ -30,6 +31,7 @@ final class CaptureFlowModel: ObservableObject {
         errorMessage = nil
         saveMessage = nil
         lastSavedEntry = nil
+        isPreparingReview = false
 
         camera.captureMemory(duration: duration) { [weak self] result in
             guard let self else { return }
@@ -48,11 +50,17 @@ final class CaptureFlowModel: ObservableObject {
                     if let location = weatherLocation {
                         draft.weatherSnapshot = await self.weatherService.currentWeatherSnapshot(for: location)
                     }
+                    self.isPreparingReview = false
                     self.capturedDraft = draft
                 } catch {
+                    self.isPreparingReview = false
                     self.errorMessage = error.localizedDescription
                 }
             }
+        }
+
+        if camera.isCapturing {
+            isPreparingReview = true
         }
     }
 
@@ -160,6 +168,10 @@ struct CaptureView: View {
             && (model.camera.permissionState == .unknown || !model.camera.isSessionRunning || model.camera.isPreparingSession)
     }
 
+    private var needsProcessingOverlay: Bool {
+        !model.camera.isCapturing && (model.camera.isProcessingCapture || model.isPreparingReview)
+    }
+
     var body: some View {
         ZStack {
             cameraSurface
@@ -173,6 +185,11 @@ struct CaptureView: View {
 
             if needsStartupOverlay {
                 startupOverlay
+                    .transition(.opacity)
+            }
+
+            if needsProcessingOverlay {
+                reviewProcessingOverlay
                     .transition(.opacity)
             }
         }
@@ -615,6 +632,37 @@ struct CaptureView: View {
                 .strokeBorder(.white.opacity(0.18))
         }
         .padding(24)
+    }
+
+    private var reviewProcessingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.76)
+                .ignoresSafeArea()
+
+            VStack(spacing: 18) {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(1.18)
+
+                VStack(spacing: 8) {
+                    Text("Preparing your memory scene")
+                        .font(.title3.bold())
+                        .foregroundStyle(.white)
+
+                    Text("写真、音、位置、空気感をひとつのシーンへまとめています。完了までお待ちください。")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.82))
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding(28)
+            .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 32, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                    .strokeBorder(.white.opacity(0.16))
+            }
+            .padding(24)
+        }
     }
 
     private func readinessRow(title: String, isReady: Bool) -> some View {
