@@ -215,12 +215,14 @@ struct MemorySceneReviewView: View {
                         .focused($focusedField, equals: .title)
                         .resonanceInputField(atmosphere: atmosphere)
                         .textInputAutocapitalization(.sentences)
+                        .writingToolsBehavior(.complete)
 
                     if showingNotesField {
                         TextField("", text: $notes, prompt: Text("その場の空気、温度、気持ち、聞こえたもの。").foregroundStyle(palette.tertiaryText), axis: .vertical)
                             .focused($focusedField, equals: .notes)
                             .lineLimit(3...5)
                             .resonanceInputField(atmosphere: atmosphere)
+                            .writingToolsBehavior(.complete)
                     } else {
                         Button {
                             showingNotesField = true

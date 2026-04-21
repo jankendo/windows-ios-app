@@ -601,8 +601,10 @@ private struct MemoryEditView: View {
         NavigationStack {
             Form {
                 TextField("タイトル", text: $entry.title)
+                    .writingToolsBehavior(.complete)
                 TextField("メモ", text: $entry.notes, axis: .vertical)
                     .lineLimit(4...8)
+                    .writingToolsBehavior(.complete)
             }
             .navigationTitle("記録を編集")
             .toolbar {

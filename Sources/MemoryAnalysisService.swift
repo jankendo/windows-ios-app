@@ -327,9 +327,7 @@ enum MemoryAnalysisService {
         """
 
         do {
-            let session = LanguageModelSession(model: languageModel) {
-                Instructions(instructions)
-            }
+            let session = LanguageModelSession(instructions: instructions)
             let response = try await session.respond(to: prompt)
             let caption = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
             return caption.isEmpty ? nil : caption
