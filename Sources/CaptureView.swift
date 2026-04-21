@@ -13,9 +13,11 @@ final class CaptureFlowModel: ObservableObject {
     @Published var saveMessage: String?
 
     let camera = CameraCaptureService()
+    private let locationService = CaptureLocationService.shared
 
     func prepare() {
         camera.prepare()
+        locationService.prepare()
         Task {
             await MemoryAnalysisService.requestSpeechAuthorizationIfNeeded()
         }
@@ -32,7 +34,9 @@ final class CaptureFlowModel: ObservableObject {
 
             Task { @MainActor in
                 do {
-                    self.capturedDraft = try result.get()
+                    var draft = try result.get()
+                    draft.placeLabel = await self.locationService.currentPlaceLabel()
+                    self.capturedDraft = draft
                 } catch {
                     self.errorMessage = error.localizedDescription
                 }
@@ -52,7 +56,8 @@ final class CaptureFlowModel: ObservableObject {
         Task {
             do {
                 let storedMedia = try MediaStore.save(photoData: draft.photoData, audioTempURL: draft.audioTempURL)
-                let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: storedMedia.audioFileName.map(MediaStore.audioURL(for:)))
+                let storedAudioURL = storedMedia.audioFileName.map(MediaStore.audioURL(for:))
+                let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: storedAudioURL)
 
                 let entry = MemoryEntry(
                     createdAt: draft.capturedAt,
@@ -67,6 +72,13 @@ final class CaptureFlowModel: ObservableObject {
                     mood: analysis.mood
                 )
 
+                let metadata = MemoryAtmosphereMetadata(
+                    placeLabel: draft.placeLabel,
+                    waveformFingerprint: WaveformExtractor.samples(from: storedAudioURL, sampleCount: 28).map(Double.init),
+                    atmosphereStyle: draft.atmosphereStyle
+                )
+
+                try MediaStore.saveAtmosphereMetadata(metadata, for: entry.id)
                 modelContext.insert(entry)
                 try modelContext.save()
 
@@ -74,7 +86,11 @@ final class CaptureFlowModel: ObservableObject {
                 notes = ""
                 capturedDraft = nil
                 lastSavedEntry = entry
-                saveMessage = "記録を保存しました。"
+                if let placeLabel = draft.placeLabel, !placeLabel.isEmpty {
+                    saveMessage = "\(placeLabel)の空気を保存しました。"
+                } else {
+                    saveMessage = "記録を保存しました。"
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -98,8 +114,17 @@ final class CaptureFlowModel: ObservableObject {
 
 struct CaptureView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.colorScheme) private var colorScheme
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
     @StateObject private var model = CaptureFlowModel()
+
+    private var atmosphere: AtmosphereStyle {
+        model.capturedDraft?.atmosphereStyle ?? AtmosphereStyle(date: .now)
+    }
+
+    private var palette: ResonancePalette {
+        ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
+    }
 
     private var favoriteCount: Int {
         entries.filter(\.isFavorite).count
@@ -116,7 +141,7 @@ struct CaptureView: View {
 
     var body: some View {
         ZStack {
-            ResonanceGradientBackground()
+            ResonanceGradientBackground(atmosphere: atmosphere)
 
             ScrollView {
                 VStack(spacing: 18) {
@@ -132,14 +157,10 @@ struct CaptureView: View {
                         permissionRecoveryCard
                     }
 
-                    if let draft = model.capturedDraft {
-                        reviewCard(for: draft)
-                    } else {
-                        primaryCaptureCard
-                    }
+                    primaryCaptureCard
 
                     if let errorMessage = model.errorMessage {
-                        StatusMessageView(symbol: "exclamationmark.triangle.fill", text: errorMessage, tint: .red)
+                        StatusMessageView(symbol: "exclamationmark.triangle.fill", text: errorMessage, tint: .red, atmosphere: atmosphere)
                     }
 
                     if let saveMessage = model.saveMessage {
@@ -157,113 +178,161 @@ struct CaptureView: View {
         .task {
             model.prepare()
         }
+        .fullScreenCover(item: $model.capturedDraft) { draft in
+            MemorySceneReviewView(
+                draft: draft,
+                title: $model.title,
+                notes: $model.notes,
+                isSaving: model.isSaving,
+                onRetake: {
+                    model.discardDraft()
+                },
+                onSave: {
+                    model.saveDraft(using: modelContext)
+                }
+            )
+        }
     }
 
     private var captureHero: some View {
         ZStack(alignment: .bottomLeading) {
             RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .fill(.black.opacity(0.94))
-                .frame(height: 380)
+                .fill(.black.opacity(colorScheme == .dark ? 0.72 : 0.9))
+                .frame(height: 400)
                 .overlay {
-                    if model.camera.permissionState == .ready {
-                        CameraPreviewView(session: model.camera.session)
-                            .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-                    } else {
-                        permissionPlaceholder
+                    Group {
+                        if model.camera.permissionState == .ready {
+                            CameraPreviewView(session: model.camera.session)
+                        } else {
+                            permissionPlaceholder
+                        }
                     }
+                    .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                }
+                .overlay {
+                    ResonanceHeroScrim(atmosphere: atmosphere)
+                        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
                 }
 
-            VStack(alignment: .leading, spacing: 10) {
-                ResonanceBadge(
-                    title: model.camera.isCapturing ? "録音中" : "準備完了",
-                    systemImage: model.camera.isCapturing ? "waveform" : "camera.aperture",
-                    tint: model.camera.isCapturing ? .orange : .white
-                )
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    ResonanceBadge(
+                        title: model.camera.isCapturing ? "録音中" : "準備完了",
+                        systemImage: model.camera.isCapturing ? "waveform" : "camera.aperture",
+                        tint: .white,
+                        atmosphere: atmosphere
+                    )
 
-                Text("この瞬間を記録")
+                    ResonanceBadge(
+                        title: atmosphere.localizedLabel,
+                        systemImage: atmosphere.symbolName,
+                        tint: .white,
+                        atmosphere: atmosphere
+                    )
+                }
+
+                Text("光と空気を、同時に残す")
                     .font(.title.bold())
                     .foregroundStyle(.white)
 
                 Text(model.camera.statusText)
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.82))
+
+                if let placeHint = recentEntries.first?.placeLabel {
+                    Text("最近の場所: \(placeHint)")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.72))
+                }
             }
-            .padding(20)
+            .padding(22)
         }
     }
 
     private var statsOverview: some View {
         HStack(spacing: 12) {
-            ResonanceStatTile(title: "今日の記録", value: "\(todayCount)", symbol: "calendar")
-            ResonanceStatTile(title: "お気に入り", value: "\(favoriteCount)", symbol: "heart.fill")
-            ResonanceStatTile(title: "ライブラリ", value: "\(entries.count)", symbol: "square.stack.3d.down.right.fill")
+            ResonanceStatTile(title: "今日の記録", value: "\(todayCount)", symbol: "calendar", atmosphere: atmosphere)
+            ResonanceStatTile(title: "お気に入り", value: "\(favoriteCount)", symbol: "heart.fill", atmosphere: atmosphere)
+            ResonanceStatTile(title: "ライブラリ", value: "\(entries.count)", symbol: "square.stack.3d.down.right.fill", atmosphere: atmosphere)
         }
     }
 
     private var draftComposer: some View {
-        ResonanceCard {
+        ResonanceCard(atmosphere: atmosphere) {
             VStack(alignment: .leading, spacing: 14) {
-                Text("記録メモ")
+                Text("記憶の下書き")
                     .font(.headline)
+                    .foregroundStyle(palette.primaryText)
 
-                Text("タイトルや感情メモを先に残しておくと、あとで探しやすくなります。")
+                Text("先に言葉を置いておくと、その場の空気をあとから探しやすくなります。")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(palette.secondaryText)
 
-                TextField("例: 雨上がりのカフェ", text: $model.title)
-                    .textFieldStyle(.roundedBorder)
+                TextField("", text: $model.title, prompt: Text("例: 夜風が気持ちよかった港").foregroundStyle(palette.tertiaryText))
+                    .resonanceInputField(atmosphere: atmosphere)
 
-                TextField("その場の空気や感じたことを書けます。", text: $model.notes, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
+                TextField("", text: $model.notes, prompt: Text("音、温度、匂い、感情の断片を残せます。").foregroundStyle(palette.tertiaryText), axis: .vertical)
                     .lineLimit(3...5)
+                    .resonanceInputField(atmosphere: atmosphere)
             }
         }
     }
 
     private var recordingProgressCard: some View {
-        ResonanceCard {
-            VStack(alignment: .leading, spacing: 12) {
+        ResonanceCard(atmosphere: atmosphere) {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("環境音を録音中…")
+                    Text("空気を採集しています…")
                         .font(.headline)
+                        .foregroundStyle(palette.primaryText)
                     Spacer()
                     Text("\(model.camera.remainingRecordingSeconds)秒")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(palette.accent)
                 }
 
                 ProgressView(value: model.camera.captureProgress)
-                    .tint(.orange)
+                    .tint(palette.accent)
 
-                Text("写真は撮影済みです。6秒間の空気感を集めています。")
+                Text("写真は撮影済みです。音の余韻を6秒間だけ丁寧に残しています。")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(palette.secondaryText)
             }
         }
     }
 
     private var permissionRecoveryCard: some View {
-        ResonanceCard {
+        ResonanceCard(atmosphere: atmosphere) {
             VStack(alignment: .leading, spacing: 14) {
                 Text("カメラとマイクへのアクセスが必要です")
                     .font(.headline)
+                    .foregroundStyle(palette.primaryText)
                 Text("設定から権限を許可すると、写真と環境音を一緒に記録できます。")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(palette.secondaryText)
                 OpenSettingsButton()
             }
         }
     }
 
     private var primaryCaptureCard: some View {
-        ResonanceCard {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("写真と6秒の環境音を一緒に残します")
-                    .font(.headline)
+        ResonanceCard(atmosphere: atmosphere) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("記録を開始")
+                            .font(.headline)
+                            .foregroundStyle(palette.primaryText)
 
-                Text("シャッターを押すと写真を撮影し、そのまま6秒間の環境音を記録します。録音後に内容を確認してから保存できます。")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                        Text("シャッターのあとに Memory Scene が開き、その場の写真と音を立体的に確認できます。")
+                            .font(.subheadline)
+                            .foregroundStyle(palette.secondaryText)
+                    }
+                    Spacer()
+                    Image(systemName: "sparkles")
+                        .font(.title2)
+                        .foregroundStyle(palette.accent)
+                }
 
                 Button {
                     model.capture()
@@ -278,67 +347,29 @@ struct CaptureView: View {
                     .padding(.vertical, 16)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(palette.accent)
                 .disabled(!model.camera.isReadyToCapture || model.isSaving)
             }
         }
     }
 
-    private func reviewCard(for draft: CapturedMemoryDraft) -> some View {
-        ResonanceCard {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("レビューして保存")
-                    .font(.headline)
-
-                if let image = UIImage(data: draft.photoData) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(height: 240)
-                        .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                }
-
-                HStack(spacing: 10) {
-                    ResonanceBadge(title: "環境音 6秒", systemImage: "waveform")
-                    ResonanceBadge(title: draft.capturedAt.formatted(date: .abbreviated, time: .shortened), systemImage: "clock")
-                }
-
-                Text("内容を確認してから保存できます。撮り直したい場合は破棄してもう一度記録してください。")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                HStack(spacing: 12) {
-                    Button("撮り直す") {
-                        model.discardDraft()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        model.saveDraft(using: modelContext)
-                    } label: {
-                        Label(model.isSaving ? "保存中…" : "この記録を保存", systemImage: "square.and.arrow.down.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.isSaving)
-                }
-            }
-        }
-    }
-
     private func successCard(message: String) -> some View {
-        ResonanceCard {
+        let successAtmosphere = model.lastSavedEntry?.atmosphereStyle ?? atmosphere
+        let successPalette = ResonancePalette.make(for: colorScheme, atmosphere: successAtmosphere)
+
+        return ResonanceCard(atmosphere: successAtmosphere) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(spacing: 12) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                     Text(message)
                         .font(.headline)
+                        .foregroundStyle(successPalette.primaryText)
                 }
 
-                Text("ライブラリから見返したり、すぐに詳細画面で確認できます。")
+                Text("ライブラリからその場に戻ったり、詳細画面で空気の層をさらに確かめられます。")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(successPalette.secondaryText)
 
                 HStack(spacing: 12) {
                     if let lastSavedEntry = model.lastSavedEntry {
@@ -349,6 +380,7 @@ struct CaptureView: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
+                        .tint(successPalette.accent)
                     }
 
                     Button("続けて記録") {
@@ -361,15 +393,16 @@ struct CaptureView: View {
     }
 
     private var recentMemoriesSection: some View {
-        ResonanceCard {
+        ResonanceCard(atmosphere: atmosphere) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     Text("最近の記録")
                         .font(.headline)
+                        .foregroundStyle(palette.primaryText)
                     Spacer()
                     Text("すぐ見返す")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(palette.secondaryText)
                 }
 
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -379,18 +412,38 @@ struct CaptureView: View {
                                 MemoryDetailView(entry: entry)
                             } label: {
                                 VStack(alignment: .leading, spacing: 10) {
-                                    MemoryThumbnail(entry: entry, width: 150, height: 110)
+                                    MemoryThumbnail(entry: entry, width: 170, height: 128)
+                                        .overlay(alignment: .bottomLeading) {
+                                            LinearGradient(
+                                                colors: [.clear, .black.opacity(0.34)],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                        }
 
                                     Text(entry.displayTitle)
                                         .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(.primary)
+                                        .foregroundStyle(palette.primaryText)
                                         .lineLimit(1)
 
-                                    Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                    if let placeLabel = entry.placeLabel {
+                                        Text(placeLabel)
+                                            .font(.caption.weight(.medium))
+                                            .foregroundStyle(palette.secondaryText)
+                                            .lineLimit(1)
+                                    }
+
+                                    AudioWaveformView(
+                                        samples: entry.waveformFingerprint,
+                                        progress: 1,
+                                        activeColor: palette.accent,
+                                        inactiveColor: palette.accent.opacity(0.16),
+                                        minimumBarHeight: 8
+                                    )
+                                    .frame(height: 28)
                                 }
-                                .frame(width: 150, alignment: .leading)
+                                .frame(width: 170, alignment: .leading)
                             }
                             .buttonStyle(.plain)
                         }
@@ -422,17 +475,27 @@ struct StatusMessageView: View {
     let symbol: String
     let text: String
     let tint: Color
+    var atmosphere: AtmosphereStyle? = nil
+
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let palette = ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
+
         HStack(spacing: 12) {
             Image(systemName: symbol)
                 .foregroundStyle(tint)
             Text(text)
                 .font(.subheadline)
+                .foregroundStyle(palette.primaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(tint.opacity(0.1), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(tint.opacity(colorScheme == .dark ? 0.18 : 0.1), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(tint.opacity(colorScheme == .dark ? 0.32 : 0.2))
+        }
     }
 }
 

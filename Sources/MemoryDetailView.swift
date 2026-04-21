@@ -7,12 +7,17 @@ struct MemoryDetailView: View {
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var allEntries: [MemoryEntry]
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var player = AudioPlayerController()
     @State private var waveformSamples: [CGFloat] = Array(repeating: 0.25, count: 40)
     @State private var showingEditor = false
     @State private var showingDeleteConfirmation = false
     @State private var showingShareSheet = false
     @State private var showingAutoTags = false
+
+    private var palette: ResonancePalette {
+        ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
+    }
 
     private var shareItems: [Any] {
         var items: [Any] = [entry.shareSummary, entry.photoURL]
@@ -28,7 +33,8 @@ struct MemoryDetailView: View {
             .map { candidate in
                 let sharedTags = Set(candidate.autoTags).intersection(entry.autoTags).count
                 let moodScore = candidate.mood == entry.mood ? 2 : 0
-                return (candidate, sharedTags + moodScore)
+                let placeScore = candidate.placeLabel == entry.placeLabel && entry.placeLabel != nil ? 2 : 0
+                return (candidate, sharedTags + moodScore + placeScore)
             }
             .filter { $0.1 > 0 }
             .sorted { lhs, rhs in
@@ -44,137 +50,53 @@ struct MemoryDetailView: View {
 
     var body: some View {
         ZStack {
-            ResonanceGradientBackground()
+            ResonanceGradientBackground(atmosphere: entry.atmosphereStyle)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    MemoryHeroImage(entry: entry)
-
-                    ResonanceCard {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(alignment: .top) {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(entry.displayTitle)
-                                        .font(.largeTitle.bold())
-
-                                    Text(entry.createdAt.formatted(date: .complete, time: .shortened))
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Spacer()
-
-                                Button {
-                                    entry.isFavorite.toggle()
-                                    try? modelContext.save()
-                                } label: {
-                                    Image(systemName: entry.isFavorite ? "heart.fill" : "heart")
-                                        .font(.title3)
-                                        .foregroundStyle(entry.isFavorite ? .pink : .secondary)
-                                }
-                                .buttonStyle(.plain)
-                            }
-
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles")
-                                    if entry.hasAudio {
-                                        ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform")
-                                    }
-                                    if entry.isFavorite {
-                                        ResonanceBadge(title: "お気に入り", systemImage: "heart.fill", tint: .pink)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    heroScene
 
                     if !entry.notes.isEmpty {
-                        ResonanceCard {
+                        ResonanceCard(atmosphere: entry.atmosphereStyle) {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("メモ")
                                     .font(.headline)
+                                    .foregroundStyle(palette.primaryText)
                                 Text(entry.notes)
                                     .font(.body)
-                            }
-                        }
-                    }
-
-                    if let audioURL = entry.audioURL {
-                        ResonanceCard {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Label("環境音", systemImage: "waveform")
-                                    .font(.headline)
-
-                                AudioWaveformView(
-                                    samples: waveformSamples,
-                                    progress: player.duration > 0 ? player.currentTime / player.duration : 0
-                                )
-
-                                HStack(spacing: 12) {
-                                    Button {
-                                        player.togglePlayback(for: audioURL)
-                                    } label: {
-                                        Label(player.isPlaying ? "一時停止" : "再生", systemImage: player.isPlaying ? "pause.fill" : "play.fill")
-                                            .frame(maxWidth: .infinity)
-                                    }
-                                    .buttonStyle(.borderedProminent)
-
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("再生位置")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        Text("\(player.currentTime.resonanceClockText) / \(max(player.duration, entry.audioDuration).resonanceClockText)")
-                                            .font(.subheadline.weight(.semibold))
-                                    }
-                                }
-
-                                Slider(
-                                    value: Binding(
-                                        get: { player.currentTime },
-                                        set: { player.seek(to: $0) }
-                                    ),
-                                    in: 0...max(max(player.duration, entry.audioDuration), 1)
-                                )
-
-                                HStack {
-                                    Text(player.currentTime.resonanceClockText)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text("-\(max(player.duration - player.currentTime, 0).resonanceClockText)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
+                                    .foregroundStyle(palette.primaryText)
                             }
                         }
                     }
 
                     if !entry.transcript.isEmpty {
-                        ResonanceCard {
+                        ResonanceCard(atmosphere: entry.atmosphereStyle) {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("文字起こし")
                                     .font(.headline)
+                                    .foregroundStyle(palette.primaryText)
                                 Text(entry.transcript)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(palette.secondaryText)
                             }
                         }
                     }
 
-                    ResonanceCard {
+                    ResonanceCard(atmosphere: entry.atmosphereStyle) {
                         DisclosureGroup(isExpanded: $showingAutoTags) {
                             VStack(alignment: .leading, spacing: 12) {
                                 if entry.autoTags.isEmpty {
                                     Text("まだ自動タグはありません。")
                                         .font(.subheadline)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(palette.secondaryText)
                                 } else {
-                                    FlexibleTagCloud(tags: entry.autoTags)
+                                    FlexibleTagCloud(tags: entry.autoTags, atmosphere: entry.atmosphereStyle)
                                 }
                             }
                             .padding(.top, 12)
                         } label: {
                             Label("自動タグ", systemImage: "tag")
                                 .font(.headline)
+                                .foregroundStyle(palette.primaryText)
                         }
                     }
 
@@ -182,6 +104,7 @@ struct MemoryDetailView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("関連する記録")
                                 .font(.headline)
+                                .foregroundStyle(palette.primaryText)
 
                             ForEach(relatedEntries) { related in
                                 NavigationLink {
@@ -237,13 +160,111 @@ struct MemoryDetailView: View {
             Text("写真、音声、メモ情報がこの端末から削除されます。")
         }
         .onAppear {
-            waveformSamples = WaveformExtractor.samples(from: entry.audioURL)
+            waveformSamples = entry.waveformFingerprint
             if let audioURL = entry.audioURL {
                 player.load(url: audioURL)
             }
         }
         .onDisappear {
             player.stop()
+        }
+    }
+
+    private var heroScene: some View {
+        ZStack(alignment: .bottomLeading) {
+            MemoryHeroImage(entry: entry)
+                .overlay {
+                    ResonanceHeroScrim(atmosphere: entry.atmosphereStyle)
+                        .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+                }
+
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(entry.displayTitle)
+                            .font(.largeTitle.bold())
+                            .foregroundStyle(.white)
+
+                        Text(entry.atmosphereStyle.poeticLine)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.84))
+                    }
+
+                    Spacer()
+
+                    Button {
+                        entry.isFavorite.toggle()
+                        try? modelContext.save()
+                    } label: {
+                        Image(systemName: entry.isFavorite ? "heart.fill" : "heart")
+                            .font(.title3)
+                            .foregroundStyle(entry.isFavorite ? .pink : .white.opacity(0.88))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", tint: .white, atmosphere: entry.atmosphereStyle)
+                        ResonanceBadge(title: entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName, tint: .white, atmosphere: entry.atmosphereStyle)
+                        if let placeLabel = entry.placeLabel {
+                            ResonanceBadge(title: placeLabel, systemImage: "location.fill", tint: .white, atmosphere: entry.atmosphereStyle)
+                        }
+                        if entry.hasAudio {
+                            ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform", tint: .white, atmosphere: entry.atmosphereStyle)
+                        }
+                    }
+                }
+
+                if let audioURL = entry.audioURL {
+                    ResonanceCard(atmosphere: entry.atmosphereStyle) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack {
+                                Label("空気の再生", systemImage: "waveform")
+                                    .font(.headline)
+                                    .foregroundStyle(palette.primaryText)
+                                Spacer()
+                                Button {
+                                    player.togglePlayback(for: audioURL)
+                                } label: {
+                                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                                        .font(.system(size: 34))
+                                        .foregroundStyle(palette.accent)
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            AudioWaveformView(
+                                samples: waveformSamples,
+                                progress: player.duration > 0 ? player.currentTime / player.duration : 0,
+                                activeColor: palette.accent,
+                                inactiveColor: Color.white.opacity(colorScheme == .dark ? 0.2 : 0.26),
+                                minimumBarHeight: 10
+                            )
+
+                            Slider(
+                                value: Binding(
+                                    get: { player.currentTime },
+                                    set: { player.seek(to: $0) }
+                                ),
+                                in: 0...max(max(player.duration, entry.audioDuration), 1)
+                            )
+                            .tint(palette.accent)
+
+                            HStack {
+                                Text(player.currentTime.resonanceClockText)
+                                    .font(.caption)
+                                    .foregroundStyle(palette.secondaryText)
+                                Spacer()
+                                Text(entry.createdAt.formatted(date: .complete, time: .shortened))
+                                    .font(.caption)
+                                    .foregroundStyle(palette.secondaryText)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(22)
         }
     }
 
@@ -265,7 +286,7 @@ private struct MemoryHeroImage: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                RoundedRectangle(cornerRadius: 28)
+                RoundedRectangle(cornerRadius: 32)
                     .fill(.gray.opacity(0.15))
                     .overlay {
                         Image(systemName: "photo")
@@ -275,15 +296,19 @@ private struct MemoryHeroImage: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 320)
-        .clipShape(RoundedRectangle(cornerRadius: 28))
+        .frame(height: 460)
+        .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
     }
 }
 
 private struct FlexibleTagCloud: View {
+    @Environment(\.colorScheme) private var colorScheme
     let tags: [String]
+    let atmosphere: AtmosphereStyle
 
     var body: some View {
+        let palette = ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
+
         VStack(alignment: .leading, spacing: 8) {
             ForEach(chunkedTags, id: \.self) { row in
                 HStack(spacing: 8) {
@@ -292,7 +317,8 @@ private struct FlexibleTagCloud: View {
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
-                            .background(.indigo.opacity(0.12), in: Capsule())
+                            .background(palette.accentSoft, in: Capsule())
+                            .foregroundStyle(palette.primaryText)
                     }
                 }
             }

@@ -1,5 +1,85 @@
+import CoreGraphics
 import Foundation
 import SwiftData
+
+enum AtmosphereStyle: String, CaseIterable, Codable, Identifiable {
+    case dawn
+    case day
+    case dusk
+    case night
+
+    var id: String { rawValue }
+
+    init(date: Date) {
+        let hour = Calendar.current.component(.hour, from: date)
+
+        switch hour {
+        case 5..<8:
+            self = .dawn
+        case 8..<17:
+            self = .day
+        case 17..<20:
+            self = .dusk
+        default:
+            self = .night
+        }
+    }
+
+    var localizedLabel: String {
+        switch self {
+        case .dawn:
+            return "朝の空気"
+        case .day:
+            return "昼の光"
+        case .dusk:
+            return "夕暮れ"
+        case .night:
+            return "夜の気配"
+        }
+    }
+
+    var poeticLine: String {
+        switch self {
+        case .dawn:
+            return "やわらかい光と、目覚めはじめた音。"
+        case .day:
+            return "輪郭のはっきりした光と、今ここにある気配。"
+        case .dusk:
+            return "色がほどける時間、音だけが少し長く残る。"
+        case .night:
+            return "静けさの奥に、小さな気配が浮かび上がる。"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .dawn:
+            return "sunrise.fill"
+        case .day:
+            return "sun.max.fill"
+        case .dusk:
+            return "sunset.fill"
+        case .night:
+            return "moon.stars.fill"
+        }
+    }
+}
+
+struct MemoryAtmosphereMetadata: Codable {
+    var placeLabel: String?
+    var waveformFingerprint: [Double]
+    var atmosphereStyleRaw: String
+
+    init(placeLabel: String?, waveformFingerprint: [Double], atmosphereStyle: AtmosphereStyle) {
+        self.placeLabel = placeLabel
+        self.waveformFingerprint = waveformFingerprint
+        self.atmosphereStyleRaw = atmosphereStyle.rawValue
+    }
+
+    var atmosphereStyle: AtmosphereStyle {
+        AtmosphereStyle(rawValue: atmosphereStyleRaw) ?? .day
+    }
+}
 
 @Model
 final class MemoryEntry: Identifiable {
@@ -71,6 +151,9 @@ final class MemoryEntry: Identifiable {
             notes,
             transcript,
             mood,
+            localizedMood,
+            atmosphereStyle.localizedLabel,
+            placeLabel ?? "",
             visualTagsRaw.replacingOccurrences(of: "|", with: " "),
             audioTagsRaw.replacingOccurrences(of: "|", with: " ")
         ]
@@ -114,12 +197,34 @@ final class MemoryEntry: Identifiable {
         MemoryMood(rawValue: mood)?.localizedLabel ?? mood
     }
 
+    var atmosphereMetadata: MemoryAtmosphereMetadata? {
+        MediaStore.loadAtmosphereMetadata(for: id)
+    }
+
+    var atmosphereStyle: AtmosphereStyle {
+        atmosphereMetadata?.atmosphereStyle ?? AtmosphereStyle(date: createdAt)
+    }
+
+    var placeLabel: String? {
+        atmosphereMetadata?.placeLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var waveformFingerprint: [CGFloat] {
+        let storedSamples = atmosphereMetadata?.waveformFingerprint.map(CGFloat.init) ?? []
+        if !storedSamples.isEmpty {
+            return storedSamples
+        }
+        return WaveformExtractor.samples(from: audioURL, sampleCount: 28)
+    }
+
     var shareSummary: String {
         [
             displayTitle,
             createdAt.formatted(date: .abbreviated, time: .shortened),
+            placeLabel,
             notes.trimmingCharacters(in: .whitespacesAndNewlines)
         ]
+        .compactMap { $0 }
         .filter { !$0.isEmpty }
         .joined(separator: "\n")
     }
@@ -216,6 +321,12 @@ enum MemorySearchEngine {
         }
         if contains(query: normalizedQuery, tokens: tokens, in: entry.mood) || contains(query: normalizedQuery, tokens: tokens, in: entry.localizedMood) {
             reasons.append("ムード")
+        }
+        if contains(query: normalizedQuery, tokens: tokens, in: entry.placeLabel ?? "") {
+            reasons.append("場所")
+        }
+        if contains(query: normalizedQuery, tokens: tokens, in: entry.atmosphereStyle.localizedLabel) {
+            reasons.append("時間帯")
         }
 
         var orderedReasons: [String] = []

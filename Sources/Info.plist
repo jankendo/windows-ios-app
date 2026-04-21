@@ -26,6 +26,8 @@
     <string>写真とその瞬間の空気感を記録するためにカメラを使用します。</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>写真と一緒に環境音を保存するためにマイクを使用します。</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>その瞬間の空気感を場所と結びつけて記録するために位置情報を使用します。</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>録音した音声の内容を文字起こしして検索しやすくするために使用します。</string>
 </dict>

@@ -11,6 +11,8 @@ enum MediaStore {
     private static let rootFolderName = "ResonanceMedia"
     private static let photoFolderName = "Photos"
     private static let audioFolderName = "Audio"
+    private static let metadataFolderName = "Metadata"
+    private static var metadataCache: [UUID: MemoryAtmosphereMetadata] = [:]
 
     static func save(photoData: Data, audioTempURL: URL?) throws -> StoredMedia {
         try ensureDirectories()
@@ -46,6 +48,7 @@ enum MediaStore {
         if let audioFileName = entry.audioFileName {
             try? FileManager.default.removeItem(at: audioURL(for: audioFileName))
         }
+        deleteAtmosphereMetadata(for: entry.id)
     }
 
     static func photoURL(for fileName: String) -> URL {
@@ -56,13 +59,47 @@ enum MediaStore {
         folderURL(named: audioFolderName).appendingPathComponent(fileName)
     }
 
+    static func saveAtmosphereMetadata(_ metadata: MemoryAtmosphereMetadata, for entryID: UUID) throws {
+        try ensureDirectories()
+        let fileURL = metadataURL(for: entryID)
+        let data = try JSONEncoder().encode(metadata)
+        try data.write(to: fileURL, options: .atomic)
+        metadataCache[entryID] = metadata
+    }
+
+    static func loadAtmosphereMetadata(for entryID: UUID) -> MemoryAtmosphereMetadata? {
+        if let cached = metadataCache[entryID] {
+            return cached
+        }
+
+        let fileURL = metadataURL(for: entryID)
+        guard
+            let data = try? Data(contentsOf: fileURL),
+            let metadata = try? JSONDecoder().decode(MemoryAtmosphereMetadata.self, from: data)
+        else {
+            return nil
+        }
+
+        metadataCache[entryID] = metadata
+        return metadata
+    }
+
+    static func deleteAtmosphereMetadata(for entryID: UUID) {
+        metadataCache[entryID] = nil
+        try? FileManager.default.removeItem(at: metadataURL(for: entryID))
+    }
+
     private static func ensureDirectories() throws {
         let fileManager = FileManager.default
-        try [folderURL(named: photoFolderName), folderURL(named: audioFolderName)].forEach {
+        try [folderURL(named: photoFolderName), folderURL(named: audioFolderName), folderURL(named: metadataFolderName)].forEach {
             if !fileManager.fileExists(atPath: $0.path) {
                 try fileManager.createDirectory(at: $0, withIntermediateDirectories: true)
             }
         }
+    }
+
+    private static func metadataURL(for entryID: UUID) -> URL {
+        folderURL(named: metadataFolderName).appendingPathComponent(entryID.uuidString).appendingPathExtension("json")
     }
 
     private static func folderURL(named name: String) -> URL {

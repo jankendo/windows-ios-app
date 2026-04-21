@@ -4,6 +4,9 @@ import SwiftUI
 struct AudioWaveformView: View {
     let samples: [CGFloat]
     let progress: Double
+    var activeColor: Color = .indigo
+    var inactiveColor: Color = Color.indigo.opacity(0.2)
+    var minimumBarHeight: CGFloat = 14
 
     var body: some View {
         GeometryReader { geometry in
@@ -12,8 +15,8 @@ struct AudioWaveformView: View {
             HStack(alignment: .center, spacing: barWidth / 2) {
                 ForEach(Array(samples.enumerated()), id: \.offset) { index, sample in
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(indexFraction(index) <= progress ? Color.indigo : Color.indigo.opacity(0.2))
-                        .frame(width: barWidth, height: max(14, sample * geometry.size.height))
+                        .fill(indexFraction(index) <= progress ? activeColor : inactiveColor)
+                        .frame(width: barWidth, height: max(minimumBarHeight, sample * geometry.size.height))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)

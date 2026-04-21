@@ -30,6 +30,8 @@ struct ContentView: View {
             .tag(ResonanceTab.search)
         }
         .tint(.indigo)
+        .toolbarBackground(.visible, for: .tabBar)
+        .toolbarBackground(.ultraThinMaterial, for: .tabBar)
     }
 }
 

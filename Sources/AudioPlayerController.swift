@@ -41,15 +41,20 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
         currentTime = 0
     }
 
-    func load(url: URL) {
+    func load(url: URL, autoPlay: Bool = false, loop: Bool = false, volume: Float = 1.0) {
         stop()
 
         do {
             player = try AVAudioPlayer(contentsOf: url)
             player?.delegate = self
+            player?.numberOfLoops = loop ? -1 : 0
+            player?.volume = volume
             player?.prepareToPlay()
             duration = player?.duration ?? 0
             loadedURL = url
+            if autoPlay {
+                play()
+            }
         } catch {
             stop()
         }

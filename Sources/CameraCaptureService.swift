@@ -2,10 +2,17 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
-struct CapturedMemoryDraft {
+struct CapturedMemoryDraft: Identifiable {
+    let id = UUID()
     let photoData: Data
     let audioTempURL: URL?
     let capturedAt: Date
+    let audioDuration: TimeInterval
+    var placeLabel: String?
+
+    var atmosphereStyle: AtmosphereStyle {
+        AtmosphereStyle(date: capturedAt)
+    }
 }
 
 enum CaptureError: LocalizedError {
@@ -268,11 +275,19 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         let completion = pendingCapture.completion
         let audioURL = pendingCapture.audioURL
         let capturedAt = pendingCapture.capturedAt
+        let audioDuration: TimeInterval
+
+        if let audioURL {
+            let asset = AVURLAsset(url: audioURL)
+            audioDuration = asset.duration.seconds.isFinite ? asset.duration.seconds : 0
+        } else {
+            audioDuration = 0
+        }
 
         self.pendingCapture = nil
         isCapturing = false
         statusText = "レビューして保存できます。"
-        completion(.success(CapturedMemoryDraft(photoData: photoData, audioTempURL: audioURL, capturedAt: capturedAt)))
+        completion(.success(CapturedMemoryDraft(photoData: photoData, audioTempURL: audioURL, capturedAt: capturedAt, audioDuration: audioDuration, placeLabel: nil)))
     }
 
     private func failPendingCapture(_ error: Error) {

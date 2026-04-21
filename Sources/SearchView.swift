@@ -2,6 +2,7 @@ import SwiftData
 import SwiftUI
 
 struct SearchView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
     @State private var searchText = ""
     @State private var selectedMood: String?
@@ -13,6 +14,7 @@ struct SearchView: View {
     }
 
     private var suggestedTerms: [String] {
+        let atmosphereTerms = ["雨音", "夜風", "カフェのざわめき", "海辺", "駅", "静けさ", "夕暮れ", "朝の空気"]
         let tags = entries
             .flatMap(\.autoTags)
             .reduce(into: [String: Int]()) { partialResult, tag in
@@ -26,7 +28,24 @@ struct SearchView: View {
             }
             .map(\.key)
 
-        return Array((MemoryMood.allCases.map(\.localizedLabel) + tags).prefix(8))
+        let places = entries
+            .compactMap(\.placeLabel)
+            .reduce(into: [String: Int]()) { partialResult, place in
+                partialResult[place, default: 0] += 1
+            }
+            .sorted { lhs, rhs in
+                if lhs.value == rhs.value {
+                    return lhs.key < rhs.key
+                }
+                return lhs.value > rhs.value
+            }
+            .map(\.key)
+
+        return Array((atmosphereTerms + MemoryMood.allCases.map(\.localizedLabel) + places + tags).prefix(10))
+    }
+
+    private var palette: ResonancePalette {
+        ResonancePalette.make(for: colorScheme)
     }
 
     var body: some View {
@@ -49,6 +68,7 @@ struct SearchView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("\(filteredEntries.count)件の記録")
                                 .font(.headline)
+                                .foregroundStyle(palette.primaryText)
 
                             ForEach(filteredEntries) { entry in
                                 NavigationLink {
@@ -63,7 +83,7 @@ struct SearchView: View {
                                         if !entry.transcript.isEmpty, !searchText.isEmpty {
                                             Text("文字起こし: \(entry.transcript)")
                                                 .font(.caption)
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(palette.secondaryText)
                                                 .lineLimit(2)
                                                 .padding(.horizontal, 6)
                                         }
@@ -91,9 +111,10 @@ struct SearchView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("記録を探す")
                     .font(.headline)
+                    .foregroundStyle(palette.primaryText)
                 Text("タイトル、メモ、文字起こし、自動タグ、ムードから横断して探せます。")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(palette.secondaryText)
             }
         }
     }
@@ -103,15 +124,16 @@ struct SearchView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text(searchText.isEmpty ? "おすすめの探し方" : "検索ヒント")
                     .font(.headline)
+                    .foregroundStyle(palette.primaryText)
 
                 if searchText.isEmpty {
-                    Text("まずは気分や音のキーワードから試すと見つけやすいです。")
+                    Text("まずは音、場所、時間帯の言葉から探すと、その場の空気感にたどり着きやすいです。")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(palette.secondaryText)
                 } else {
                     Text("一致理由も表示されるので、どこに反応したか確認できます。")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(palette.secondaryText)
                 }
 
                 ScrollView(.horizontal, showsIndicators: false) {

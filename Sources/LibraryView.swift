@@ -19,6 +19,7 @@ private enum LibrarySortOption: String, CaseIterable, Identifiable {
 }
 
 struct LibraryView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
     @State private var selectedMood: String?
     @State private var favoritesOnly = false
@@ -54,6 +55,10 @@ struct LibraryView: View {
         .filter { !$0.entries.isEmpty }
     }
 
+    private var palette: ResonancePalette {
+        ResonancePalette.make(for: colorScheme)
+    }
+
     var body: some View {
         ZStack {
             ResonanceGradientBackground()
@@ -76,6 +81,7 @@ struct LibraryView: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text(section.title)
                                     .font(.title3.bold())
+                                    .foregroundStyle(palette.primaryText)
 
                                 ForEach(section.entries) { entry in
                                     NavigationLink {
@@ -103,9 +109,10 @@ struct LibraryView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("記録のライブラリ")
                             .font(.headline)
+                            .foregroundStyle(palette.primaryText)
                         Text("集めた写真と音を、気分ごとに見返せます。")
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(palette.secondaryText)
                     }
 
                     Spacer()
@@ -162,11 +169,14 @@ struct LibraryView: View {
 }
 
 struct MemoryCardView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let entry: MemoryEntry
     var matchReasons: [String] = []
 
     var body: some View {
-        ResonanceCard {
+        let palette = ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
+
+        ResonanceCard(atmosphere: entry.atmosphereStyle) {
             HStack(alignment: .top, spacing: 14) {
                 MemoryThumbnail(entry: entry, width: 96, height: 96)
 
@@ -175,12 +185,19 @@ struct MemoryCardView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(entry.displayTitle)
                                 .font(.headline)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(palette.primaryText)
                                 .lineLimit(1)
 
                             Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(palette.secondaryText)
+                        }
+
+                        if let placeLabel = entry.placeLabel {
+                            Text(placeLabel)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(palette.secondaryText)
+                                .lineLimit(1)
                         }
 
                         Spacer()
@@ -193,20 +210,30 @@ struct MemoryCardView: View {
 
                     Text(entry.notePreview)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(palette.secondaryText)
                         .lineLimit(2)
+
+                    AudioWaveformView(
+                        samples: entry.waveformFingerprint,
+                        progress: 1,
+                        activeColor: palette.accent,
+                        inactiveColor: palette.accent.opacity(0.18),
+                        minimumBarHeight: 8
+                    )
+                    .frame(height: 24)
 
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
-                            ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles")
+                            ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", atmosphere: entry.atmosphereStyle)
+                            ResonanceBadge(title: entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName, atmosphere: entry.atmosphereStyle)
                             if entry.hasAudio {
-                                ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform")
+                                ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform", atmosphere: entry.atmosphereStyle)
                             }
                             ForEach(entry.autoTags.prefix(2), id: \.self) { tag in
-                                ResonanceBadge(title: tag, systemImage: "tag")
+                                ResonanceBadge(title: tag, systemImage: "tag", atmosphere: entry.atmosphereStyle)
                             }
                             ForEach(matchReasons, id: \.self) { reason in
-                                ResonanceBadge(title: reason, systemImage: "magnifyingglass", tint: .orange)
+                                ResonanceBadge(title: reason, systemImage: "magnifyingglass", tint: .orange, atmosphere: entry.atmosphereStyle)
                             }
                         }
                     }
@@ -242,18 +269,21 @@ struct MemoryThumbnail: View {
 }
 
 struct FilterChip: View {
+    @Environment(\.colorScheme) private var colorScheme
     let title: String
     let isSelected: Bool
     let action: () -> Void
 
     var body: some View {
+        let palette = ResonancePalette.make(for: colorScheme)
+
         Button(action: action) {
             Text(title)
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(isSelected ? Color.indigo : Color.gray.opacity(0.12), in: Capsule())
-                .foregroundStyle(isSelected ? .white : .primary)
+                .background(isSelected ? palette.accent : palette.surfaceSecondary, in: Capsule())
+                .foregroundStyle(isSelected ? Color.white : palette.primaryText)
         }
         .buttonStyle(.plain)
     }
