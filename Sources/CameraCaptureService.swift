@@ -9,6 +9,7 @@ struct CapturedMemoryDraft: Identifiable {
     let capturedAt: Date
     let audioDuration: TimeInterval
     var placeLabel: String?
+    var sensorSnapshot: CaptureEnvironmentSnapshot?
 
     var atmosphereStyle: AtmosphereStyle {
         AtmosphereStyle(date: capturedAt)
@@ -20,6 +21,7 @@ enum CaptureError: LocalizedError {
     case configurationFailed
     case sessionNotReady
     case busy
+    case invalidDuration
     case photoCaptureFailed
     case audioRecordingFailed
 
@@ -33,6 +35,8 @@ enum CaptureError: LocalizedError {
             return "カメラの準備が整ってから再度お試しください。"
         case .busy:
             return "前の撮影処理が完了するまでお待ちください。"
+        case .invalidDuration:
+            return "録音秒数の設定が不正です。"
         case .photoCaptureFailed:
             return "写真の取得に失敗しました。"
         case .audioRecordingFailed:
@@ -52,9 +56,10 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     @Published private(set) var permissionState: PermissionState = .unknown
     @Published private(set) var isSessionRunning = false
     @Published private(set) var isCapturing = false
+    @Published private(set) var isPreparingSession = true
     @Published private(set) var captureProgress = 0.0
     @Published private(set) var remainingRecordingSeconds = 6
-    @Published var statusText = "写真と6秒の環境音を一緒に保存できます。"
+    @Published var statusText = "写真と環境音を一緒に保存できます。"
 
     let session = AVCaptureSession()
 
@@ -71,10 +76,12 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     }
 
     func prepare() {
+        isPreparingSession = true
         Task {
             let granted = await requestPermissions()
             guard granted else {
                 permissionState = .denied
+                isPreparingSession = false
                 statusText = "権限が必要です。設定からカメラとマイクを許可してください。"
                 return
             }
@@ -84,7 +91,11 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         }
     }
 
-    func captureMemory(completion: @escaping (Result<CapturedMemoryDraft, Error>) -> Void) {
+    func captureMemory(duration: TimeInterval, completion: @escaping (Result<CapturedMemoryDraft, Error>) -> Void) {
+        guard duration >= 1 else {
+            completion(.failure(CaptureError.invalidDuration))
+            return
+        }
         guard permissionState == .ready else {
             completion(.failure(CaptureError.permissionsDenied))
             return
@@ -108,8 +119,8 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         let pending = PendingCapture(audioURL: audioRecorder?.url, capturedAt: .now, completion: completion)
         pendingCapture = pending
         isCapturing = true
-        statusText = "写真を撮影し、環境音を録音しています。"
-        startCaptureProgress()
+        statusText = "写真を撮影し、\(Int(duration.rounded()))秒の環境音を録音しています。"
+        startCaptureProgress(duration: duration)
 
         let settings = AVCapturePhotoSettings()
         settings.photoQualityPrioritization = .quality
@@ -118,7 +129,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         }
         photoOutput.capturePhoto(with: settings, delegate: self)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
             self?.finishAudioCapture()
         }
     }
@@ -156,6 +167,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             else {
                 DispatchQueue.main.async {
                     self.isConfiguring = false
+                    self.isPreparingSession = false
                     self.statusText = CaptureError.configurationFailed.localizedDescription
                 }
                 session.commitConfiguration()
@@ -167,6 +179,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             guard session.canAddOutput(photoOutput) else {
                 DispatchQueue.main.async {
                     self.isConfiguring = false
+                    self.isPreparingSession = false
                     self.statusText = CaptureError.configurationFailed.localizedDescription
                 }
                 session.commitConfiguration()
@@ -184,6 +197,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
                 self.isConfiguring = false
                 self.isConfigured = true
                 self.isSessionRunning = true
+                self.isPreparingSession = false
                 self.statusText = "カメラの準備ができました。"
             }
         }
@@ -228,10 +242,10 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         audioRecorder?.record()
     }
 
-    private func startCaptureProgress() {
+    private func startCaptureProgress(duration: TimeInterval) {
         progressTimer?.invalidate()
         captureProgress = 0
-        remainingRecordingSeconds = 6
+        remainingRecordingSeconds = max(Int(ceil(duration)), 1)
 
         let startedAt = Date()
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
@@ -241,11 +255,11 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
                     return
                 }
 
-                let elapsed = min(Date().timeIntervalSince(startedAt), 6)
-                self.captureProgress = elapsed / 6
-                self.remainingRecordingSeconds = max(Int(ceil(6 - elapsed)), 0)
+                let elapsed = min(Date().timeIntervalSince(startedAt), duration)
+                self.captureProgress = duration > 0 ? elapsed / duration : 1
+                self.remainingRecordingSeconds = max(Int(ceil(duration - elapsed)), 0)
 
-                if elapsed >= 6 {
+                if elapsed >= duration {
                     timer.invalidate()
                 }
             }

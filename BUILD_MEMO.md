@@ -78,6 +78,13 @@ pwsh -File .\scripts\publish-github-secrets.ps1 `
 4. `Resonance.ipa` をドラッグ & ドロップ
 5. iPhone 側で Apple ID を信頼
 
+## 実行時の権限
+
+- カメラ
+- マイク
+- 位置情報（地図表示と場所記録）
+- モーション / フィットネス（端末姿勢・気圧由来の空間情報）
+
 ## 補足
 
 - 内部 project / target / scheme 名は CI 安定性のため **`MyFirstApp`** を維持

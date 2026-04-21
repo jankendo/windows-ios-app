@@ -69,6 +69,34 @@ struct MemoryDetailView: View {
                         }
                     }
 
+                    if let sensorSnapshot = entry.sensorSnapshot {
+                        ResonanceCard(atmosphere: entry.atmosphereStyle) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("空間センサー")
+                                    .font(.headline)
+                                    .foregroundStyle(palette.primaryText)
+
+                                SensorDetailRow(title: "場所", value: entry.placeLabel ?? "取得なし")
+
+                                if let latitude = sensorSnapshot.latitude, let longitude = sensorSnapshot.longitude {
+                                    SensorDetailRow(title: "座標", value: String(format: "%.5f, %.5f", latitude, longitude))
+                                }
+                                if let altitude = sensorSnapshot.altitude {
+                                    SensorDetailRow(title: "標高", value: String(format: "%.0f m", altitude))
+                                }
+                                if let pressure = sensorSnapshot.pressureKilopascals {
+                                    SensorDetailRow(title: "気圧", value: String(format: "%.1f kPa", pressure))
+                                }
+                                if let heading = sensorSnapshot.heading {
+                                    SensorDetailRow(title: "方角", value: String(format: "%.0f°", heading))
+                                }
+                                if let orientation = sensorSnapshot.deviceOrientationLabel {
+                                    SensorDetailRow(title: "端末向き", value: orientation)
+                                }
+                            }
+                        }
+                    }
+
                     if !entry.transcript.isEmpty {
                         ResonanceCard(atmosphere: entry.atmosphereStyle) {
                             VStack(alignment: .leading, spacing: 8) {
@@ -273,6 +301,22 @@ struct MemoryDetailView: View {
         modelContext.delete(entry)
         try? modelContext.save()
         dismiss()
+    }
+}
+
+private struct SensorDetailRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .fontWeight(.semibold)
+        }
+        .font(.subheadline)
     }
 }
 

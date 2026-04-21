@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreLocation
 import Foundation
 import SwiftData
 
@@ -69,15 +70,66 @@ struct MemoryAtmosphereMetadata: Codable {
     var placeLabel: String?
     var waveformFingerprint: [Double]
     var atmosphereStyleRaw: String
+    var captureDuration: Double?
+    var sensorSnapshot: CaptureEnvironmentSnapshot?
 
-    init(placeLabel: String?, waveformFingerprint: [Double], atmosphereStyle: AtmosphereStyle) {
+    init(
+        placeLabel: String?,
+        waveformFingerprint: [Double],
+        atmosphereStyle: AtmosphereStyle,
+        captureDuration: Double? = nil,
+        sensorSnapshot: CaptureEnvironmentSnapshot? = nil
+    ) {
         self.placeLabel = placeLabel
         self.waveformFingerprint = waveformFingerprint
         self.atmosphereStyleRaw = atmosphereStyle.rawValue
+        self.captureDuration = captureDuration
+        self.sensorSnapshot = sensorSnapshot
     }
 
     var atmosphereStyle: AtmosphereStyle {
         AtmosphereStyle(rawValue: atmosphereStyleRaw) ?? .day
+    }
+}
+
+struct CaptureEnvironmentSnapshot: Codable {
+    var latitude: Double?
+    var longitude: Double?
+    var horizontalAccuracy: Double?
+    var altitude: Double?
+    var speed: Double?
+    var course: Double?
+    var heading: Double?
+    var pressureKilopascals: Double?
+    var relativeAltitudeMeters: Double?
+    var pitchDegrees: Double?
+    var rollDegrees: Double?
+    var yawDegrees: Double?
+    var deviceOrientationRaw: String?
+    var timeZoneIdentifier: String
+
+    var coordinate: CLLocationCoordinate2D? {
+        guard let latitude, let longitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    var deviceOrientationLabel: String? {
+        switch deviceOrientationRaw {
+        case "portrait":
+            return "縦向き"
+        case "portraitUpsideDown":
+            return "逆さ縦向き"
+        case "landscapeLeft":
+            return "横向き"
+        case "landscapeRight":
+            return "逆横向き"
+        case "faceUp":
+            return "上向き"
+        case "faceDown":
+            return "下向き"
+        default:
+            return nil
+        }
     }
 }
 
@@ -209,12 +261,47 @@ final class MemoryEntry: Identifiable {
         atmosphereMetadata?.placeLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    var captureDurationSetting: Double {
+        atmosphereMetadata?.captureDuration ?? audioDuration
+    }
+
+    var sensorSnapshot: CaptureEnvironmentSnapshot? {
+        atmosphereMetadata?.sensorSnapshot
+    }
+
+    var coordinate: CLLocationCoordinate2D? {
+        sensorSnapshot?.coordinate
+    }
+
+    var hasMapLocation: Bool {
+        coordinate != nil
+    }
+
     var waveformFingerprint: [CGFloat] {
         let storedSamples = atmosphereMetadata?.waveformFingerprint.map { CGFloat($0) } ?? []
         if !storedSamples.isEmpty {
             return storedSamples
         }
         return WaveformExtractor.samples(from: audioURL, sampleCount: 28)
+    }
+
+    var sensorHighlights: [String] {
+        var highlights: [String] = []
+
+        if let placeLabel {
+            highlights.append(placeLabel)
+        }
+        if let altitude = sensorSnapshot?.altitude {
+            highlights.append(String(format: "標高 %.0fm", altitude))
+        }
+        if let pressure = sensorSnapshot?.pressureKilopascals {
+            highlights.append(String(format: "気圧 %.1fkPa", pressure))
+        }
+        if let orientation = sensorSnapshot?.deviceOrientationLabel {
+            highlights.append(orientation)
+        }
+
+        return highlights
     }
 
     var shareSummary: String {

@@ -74,10 +74,12 @@ struct MemorySceneReviewView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .saturation(0.82)
+                    .blur(radius: 14)
                     .ignoresSafeArea()
                     .overlay {
                         LinearGradient(
-                            colors: [Color.clear, palette.heroScrimBottom.opacity(0.36)],
+                            colors: [Color.black.opacity(0.08), palette.heroScrimBottom.opacity(0.58)],
                             startPoint: .center,
                             endPoint: .bottom
                         )
@@ -156,16 +158,17 @@ struct MemorySceneReviewView: View {
                     .foregroundStyle(palette.primaryText)
 
                 if let image = UIImage(data: draft.photoData) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: .infinity)
-                        .frame(maxHeight: maxHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                        .background(
-                            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                .fill(palette.elevatedSurface.opacity(0.88))
-                        )
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .fill(palette.elevatedSurface.opacity(0.92))
+
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity)
+                            .frame(maxHeight: maxHeight)
+                            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    }
                 }
             }
         }

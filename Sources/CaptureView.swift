@@ -23,19 +23,22 @@ final class CaptureFlowModel: ObservableObject {
         }
     }
 
-    func capture() {
+    func capture(duration: TimeInterval) {
         guard !isSaving else { return }
         errorMessage = nil
         saveMessage = nil
         lastSavedEntry = nil
 
-        camera.captureMemory { [weak self] result in
+        camera.captureMemory(duration: duration) { [weak self] result in
             guard let self else { return }
 
             Task { @MainActor in
                 do {
                     var draft = try result.get()
-                    draft.placeLabel = await self.locationService.currentPlaceLabel()
+                    async let placeLabel = self.locationService.currentPlaceLabel()
+                    async let sensorSnapshot = self.locationService.currentEnvironmentSnapshot()
+                    draft.placeLabel = await placeLabel
+                    draft.sensorSnapshot = await sensorSnapshot
                     self.capturedDraft = draft
                 } catch {
                     self.errorMessage = error.localizedDescription
@@ -75,7 +78,9 @@ final class CaptureFlowModel: ObservableObject {
                 let metadata = MemoryAtmosphereMetadata(
                     placeLabel: draft.placeLabel,
                     waveformFingerprint: WaveformExtractor.samples(from: storedAudioURL, sampleCount: 28).map { Double($0) },
-                    atmosphereStyle: draft.atmosphereStyle
+                    atmosphereStyle: draft.atmosphereStyle,
+                    captureDuration: draft.audioDuration,
+                    sensorSnapshot: draft.sensorSnapshot
                 )
 
                 try MediaStore.saveAtmosphereMetadata(metadata, for: entry.id)
@@ -112,7 +117,10 @@ struct CaptureView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
+    @ObservedObject private var environmentService = CaptureLocationService.shared
+    @AppStorage("captureDurationSeconds") private var captureDurationSeconds = 6.0
     @StateObject private var model = CaptureFlowModel()
+    @State private var showingCaptureSettings = false
 
     private var atmosphere: AtmosphereStyle {
         model.capturedDraft?.atmosphereStyle ?? AtmosphereStyle(date: .now)
@@ -131,6 +139,10 @@ struct CaptureView: View {
         return entries.filter { calendar.isDateInToday($0.createdAt) }.count
     }
 
+    private var needsStartupOverlay: Bool {
+        model.camera.permissionState != .denied && (model.camera.permissionState == .unknown || !model.camera.isSessionRunning || model.camera.isPreparingSession)
+    }
+
     var body: some View {
         ZStack {
             cameraSurface
@@ -141,6 +153,11 @@ struct CaptureView: View {
             if model.camera.permissionState == .denied {
                 permissionCenterOverlay
             }
+
+            if needsStartupOverlay {
+                startupOverlay
+                    .transition(.opacity)
+            }
         }
         .safeAreaInset(edge: .top) {
             topChrome
@@ -149,8 +166,12 @@ struct CaptureView: View {
             bottomChrome
         }
         .toolbar(.hidden, for: .navigationBar)
-        .task {
+        .animation(.easeInOut(duration: 0.25), value: needsStartupOverlay)
+        .onAppear {
             model.prepare()
+        }
+        .onDisappear {
+            environmentService.suspend()
         }
         .fullScreenCover(item: $model.capturedDraft) { draft in
             MemorySceneReviewView(
@@ -165,6 +186,11 @@ struct CaptureView: View {
                     model.saveDraft(using: modelContext)
                 }
             )
+        }
+        .sheet(isPresented: $showingCaptureSettings) {
+            captureSettingsSheet
+                .presentationDetents([.height(320)])
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -214,6 +240,18 @@ struct CaptureView: View {
                             atmosphere: atmosphere
                         )
                     }
+
+                    Button {
+                        showingCaptureSettings = true
+                    } label: {
+                        ResonanceBadge(
+                            title: "Ambient \(Int(captureDurationSeconds.rounded()))s",
+                            systemImage: "slider.horizontal.3",
+                            tint: .white,
+                            atmosphere: atmosphere
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
 
@@ -302,7 +340,7 @@ struct CaptureView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "sparkles")
                         .foregroundStyle(.white)
-                    Text("シャッターで写真を撮影し、そのまま6秒間の空気を記録します")
+                    Text("シャッターで写真を撮影し、そのまま\(Int(captureDurationSeconds.rounded()))秒間の空気を記録します")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
@@ -326,7 +364,7 @@ struct CaptureView: View {
             Spacer()
 
             CameraShutterButton(isEnabled: model.camera.isReadyToCapture && !model.isSaving && !model.camera.isCapturing) {
-                model.capture()
+                model.capture(duration: captureDurationSeconds)
             }
 
             Spacer()
@@ -366,21 +404,26 @@ struct CaptureView: View {
     }
 
     private var captureModeIndicator: some View {
-        VStack(spacing: 6) {
+        Button {
+            showingCaptureSettings = true
+        } label: {
+            VStack(spacing: 6) {
             Text("AMBIENT")
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.white.opacity(0.7))
-            Text("6s")
+            Text("\(Int(captureDurationSeconds.rounded()))s")
                 .font(.headline.weight(.bold))
                 .foregroundStyle(.white)
+            }
+            .frame(width: 72)
+            .padding(.vertical, 10)
+            .background(.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(.white.opacity(0.14))
+            }
         }
-        .frame(width: 72)
-        .padding(.vertical, 10)
-        .background(.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(.white.opacity(0.14))
-        }
+        .buttonStyle(.plain)
     }
 
     private var permissionCenterOverlay: some View {
@@ -465,6 +508,90 @@ struct CaptureView: View {
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .strokeBorder(.white.opacity(0.12))
         }
+    }
+
+    private var startupOverlay: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 10) {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(1.15)
+
+                Text("Preparing your scene")
+                    .font(.title3.bold())
+                    .foregroundStyle(.white)
+
+                Text("カメラと空間センサーを整えて、心地よく撮影できる状態へ導いています。")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.82))
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(spacing: 10) {
+                readinessRow(title: "Camera", isReady: model.camera.isSessionRunning)
+                readinessRow(title: "Location", isReady: environmentService.isLocationReady || environmentService.authorizationStatus == .denied)
+                readinessRow(title: "Spatial sensors", isReady: environmentService.isMotionReady || environmentService.isPressureReady)
+            }
+        }
+        .padding(28)
+        .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 32, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 32, style: .continuous)
+                .strokeBorder(.white.opacity(0.12))
+        }
+        .padding(24)
+    }
+
+    private func readinessRow(title: String, isReady: Bool) -> some View {
+        HStack {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+            Spacer()
+            Label(isReady ? "Ready" : "Preparing", systemImage: isReady ? "checkmark.circle.fill" : "clock.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isReady ? .green : .white.opacity(0.8))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var captureSettingsSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Ambient capture")
+                .font(.title3.bold())
+
+            Text("環境音の長さをシーンに合わせて調整できます。短く素早く残すことも、少し長めに空気を集めることもできます。")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                ForEach([3.0, 6.0, 10.0, 15.0], id: \.self) { duration in
+                    Button("\(Int(duration))秒") {
+                        captureDurationSeconds = duration
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(captureDurationSeconds == duration ? palette.accent : .gray)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("長さ")
+                    Spacer()
+                    Text("\(Int(captureDurationSeconds.rounded()))秒")
+                        .fontWeight(.semibold)
+                }
+
+                Slider(value: $captureDurationSeconds, in: 3...20, step: 1)
+                    .tint(palette.accent)
+            }
+
+            Spacer()
+        }
+        .padding(24)
+        .presentationBackground(.ultraThinMaterial)
     }
 }
 
