@@ -410,11 +410,31 @@ private struct MemoryHeroImage: View {
 private struct SavedMemoryImmersivePreviewView: View {
     let entry: MemoryEntry
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var environmentService = CaptureLocationService.shared
     @StateObject private var player = AudioPlayerController()
     @State private var controlsVisible = true
     @State private var dragOffset: CGSize = .zero
+
+    private var palette: ResonancePalette {
+        ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
+    }
+
+    private var motionHorizontalShift: CGFloat {
+        if reduceMotion {
+            return dragOffset.width * 0.08
+        }
+        return dragOffset.width * 0.18 + environmentService.previewHorizontalShift
+    }
+
+    private var motionVerticalShift: CGFloat {
+        if reduceMotion {
+            return dragOffset.height * 0.05
+        }
+        return dragOffset.height * 0.1 + environmentService.previewVerticalShift
+    }
 
     var body: some View {
         ZStack {
@@ -424,18 +444,18 @@ private struct SavedMemoryImmersivePreviewView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .scaleEffect(1.12)
+                    .scaleEffect(reduceMotion ? 1.04 : 1.14)
                     .offset(
-                        x: dragOffset.width * 0.22 + environmentService.previewHorizontalShift,
-                        y: dragOffset.height * 0.12 + environmentService.previewVerticalShift
+                        x: motionHorizontalShift,
+                        y: motionVerticalShift
                     )
-                    .rotation3DEffect(.degrees(Double(-environmentService.previewHorizontalShift) * 0.18), axis: (x: 0, y: 1, z: 0))
-                    .rotation3DEffect(.degrees(Double(environmentService.previewVerticalShift) * 0.12), axis: (x: 1, y: 0, z: 0))
+                    .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(-environmentService.previewHorizontalShift) * 0.16), axis: (x: 0, y: 1, z: 0))
+                    .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(environmentService.previewVerticalShift) * 0.1), axis: (x: 1, y: 0, z: 0))
                     .ignoresSafeArea()
             }
 
             LinearGradient(
-                colors: [Color.black.opacity(0.18), .clear, Color.black.opacity(0.72)],
+                colors: [Color.black.opacity(0.08), .clear, Color.black.opacity(0.58)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -447,38 +467,43 @@ private struct SavedMemoryImmersivePreviewView: View {
                     Button {
                         dismiss()
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 32))
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .overlay {
+                                Circle()
+                                    .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
+                            }
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("閉じる")
 
                     Spacer()
 
-                    if entry.hasAudio {
-                        ResonanceBadge(
-                            title: "ループ再生中",
-                            systemImage: "waveform",
-                            tint: .white,
-                            atmosphere: entry.atmosphereStyle
-                        )
-                    }
+                    ResonanceBadge(
+                        title: entry.atmosphereStyle.localizedLabel,
+                        systemImage: entry.atmosphereStyle.symbolName,
+                        tint: .white,
+                        atmosphere: entry.atmosphereStyle
+                    )
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 8)
-                .transition(.opacity)
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
         }
         .safeAreaInset(edge: .bottom) {
             if controlsVisible {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 16) {
                     ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .bottom, spacing: 16) {
+                        HStack(alignment: .top, spacing: 16) {
                             previewTexts
                             previewPlayButton
                         }
 
-                        VStack(alignment: .leading, spacing: 14) {
+                        VStack(alignment: .leading, spacing: 16) {
                             previewTexts
 
                             HStack {
@@ -488,29 +513,44 @@ private struct SavedMemoryImmersivePreviewView: View {
                         }
                     }
 
+                    AudioWaveformView(
+                        samples: entry.waveformFingerprint,
+                        progress: player.duration > 0 ? player.currentTime / player.duration : 0,
+                        activeColor: .white,
+                        inactiveColor: Color.white.opacity(0.14),
+                        minimumBarHeight: 10
+                    )
+                    .frame(height: 38)
+                    .accessibilityHidden(true)
+
                     HStack {
-                        Text(entry.createdAt.formatted(date: .complete, time: .shortened))
+                        Text(player.currentTime.resonanceClockText)
                             .font(.caption)
-                            .foregroundStyle(.white.opacity(0.82))
+                            .foregroundStyle(.white.opacity(0.74))
 
                         Spacer(minLength: 12)
 
-                        Text("傾きとドラッグで奥行きが動きます")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.74))
+                        Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.68))
                             .multilineTextAlignment(.trailing)
                     }
                 }
-                .padding(20)
-                .background(.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .padding(18)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
+                }
+                .shadow(color: palette.shadow.opacity(colorScheme == .dark ? 0.55 : 0.18), radius: 28, y: 16)
                 .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-                .transition(.opacity)
+                .padding(.bottom, 10)
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.22)) {
+            withAnimation(.easeInOut(duration: 0.38)) {
                 controlsVisible.toggle()
             }
         }
@@ -521,7 +561,7 @@ private struct SavedMemoryImmersivePreviewView: View {
                     player.setPan(Float(value.translation.width / 180))
                 }
                 .onEnded { _ in
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                    withAnimation(.interactiveSpring(response: 0.62, dampingFraction: 0.88, blendDuration: 0.16)) {
                         dragOffset = .zero
                     }
                     player.setPan(0)
@@ -543,29 +583,39 @@ private struct SavedMemoryImmersivePreviewView: View {
             Button {
                 player.togglePlayback(for: audioURL)
             } label: {
-                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 42))
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.white)
+                    .frame(width: 52, height: 52)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .overlay {
+                        Circle()
+                            .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
+                    }
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(player.isPlaying ? "一時停止" : "再生")
         }
     }
 
     private var previewTexts: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Immersive Memory")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.72))
-
+        VStack(alignment: .leading, spacing: 8) {
             Text(entry.displayTitle)
-                .font(.title3.bold())
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("視差効果で写真が揺れ、録音はループ再生されます")
+            Text(entry.descriptiveCaption)
                 .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.82))
+                .foregroundStyle(.white.opacity(0.86))
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(entry.atmosphereStyle.restorativeLine)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.68))
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

@@ -52,6 +52,19 @@ enum AtmosphereStyle: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    var restorativeLine: String {
+        switch self {
+        case .dawn:
+            return "深く息を入れるたび、やわらかな光が静かにほどけていく。"
+        case .day:
+            return "肩の力を抜くと、澄んだ明るさだけがゆっくり残る。"
+        case .dusk:
+            return "余韻に身をゆだねると、気持ちの波がやさしく整っていく。"
+        case .night:
+            return "静けさに耳を澄ますほど、心のノイズが遠くへほどけていく。"
+        }
+    }
+
     var symbolName: String {
         switch self {
         case .dawn:

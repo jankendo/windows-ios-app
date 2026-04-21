@@ -37,6 +37,16 @@ struct MemorySceneReviewView: View {
         draft.weatherSnapshot?.compactSummary ?? "取得なし"
     }
 
+    private var previewDisplayTitle: String {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedTitle.isEmpty ? "深呼吸して、この空気にとどまる" : trimmedTitle
+    }
+
+    private var previewDisplayCaption: String {
+        let trimmedCaption = draft.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmedCaption?.isEmpty == false) ? trimmedCaption! : atmosphere.poeticLine
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let panelHeight = composerPanelHeight(in: geometry)
@@ -64,6 +74,7 @@ struct MemorySceneReviewView: View {
         .fullScreenCover(isPresented: $showingImmersivePreview) {
             ImmersiveMemoryPlaybackView(
                 draft: draft,
+                title: title,
                 waveformSamples: waveformSamples,
                 atmosphere: atmosphere
             )
@@ -125,91 +136,73 @@ struct MemorySceneReviewView: View {
                 }
 
                 LinearGradient(
-                    colors: [Color.black.opacity(0.14), .clear, Color.black.opacity(0.68)],
+                    colors: [Color.black.opacity(0.08), .clear, Color.black.opacity(0.58)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
                 .ignoresSafeArea()
 
                 VStack(alignment: .leading, spacing: 14) {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        ResonanceBadge(
+                            title: atmosphere.localizedLabel,
+                            systemImage: atmosphere.symbolName,
+                            tint: .white,
+                            atmosphere: atmosphere
+                        )
+                        if let weatherSummary = draft.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
                             ResonanceBadge(
-                                title: "全画面プレビュー",
-                                systemImage: "arrow.up.left.and.arrow.down.right",
+                                title: weatherSummary,
+                                systemImage: draft.weatherSnapshot?.symbolName ?? "cloud.sun.fill",
                                 tint: .white,
                                 atmosphere: atmosphere
                             )
-                            ResonanceBadge(title: "環境音ループ", systemImage: "waveform", tint: .white, atmosphere: atmosphere)
-                            if let weatherSummary = draft.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
-                                ResonanceBadge(title: weatherSummary, systemImage: draft.weatherSnapshot?.symbolName ?? "cloud.sun.fill", tint: .white, atmosphere: atmosphere)
-                            }
-                        }
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            ResonanceBadge(
-                                title: "全画面プレビュー",
-                                systemImage: "arrow.up.left.and.arrow.down.right",
-                                tint: .white,
-                                atmosphere: atmosphere
-                            )
-                            HStack(spacing: 8) {
-                                ResonanceBadge(title: "環境音ループ", systemImage: "waveform", tint: .white, atmosphere: atmosphere)
-                                if let weatherSummary = draft.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
-                                    ResonanceBadge(title: weatherSummary, systemImage: draft.weatherSnapshot?.symbolName ?? "cloud.sun.fill", tint: .white, atmosphere: atmosphere)
-                                }
-                            }
                         }
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("この瞬間に入り込む")
-                            .font(.title.bold())
+                        Text(previewDisplayTitle)
+                            .font(.title2.weight(.semibold))
                             .foregroundStyle(.white)
+                            .lineLimit(2)
 
-                        Text(draft.photoCaption ?? atmosphere.poeticLine)
-                            .font(.subheadline)
+                        Text(previewDisplayCaption)
+                            .font(.body)
                             .foregroundStyle(.white.opacity(0.84))
+                            .lineLimit(3)
 
-                        HStack(spacing: 8) {
-                            if let source = draft.photoCaptionSource {
-                                ResonanceBadge(
-                                    title: source.localizedLabel,
-                                    systemImage: source.systemImage,
-                                    tint: .white,
-                                    atmosphere: atmosphere
-                                )
-                            }
-
-                            Button {
-                                onRegenerateCaption()
-                            } label: {
-                                Label(isRegeneratingCaption ? "AI再作成中..." : "AI内容を再作成", systemImage: "arrow.triangle.2.circlepath")
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(.white.opacity(0.12), in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(isRegeneratingCaption || isSaving)
-                        }
-
-                        if let captionGenerationMessage, !captionGenerationMessage.isEmpty {
-                            Text(captionGenerationMessage)
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.78))
-                        }
+                        Text(atmosphere.restorativeLine)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.7))
+                            .lineLimit(2)
                     }
 
                     AudioWaveformView(
                         samples: waveformSamples,
                         progress: player.duration > 0 ? player.currentTime / player.duration : 0,
                         activeColor: .white,
-                        inactiveColor: Color.white.opacity(0.18),
-                        minimumBarHeight: 12
+                        inactiveColor: Color.white.opacity(0.14),
+                        minimumBarHeight: 10
                     )
-                    .frame(height: 46)
+                    .frame(height: 36)
+
+                    HStack {
+                        Label("静かに全画面でひらく", systemImage: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.82))
+                        Spacer()
+                        Text(player.currentTime.resonanceClockText)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
                 }
+                .padding(18)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
+                }
+                .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.28 : 0.14), radius: 28, y: 16)
                 .padding(.horizontal, 20)
                 .padding(.bottom, bottomInset + 10)
             }
@@ -248,6 +241,8 @@ struct MemorySceneReviewView: View {
                         .resonanceInputField(atmosphere: atmosphere)
                         .textInputAutocapitalization(.sentences)
                         .writingToolsBehavior(.complete)
+
+                    captionComposerCard
 
                     if showingNotesField {
                         TextField("", text: $notes, prompt: Text("その場の空気、温度、気持ち、聞こえたもの。").foregroundStyle(palette.tertiaryText), axis: .vertical)
@@ -329,13 +324,64 @@ struct MemorySceneReviewView: View {
 
     private var reviewHeadline: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Memory Scene")
+            Text("静かな仕上げ")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(palette.secondaryText)
 
             Text("記憶に名前を与える")
                 .font(.title3.bold())
                 .foregroundStyle(palette.primaryText)
+        }
+    }
+
+    private var captionComposerCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("余韻のことば")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(palette.secondaryText)
+
+            Text(previewDisplayCaption)
+                .font(.subheadline)
+                .foregroundStyle(palette.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                if let source = draft.photoCaptionSource {
+                    ResonanceBadge(
+                        title: source.localizedLabel,
+                        systemImage: source.systemImage,
+                        atmosphere: atmosphere
+                    )
+                }
+
+                Spacer(minLength: 0)
+
+                Button {
+                    onRegenerateCaption()
+                } label: {
+                    Label(isRegeneratingCaption ? "AI再作成中..." : "AI内容を再作成", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(palette.accentSoft, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(palette.accent)
+                .disabled(isRegeneratingCaption || isSaving)
+            }
+
+            if let captionGenerationMessage, !captionGenerationMessage.isEmpty {
+                Text(captionGenerationMessage)
+                    .font(.caption)
+                    .foregroundStyle(palette.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .background(palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(palette.stroke)
         }
     }
 
@@ -392,9 +438,11 @@ struct MemorySceneReviewView: View {
 
 private struct ImmersiveMemoryPlaybackView: View {
     let draft: CapturedMemoryDraft
+    let title: String
     let waveformSamples: [CGFloat]
     let atmosphere: AtmosphereStyle
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var environmentService = CaptureLocationService.shared
@@ -406,6 +454,30 @@ private struct ImmersiveMemoryPlaybackView: View {
         ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
     }
 
+    private var immersiveTitle: String {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedTitle.isEmpty ? "静かに、この空気へ戻る" : trimmedTitle
+    }
+
+    private var immersiveCaption: String {
+        let trimmedCaption = draft.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmedCaption?.isEmpty == false) ? trimmedCaption! : atmosphere.poeticLine
+    }
+
+    private var motionHorizontalShift: CGFloat {
+        if reduceMotion {
+            return dragOffset.width * 0.08
+        }
+        return dragOffset.width * 0.18 + environmentService.previewHorizontalShift
+    }
+
+    private var motionVerticalShift: CGFloat {
+        if reduceMotion {
+            return dragOffset.height * 0.05
+        }
+        return dragOffset.height * 0.1 + environmentService.previewVerticalShift
+    }
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -414,103 +486,112 @@ private struct ImmersiveMemoryPlaybackView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .scaleEffect(1.12)
+                    .scaleEffect(reduceMotion ? 1.04 : 1.14)
                     .offset(
-                        x: dragOffset.width * 0.22 + environmentService.previewHorizontalShift,
-                        y: dragOffset.height * 0.12 + environmentService.previewVerticalShift
+                        x: motionHorizontalShift,
+                        y: motionVerticalShift
                     )
-                    .rotation3DEffect(.degrees(Double(-environmentService.previewHorizontalShift) * 0.18), axis: (x: 0, y: 1, z: 0))
-                    .rotation3DEffect(.degrees(Double(environmentService.previewVerticalShift) * 0.12), axis: (x: 1, y: 0, z: 0))
+                    .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(-environmentService.previewHorizontalShift) * 0.16), axis: (x: 0, y: 1, z: 0))
+                    .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(environmentService.previewVerticalShift) * 0.1), axis: (x: 1, y: 0, z: 0))
                     .ignoresSafeArea()
             }
 
             LinearGradient(
-                colors: [Color.black.opacity(0.22), .clear, Color.black.opacity(0.72)],
+                colors: [Color.black.opacity(0.1), .clear, Color.black.opacity(0.58)],
                 startPoint: .top,
                 endPoint: .bottom
             )
             .ignoresSafeArea()
-
+        }
+        .safeAreaInset(edge: .top) {
             if controlsVisible {
-                VStack(spacing: 0) {
-                    HStack {
-                        Button {
-                            dismiss()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 32))
-                                .foregroundStyle(.white)
-                        }
-                        .buttonStyle(.plain)
-
-                        Spacer()
-
-                        ResonanceBadge(
-                            title: "ループ再生中",
-                            systemImage: "waveform",
-                            tint: .white,
-                            atmosphere: atmosphere
-                        )
+                HStack {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .overlay {
+                                Circle()
+                                    .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
+                            }
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("閉じる")
 
                     Spacer()
 
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Immersive Preview")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.white.opacity(0.72))
-
-                                Text("写真と空気を、全画面で感じる")
-                                    .font(.title2.bold())
-                                    .foregroundStyle(.white)
-                            }
-                            Spacer()
-                            Button {
-                                if let audioURL = draft.audioTempURL {
-                                    player.togglePlayback(for: audioURL)
-                                }
-                            } label: {
-                                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                                    .font(.system(size: 38))
-                                    .foregroundStyle(.white)
-                            }
-                            .buttonStyle(.plain)
+                    ResonanceBadge(
+                        title: atmosphere.localizedLabel,
+                        systemImage: atmosphere.symbolName,
+                        tint: .white,
+                        atmosphere: atmosphere
+                    )
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if controlsVisible {
+                VStack(alignment: .leading, spacing: 16) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 16) {
+                            immersiveTexts
+                            immersivePlayButton
                         }
 
-                        AudioWaveformView(
-                            samples: waveformSamples,
-                            progress: player.duration > 0 ? player.currentTime / player.duration : 0,
-                            activeColor: .white,
-                            inactiveColor: Color.white.opacity(0.18),
-                            minimumBarHeight: 12
-                        )
-                        .frame(height: 46)
-
-                        HStack {
-                            Text(player.currentTime.resonanceClockText)
-                                .font(.caption)
-                                .foregroundStyle(.white.opacity(0.82))
-                            Spacer()
-                            Text("傾きとドラッグで視点が揺れます")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.white.opacity(0.74))
+                        VStack(alignment: .leading, spacing: 16) {
+                            immersiveTexts
+                            HStack {
+                                Spacer()
+                                immersivePlayButton
+                            }
                         }
                     }
-                    .padding(20)
-                    .background(.black.opacity(0.36), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 22)
+
+                    AudioWaveformView(
+                        samples: waveformSamples,
+                        progress: player.duration > 0 ? player.currentTime / player.duration : 0,
+                        activeColor: .white,
+                        inactiveColor: Color.white.opacity(0.14),
+                        minimumBarHeight: 10
+                    )
+                    .frame(height: 38)
+                    .accessibilityHidden(true)
+
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(player.currentTime.resonanceClockText)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.74))
+
+                        Spacer(minLength: 12)
+
+                        Text("そっと動かすと、気配が静かに揺れます")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.68))
+                            .multilineTextAlignment(.trailing)
+                    }
                 }
-                .transition(.opacity)
+                .padding(18)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
+                }
+                .shadow(color: palette.shadow.opacity(colorScheme == .dark ? 0.55 : 0.18), radius: 28, y: 16)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.22)) {
+            withAnimation(.easeInOut(duration: 0.38)) {
                 controlsVisible.toggle()
             }
         }
@@ -521,7 +602,7 @@ private struct ImmersiveMemoryPlaybackView: View {
                     player.setPan(Float(value.translation.width / 180))
                 }
                 .onEnded { _ in
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                    withAnimation(.interactiveSpring(response: 0.62, dampingFraction: 0.88, blendDuration: 0.16)) {
                         dragOffset = .zero
                     }
                     player.setPan(0)
@@ -534,6 +615,49 @@ private struct ImmersiveMemoryPlaybackView: View {
         }
         .onDisappear {
             player.stop()
+        }
+    }
+
+    @ViewBuilder
+    private var immersivePlayButton: some View {
+        if let audioURL = draft.audioTempURL {
+            Button {
+                player.togglePlayback(for: audioURL)
+            } label: {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 52, height: 52)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .overlay {
+                        Circle()
+                            .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
+                    }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(player.isPlaying ? "一時停止" : "再生")
+        }
+    }
+
+    private var immersiveTexts: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(immersiveTitle)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(immersiveCaption)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.86))
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(atmosphere.restorativeLine)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.68))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
