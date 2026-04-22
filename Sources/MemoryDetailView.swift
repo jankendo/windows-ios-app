@@ -1,4 +1,3 @@
-import CoreLocation
 import SwiftData
 import SwiftUI
 import UIKit
@@ -17,8 +16,6 @@ struct MemoryDetailView: View {
     @State private var showingAutoTags = false
     @State private var showingImmersivePreview = false
     @State private var resolvedPhotoCaption: String?
-    @State private var resolvedWeatherSnapshot: MemoryWeatherSnapshot?
-    @State private var weatherStatusMessage: String?
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
@@ -30,14 +27,6 @@ struct MemoryDetailView: View {
             items.append(audioURL)
         }
         return items
-    }
-
-    private var displayedWeatherSummary: String {
-        resolvedWeatherSnapshot?.compactSummary
-            ?? entry.weatherSnapshot?.compactSummary
-            ?? weatherStatusMessage
-            ?? entry.weatherStatusNote
-            ?? "取得なし"
     }
 
     private var relatedEntries: [MemoryEntry] {
@@ -84,11 +73,7 @@ struct MemoryDetailView: View {
 
                     if entry.sensorSnapshot != nil
                         || entry.minimumDecibels != nil
-                        || entry.maximumDecibels != nil
-                        || entry.weatherSnapshot != nil
-                        || resolvedWeatherSnapshot != nil
-                        || weatherStatusMessage != nil
-                        || entry.weatherStatusNote != nil {
+                        || entry.maximumDecibels != nil {
                         ResonanceCard(atmosphere: entry.atmosphereStyle) {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("空間センサー")
@@ -96,14 +81,6 @@ struct MemoryDetailView: View {
                                     .foregroundStyle(palette.primaryText)
 
                                 SensorDetailRow(title: "場所", value: entry.placeLabel ?? "取得なし")
-                                SensorDetailRow(title: "天気", value: displayedWeatherSummary)
-                                if (resolvedWeatherSnapshot ?? entry.weatherSnapshot) == nil,
-                                   let weatherNote = weatherStatusMessage ?? entry.weatherStatusNote,
-                                   !weatherNote.isEmpty {
-                                    Text(weatherNote)
-                                        .font(.caption)
-                                        .foregroundStyle(palette.secondaryText)
-                                }
 
                                 if let sensorSnapshot = entry.sensorSnapshot,
                                    let latitude = sensorSnapshot.latitude,
@@ -228,14 +205,11 @@ struct MemoryDetailView: View {
         .onAppear {
             waveformSamples = entry.waveformFingerprint
             resolvedPhotoCaption = entry.photoCaption
-            resolvedWeatherSnapshot = entry.weatherSnapshot
-            weatherStatusMessage = entry.weatherStatusNote
             if let audioURL = entry.audioURL {
                 player.load(url: audioURL)
             }
             Task {
                 await backfillPhotoCaptionIfNeeded()
-                await backfillWeatherIfNeeded()
             }
         }
         .onDisappear {
@@ -294,9 +268,6 @@ struct MemoryDetailView: View {
                         }
                         if entry.hasAudio {
                             ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform", tint: .white, atmosphere: entry.atmosphereStyle)
-                        }
-                        if let weatherSummary = (resolvedWeatherSnapshot?.compactSummary ?? entry.weatherSnapshot?.compactSummary), !weatherSummary.isEmpty {
-                            ResonanceBadge(title: weatherSummary, systemImage: resolvedWeatherSnapshot?.symbolName ?? entry.weatherSnapshot?.symbolName ?? "cloud.sun.fill", tint: .white, atmosphere: entry.atmosphereStyle)
                         }
                     }
                 }
@@ -392,28 +363,6 @@ struct MemoryDetailView: View {
         }
     }
 
-    private func backfillWeatherIfNeeded() async {
-        guard resolvedWeatherSnapshot == nil else { return }
-        guard let coordinate = entry.coordinate else {
-            await MainActor.run {
-                weatherStatusMessage = weatherStatusMessage ?? "位置情報がないため天気を取得できません。"
-            }
-            return
-        }
-
-        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        let result = await AmbientWeatherCaptureService.shared.currentWeatherResult(for: location)
-
-        await MainActor.run {
-            resolvedWeatherSnapshot = result.snapshot
-            weatherStatusMessage = result.statusNote
-        }
-
-        try? MediaStore.updateAtmosphereMetadata(for: entry.id) { metadata in
-            metadata.weatherSnapshot = result.snapshot
-            metadata.weatherStatusNote = result.statusNote
-        }
-    }
 }
 
 private struct SensorDetailRow: View {
@@ -511,6 +460,32 @@ private struct SavedMemoryImmersivePreviewView: View {
             )
             .ignoresSafeArea()
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.38)) {
+                controlsVisible.toggle()
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 8)
+                .onChanged { value in
+                    dragOffset = value.translation
+                    player.setPan(Float(value.translation.width / 180))
+                    player.setSpatialOffset(
+                        CGSize(
+                            width: environmentService.previewHorizontalShift + (value.translation.width * 0.22),
+                            height: environmentService.previewVerticalShift + (value.translation.height * 0.16)
+                        )
+                    )
+                }
+                .onEnded { _ in
+                    withAnimation(.interactiveSpring(response: 0.62, dampingFraction: 0.88, blendDuration: 0.16)) {
+                        dragOffset = .zero
+                    }
+                    player.setPan(0)
+                    player.setSpatialOffset(environmentService.previewParallax)
+                }
+        )
         .safeAreaInset(edge: .top) {
             if controlsVisible {
                 HStack {
@@ -555,32 +530,6 @@ private struct SavedMemoryImmersivePreviewView: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.38)) {
-                controlsVisible.toggle()
-            }
-        }
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    dragOffset = value.translation
-                    player.setPan(Float(value.translation.width / 180))
-                    player.setSpatialOffset(
-                        CGSize(
-                            width: environmentService.previewHorizontalShift + (value.translation.width * 0.22),
-                            height: environmentService.previewVerticalShift + (value.translation.height * 0.16)
-                        )
-                    )
-                }
-                .onEnded { _ in
-                    withAnimation(.interactiveSpring(response: 0.62, dampingFraction: 0.88, blendDuration: 0.16)) {
-                        dragOffset = .zero
-                    }
-                    player.setPan(0)
-                    player.setSpatialOffset(environmentService.previewParallax)
-                }
-        )
         .onAppear {
             if let audioURL = entry.audioURL {
                 player.load(url: audioURL, autoPlay: true, loop: true, volume: 0.78)

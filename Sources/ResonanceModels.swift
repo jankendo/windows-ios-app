@@ -126,8 +126,6 @@ struct MemoryAtmosphereMetadata: Codable {
     var atmosphereStyleRaw: String
     var captureDuration: Double?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
-    var weatherSnapshot: MemoryWeatherSnapshot?
-    var weatherStatusNote: String?
     var minimumDecibels: Double?
     var maximumDecibels: Double?
 
@@ -138,8 +136,6 @@ struct MemoryAtmosphereMetadata: Codable {
         atmosphereStyle: AtmosphereStyle,
         captureDuration: Double? = nil,
         sensorSnapshot: CaptureEnvironmentSnapshot? = nil,
-        weatherSnapshot: MemoryWeatherSnapshot? = nil,
-        weatherStatusNote: String? = nil,
         minimumDecibels: Double? = nil,
         maximumDecibels: Double? = nil
     ) {
@@ -154,8 +150,6 @@ struct MemoryAtmosphereMetadata: Codable {
         self.atmosphereStyleRaw = atmosphereStyle.rawValue
         self.captureDuration = captureDuration
         self.sensorSnapshot = sensorSnapshot
-        self.weatherSnapshot = weatherSnapshot
-        self.weatherStatusNote = weatherStatusNote?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.minimumDecibels = minimumDecibels
         self.maximumDecibels = maximumDecibels
     }
@@ -172,20 +166,6 @@ struct MemoryAtmosphereMetadata: Codable {
     var photoCaptionSource: PhotoCaptionSource? {
         guard let photoCaptionSourceRaw else { return nil }
         return PhotoCaptionSource(rawValue: photoCaptionSourceRaw)
-    }
-}
-
-struct MemoryWeatherSnapshot: Codable {
-    var conditionLabel: String
-    var temperatureCelsius: Double?
-    var apparentTemperatureCelsius: Double?
-    var symbolName: String?
-
-    var compactSummary: String {
-        let roundedTemperature = temperatureCelsius.map { "\($0.rounded(.toNearestOrEven).formatted(.number.precision(.fractionLength(0))))°C" }
-        return [conditionLabel, roundedTemperature]
-            .compactMap { $0 }
-            .joined(separator: " · ")
     }
 }
 
@@ -304,8 +284,6 @@ final class MemoryEntry: Identifiable {
             atmosphereStyle.localizedLabel,
             photoCaption ?? "",
             placeLabel ?? "",
-            weatherSnapshot?.conditionLabel ?? "",
-            weatherSnapshot?.compactSummary ?? "",
             visualTagsRaw.replacingOccurrences(of: "|", with: " "),
             audioTagsRaw.replacingOccurrences(of: "|", with: " ")
         ]
@@ -384,14 +362,6 @@ final class MemoryEntry: Identifiable {
         atmosphereMetadata?.sensorSnapshot
     }
 
-    var weatherSnapshot: MemoryWeatherSnapshot? {
-        atmosphereMetadata?.weatherSnapshot
-    }
-
-    var weatherStatusNote: String? {
-        atmosphereMetadata?.weatherStatusNote?.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     var minimumDecibels: Double? {
         atmosphereMetadata?.minimumDecibels
     }
@@ -421,9 +391,6 @@ final class MemoryEntry: Identifiable {
 
         if let placeLabel {
             highlights.append(placeLabel)
-        }
-        if let weatherSummary = weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
-            highlights.append(weatherSummary)
         }
         if let altitude = sensorSnapshot?.altitude {
             highlights.append(String(format: "標高 %.0fm", altitude))

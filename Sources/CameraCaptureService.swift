@@ -12,8 +12,6 @@ struct CapturedMemoryDraft: Identifiable {
     var photoCaption: String?
     var photoCaptionSource: PhotoCaptionSource?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
-    var weatherSnapshot: MemoryWeatherSnapshot?
-    var weatherStatusNote: String?
     var minimumDecibels: Double?
     var maximumDecibels: Double?
 
@@ -432,8 +430,6 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             photoCaption: nil,
             photoCaptionSource: nil,
             sensorSnapshot: nil,
-            weatherSnapshot: nil,
-            weatherStatusNote: nil,
             minimumDecibels: minimumCapturedDecibels.map(Double.init),
             maximumDecibels: maximumCapturedDecibels.map(Double.init)
         )))

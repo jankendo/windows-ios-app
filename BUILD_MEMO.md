@@ -84,15 +84,6 @@ pwsh -File .\scripts\publish-github-secrets.ps1 `
 - マイク
 - 位置情報（地図表示と場所記録）
 - モーション / フィットネス（端末姿勢・気圧由来の空間情報）
-- 取得可能なら WeatherKit による天気 / 気温（未設定や利用不可時は自動でスキップ）
-
-## WeatherKit メモ
-
-- 現在の project は **WeatherKit entitlement** を含む構成
-- Apple Developer 側で WeatherKit capability が利用可能な状態であることが前提
-- **Apple Developer > Certificates, Identifiers & Profiles > Identifiers** で、この app の **Explicit App ID** に対して **WeatherKit** を有効化する必要がある
-- WeatherKit を有効化した直後は反映まで少し時間がかかるため、**しばらく待ってから再ビルド / 再インストール** する
-- entitlement や利用条件が満たされない場合、天気 / 気温は **表示されずに自動スキップ** される
 
 ## 補足
 

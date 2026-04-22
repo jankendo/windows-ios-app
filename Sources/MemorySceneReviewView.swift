@@ -33,10 +33,6 @@ struct MemorySceneReviewView: View {
         ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
     }
 
-    private var weatherSummaryText: String {
-        draft.weatherSnapshot?.compactSummary ?? draft.weatherStatusNote ?? "取得なし"
-    }
-
     private var previewDisplayTitle: String {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedTitle.isEmpty ? "深呼吸して、この空気にとどまる" : trimmedTitle
@@ -150,14 +146,6 @@ struct MemorySceneReviewView: View {
                             tint: .white,
                             atmosphere: atmosphere
                         )
-                        if let weatherSummary = draft.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
-                            ResonanceBadge(
-                                title: weatherSummary,
-                                systemImage: draft.weatherSnapshot?.symbolName ?? "cloud.sun.fill",
-                                tint: .white,
-                                atmosphere: atmosphere
-                            )
-                        }
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -267,14 +255,6 @@ struct MemorySceneReviewView: View {
                             detailLine(title: "日時", value: draft.capturedAt.formatted(date: .abbreviated, time: .shortened))
                             if let placeLabel = draft.placeLabel, !placeLabel.isEmpty {
                                 detailLine(title: "場所", value: placeLabel)
-                            }
-                            detailLine(title: "天気", value: weatherSummaryText)
-                            if draft.weatherSnapshot == nil,
-                               let weatherStatusNote = draft.weatherStatusNote,
-                               !weatherStatusNote.isEmpty {
-                                Text(weatherStatusNote)
-                                    .font(.caption)
-                                    .foregroundStyle(palette.secondaryText)
                             }
                             if let horizontalAccuracy = draft.sensorSnapshot?.horizontalAccuracy {
                                 detailLine(title: "位置精度", value: String(format: "±%.1f m", horizontalAccuracy))
@@ -510,6 +490,32 @@ private struct ImmersiveMemoryPlaybackView: View {
             )
             .ignoresSafeArea()
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.38)) {
+                controlsVisible.toggle()
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 8)
+                .onChanged { value in
+                    dragOffset = value.translation
+                    player.setPan(Float(value.translation.width / 180))
+                    player.setSpatialOffset(
+                        CGSize(
+                            width: environmentService.previewHorizontalShift + (value.translation.width * 0.22),
+                            height: environmentService.previewVerticalShift + (value.translation.height * 0.16)
+                        )
+                    )
+                }
+                .onEnded { _ in
+                    withAnimation(.interactiveSpring(response: 0.62, dampingFraction: 0.88, blendDuration: 0.16)) {
+                        dragOffset = .zero
+                    }
+                    player.setPan(0)
+                    player.setSpatialOffset(environmentService.previewParallax)
+                }
+        )
         .safeAreaInset(edge: .top) {
             if controlsVisible {
                 HStack {
@@ -554,32 +560,6 @@ private struct ImmersiveMemoryPlaybackView: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.38)) {
-                controlsVisible.toggle()
-            }
-        }
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    dragOffset = value.translation
-                    player.setPan(Float(value.translation.width / 180))
-                    player.setSpatialOffset(
-                        CGSize(
-                            width: environmentService.previewHorizontalShift + (value.translation.width * 0.22),
-                            height: environmentService.previewVerticalShift + (value.translation.height * 0.16)
-                        )
-                    )
-                }
-                .onEnded { _ in
-                    withAnimation(.interactiveSpring(response: 0.62, dampingFraction: 0.88, blendDuration: 0.16)) {
-                        dragOffset = .zero
-                    }
-                    player.setPan(0)
-                    player.setSpatialOffset(environmentService.previewParallax)
-                }
-        )
         .onAppear {
             if let audioURL = draft.audioTempURL {
                 player.load(url: audioURL, autoPlay: true, loop: true, volume: 0.78)

@@ -47,7 +47,6 @@ struct SearchView: View {
             merge(entry.placeLabel, systemImage: "location.fill")
             merge(entry.localizedMood, systemImage: "sparkles")
             merge(entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName)
-            merge(entry.weatherSnapshot?.conditionLabel, systemImage: entry.weatherSnapshot?.symbolName ?? "cloud.sun.fill")
             for tag in entry.autoTags.prefix(4) {
                 merge(tag, systemImage: "tag.fill")
             }

@@ -1,4 +1,3 @@
-import CoreLocation
 import SwiftData
 import SwiftUI
 import UIKit
@@ -18,7 +17,6 @@ final class CaptureFlowModel: ObservableObject {
 
     let camera = CameraCaptureService()
     private let locationService = CaptureLocationService.shared
-    private let weatherService = AmbientWeatherCaptureService.shared
     private var captionRefreshTask: Task<Void, Never>?
 
     func prepare() {
@@ -52,15 +50,7 @@ final class CaptureFlowModel: ObservableObject {
                     draft.photoCaption = captionGeneration?.text
                     draft.photoCaptionSource = captionGeneration?.source
                     draft.sensorSnapshot = await sensorSnapshot
-                    let weatherLocation =
-                        await resolvedLocation
-                        ?? draft.sensorSnapshot?.coordinate.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
-                    let weatherResult = await self.weatherService.currentWeatherResult(for: weatherLocation)
-                    draft.weatherSnapshot = weatherResult.snapshot
-                    draft.weatherStatusNote = weatherResult.statusNote
-                    if draft.weatherSnapshot == nil, weatherLocation == nil {
-                        draft.weatherStatusNote = "位置情報が安定したあとに天気を取得します。"
-                    }
+                    _ = await resolvedLocation
                     self.isPreparingReview = false
                     self.capturedDraft = draft
                     self.scheduleDraftCaptionRefresh()
@@ -130,8 +120,6 @@ final class CaptureFlowModel: ObservableObject {
                     atmosphereStyle: draft.atmosphereStyle,
                     captureDuration: draft.audioDuration,
                     sensorSnapshot: draft.sensorSnapshot,
-                    weatherSnapshot: draft.weatherSnapshot,
-                    weatherStatusNote: draft.weatherStatusNote,
                     minimumDecibels: draft.minimumDecibels,
                     maximumDecibels: draft.maximumDecibels
                 )
@@ -434,14 +422,6 @@ struct CaptureView: View {
                         )
                     }
 
-                    if let weatherSummary = recentEntry?.weatherSnapshot?.compactSummary, !weatherSummary.isEmpty {
-                        ResonanceBadge(
-                            title: weatherSummary,
-                            systemImage: recentEntry?.weatherSnapshot?.symbolName ?? "cloud.sun.fill",
-                            tint: .white,
-                            atmosphere: atmosphere
-                        )
-                    }
                 }
             }
 
