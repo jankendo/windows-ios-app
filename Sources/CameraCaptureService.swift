@@ -13,6 +13,7 @@ struct CapturedMemoryDraft: Identifiable {
     var photoCaptionSource: PhotoCaptionSource?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
     var weatherSnapshot: MemoryWeatherSnapshot?
+    var weatherStatusNote: String?
     var minimumDecibels: Double?
     var maximumDecibels: Double?
 
@@ -312,7 +313,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 48_000,
-            AVNumberOfChannelsKey: 2,
+            AVNumberOfChannelsKey: 1,
             AVLinearPCMBitDepthKey: 32,
             AVLinearPCMIsFloatKey: true,
             AVLinearPCMIsBigEndianKey: false
@@ -432,6 +433,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             photoCaptionSource: nil,
             sensorSnapshot: nil,
             weatherSnapshot: nil,
+            weatherStatusNote: nil,
             minimumDecibels: minimumCapturedDecibels.map(Double.init),
             maximumDecibels: maximumCapturedDecibels.map(Double.init)
         )))

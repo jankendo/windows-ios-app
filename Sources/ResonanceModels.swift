@@ -65,6 +65,19 @@ enum AtmosphereStyle: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    var guidedBreathLine: String {
+        switch self {
+        case .dawn:
+            return "4秒吸って、6秒吐く。目覚める光と音を、そのまま静かに受け取る。"
+        case .day:
+            return "肩をひらき、吐く息を少し長く。場の明るさだけをやさしく残す。"
+        case .dusk:
+            return "余韻に合わせてゆっくり吐くと、心の波がやわらかく整っていく。"
+        case .night:
+            return "音の奥行きを追いすぎず、静けさをひとつ深く通していく。"
+        }
+    }
+
     var symbolName: String {
         switch self {
         case .dawn:
@@ -114,6 +127,7 @@ struct MemoryAtmosphereMetadata: Codable {
     var captureDuration: Double?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
     var weatherSnapshot: MemoryWeatherSnapshot?
+    var weatherStatusNote: String?
     var minimumDecibels: Double?
     var maximumDecibels: Double?
 
@@ -125,6 +139,7 @@ struct MemoryAtmosphereMetadata: Codable {
         captureDuration: Double? = nil,
         sensorSnapshot: CaptureEnvironmentSnapshot? = nil,
         weatherSnapshot: MemoryWeatherSnapshot? = nil,
+        weatherStatusNote: String? = nil,
         minimumDecibels: Double? = nil,
         maximumDecibels: Double? = nil
     ) {
@@ -140,6 +155,7 @@ struct MemoryAtmosphereMetadata: Codable {
         self.captureDuration = captureDuration
         self.sensorSnapshot = sensorSnapshot
         self.weatherSnapshot = weatherSnapshot
+        self.weatherStatusNote = weatherStatusNote?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.minimumDecibels = minimumDecibels
         self.maximumDecibels = maximumDecibels
     }
@@ -370,6 +386,10 @@ final class MemoryEntry: Identifiable {
 
     var weatherSnapshot: MemoryWeatherSnapshot? {
         atmosphereMetadata?.weatherSnapshot
+    }
+
+    var weatherStatusNote: String? {
+        atmosphereMetadata?.weatherStatusNote?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var minimumDecibels: Double? {

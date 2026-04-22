@@ -55,8 +55,11 @@ final class CaptureFlowModel: ObservableObject {
                     let weatherLocation =
                         await resolvedLocation
                         ?? draft.sensorSnapshot?.coordinate.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
-                    if let location = weatherLocation {
-                        draft.weatherSnapshot = await self.weatherService.currentWeatherSnapshot(for: location)
+                    let weatherResult = await self.weatherService.currentWeatherResult(for: weatherLocation)
+                    draft.weatherSnapshot = weatherResult.snapshot
+                    draft.weatherStatusNote = weatherResult.statusNote
+                    if draft.weatherSnapshot == nil, weatherLocation == nil {
+                        draft.weatherStatusNote = "位置情報が安定したあとに天気を取得します。"
                     }
                     self.isPreparingReview = false
                     self.capturedDraft = draft
@@ -128,6 +131,7 @@ final class CaptureFlowModel: ObservableObject {
                     captureDuration: draft.audioDuration,
                     sensorSnapshot: draft.sensorSnapshot,
                     weatherSnapshot: draft.weatherSnapshot,
+                    weatherStatusNote: draft.weatherStatusNote,
                     minimumDecibels: draft.minimumDecibels,
                     maximumDecibels: draft.maximumDecibels
                 )

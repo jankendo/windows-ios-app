@@ -1,29 +1,40 @@
 import AVFoundation
+import CoreGraphics
 import Foundation
 
 @MainActor
-final class AudioPlayerController: NSObject, ObservableObject {
+final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency AVAudioPlayerDelegate {
     @Published private(set) var isPlaying = false
     @Published private(set) var duration: TimeInterval = 0
+    @Published private(set) var isSpatialPlaybackActive = false
     @Published var currentTime: TimeInterval = 0
 
-    private let engine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
+    private enum PlaybackBackend {
+        case none
+        case simple
+        case spatialLoop
+    }
 
-    private var audioFile: AVAudioFile?
-    private var loopBuffer: AVAudioPCMBuffer?
+    private let engine = AVAudioEngine()
+    private let environmentNode = AVAudioEnvironmentNode()
+    private let spatialPlayerNode = AVAudioPlayerNode()
+
+    private var simplePlayer: AVAudioPlayer?
+    private var spatialLoopBuffer: AVAudioPCMBuffer?
     private var timer: Timer?
     private var loadedURL: URL?
+    private var backend: PlaybackBackend = .none
     private var shouldLoop = false
     private var volume: Float = 1
-    private var scheduledStartTime: TimeInterval = 0
     private var pausedTime: TimeInterval = 0
-    private var needsScheduling = true
+    private var spatialNeedsScheduling = true
 
     override init() {
         super.init()
-        engine.attach(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
+        engine.attach(environmentNode)
+        engine.attach(spatialPlayerNode)
+        engine.connect(environmentNode, to: engine.mainMixerNode, format: nil)
+        configureSpatialEnvironment()
         engine.prepare()
     }
 
@@ -42,94 +53,116 @@ final class AudioPlayerController: NSObject, ObservableObject {
     }
 
     func seek(to time: TimeInterval) {
-        guard !shouldLoop, duration > 0 else { return }
+        guard backend == .simple, let simplePlayer, duration > 0 else { return }
 
         let clampedTime = max(0, min(time, duration))
+        simplePlayer.currentTime = clampedTime
         currentTime = clampedTime
         pausedTime = clampedTime
-        scheduledStartTime = clampedTime
-        needsScheduling = true
-
-        if isPlaying {
-            playerNode.stop()
-            play()
-        }
     }
 
     func setPan(_ pan: Float) {
-        playerNode.pan = max(-1, min(1, pan))
+        let clampedPan = max(-1, min(1, pan))
+        simplePlayer?.pan = clampedPan
+
+        guard backend == .spatialLoop else { return }
+        spatialPlayerNode.position = AVAudio3DPoint(
+            x: clampedPan * 2.4,
+            y: 0,
+            z: -1.35
+        )
+    }
+
+    func setSpatialOffset(_ offset: CGSize) {
+        guard backend == .spatialLoop else { return }
+
+        let normalizedX = max(-1.0, min(1.0, Float(offset.width / 24)))
+        let normalizedY = max(-1.0, min(1.0, Float(offset.height / 20)))
+        spatialPlayerNode.position = AVAudio3DPoint(
+            x: normalizedX * 2.6,
+            y: normalizedY * -0.8,
+            z: -1.35
+        )
     }
 
     func stop() {
         invalidateTimer()
-        playerNode.stop()
+        simplePlayer?.stop()
+        simplePlayer = nil
+
+        spatialPlayerNode.stop()
         engine.stop()
+
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
-        audioFile = nil
-        loopBuffer = nil
+        spatialLoopBuffer = nil
         loadedURL = nil
+        backend = .none
         shouldLoop = false
-        needsScheduling = true
-        scheduledStartTime = 0
         pausedTime = 0
+        spatialNeedsScheduling = true
         isPlaying = false
+        isSpatialPlaybackActive = false
         duration = 0
         currentTime = 0
     }
 
     func load(url: URL, autoPlay: Bool = false, loop: Bool = false, volume: Float = 1.0) {
-        invalidateTimer()
-        playerNode.stop()
-        engine.stop()
+        stop()
+
+        loadedURL = url
+        shouldLoop = loop
+        self.volume = volume
 
         do {
-            let file = try AVAudioFile(forReading: url)
-            audioFile = file
-            loadedURL = url
-            shouldLoop = loop
-            self.volume = volume
-            duration = Double(file.length) / file.processingFormat.sampleRate
-            currentTime = 0
-            pausedTime = 0
-            scheduledStartTime = 0
-            needsScheduling = true
-            isPlaying = false
-            playerNode.volume = volume
-
             if loop {
-                loopBuffer = try Self.makeLoopBuffer(from: file)
+                try prepareSpatialLoopPlayback(url: url, volume: volume)
             } else {
-                loopBuffer = nil
+                try prepareSimplePlayback(url: url, loop: false, volume: volume)
             }
 
             if autoPlay {
                 play()
             }
         } catch {
-            stop()
+            do {
+                try prepareSimplePlayback(url: url, loop: loop, volume: volume)
+                if autoPlay {
+                    play()
+                }
+            } catch {
+                stop()
+            }
         }
     }
 
     private func play() {
         guard loadedURL != nil else { return }
 
-        if !shouldLoop, duration > 0, currentTime >= duration - 0.01 {
-            currentTime = 0
-            pausedTime = 0
-            scheduledStartTime = 0
-            needsScheduling = true
-        }
-
         do {
             try preparePlaybackSession()
-            try startEngineIfNeeded()
 
-            if needsScheduling {
-                try schedulePlayback()
+            switch backend {
+            case .simple:
+                guard let simplePlayer else { return }
+                if !shouldLoop, duration > 0, simplePlayer.currentTime >= duration - 0.01 {
+                    simplePlayer.currentTime = 0
+                    currentTime = 0
+                    pausedTime = 0
+                }
+                simplePlayer.play()
+
+            case .spatialLoop:
+                try startEngineIfNeeded()
+                if spatialNeedsScheduling {
+                    scheduleSpatialLoopIfNeeded()
+                }
+                spatialPlayerNode.play()
+
+            case .none:
+                return
             }
 
-            playerNode.play()
             isPlaying = true
             startTimer()
         } catch {
@@ -140,78 +173,99 @@ final class AudioPlayerController: NSObject, ObservableObject {
     private func pause() {
         currentTime = playbackPosition()
         pausedTime = currentTime
-        playerNode.pause()
-        isPlaying = false
-        invalidateTimer()
-    }
 
-    private func schedulePlayback() throws {
-        playerNode.stop()
-        playerNode.volume = volume
-
-        if shouldLoop {
-            guard let loopBuffer else { throw AudioPlayerError.missingBuffer }
-            scheduledStartTime = 0
-            pausedTime = 0
-            currentTime = 0
-            playerNode.scheduleBuffer(loopBuffer, at: nil, options: [.loops], completionHandler: nil)
-        } else {
-            guard let audioFile else { throw AudioPlayerError.missingFile }
-
-            let sampleRate = audioFile.processingFormat.sampleRate
-            let startFrame = AVAudioFramePosition(max(0, min(scheduledStartTime, duration)) * sampleRate)
-            let remainingFrames = AVAudioFrameCount(max(0, audioFile.length - startFrame))
-
-            guard remainingFrames > 0 else {
-                currentTime = duration
-                pausedTime = duration
-                isPlaying = false
-                return
-            }
-
-            playerNode.scheduleSegment(audioFile, startingFrame: startFrame, frameCount: remainingFrames, at: nil) { [weak self] in
-                Task { @MainActor in
-                    self?.finishPlaybackNaturally()
-                }
-            }
+        switch backend {
+        case .simple:
+            simplePlayer?.pause()
+        case .spatialLoop:
+            spatialPlayerNode.pause()
+        case .none:
+            break
         }
 
-        needsScheduling = false
+        isPlaying = false
+        invalidateTimer()
     }
 
-    private func finishPlaybackNaturally() {
-        guard !shouldLoop else { return }
+    private func prepareSimplePlayback(url: URL, loop: Bool, volume: Float) throws {
+        let player = try AVAudioPlayer(contentsOf: url)
+        player.delegate = self
+        player.numberOfLoops = loop ? -1 : 0
+        player.volume = volume
+        player.prepareToPlay()
 
-        invalidateTimer()
-        isPlaying = false
-        currentTime = duration
-        pausedTime = duration
-        scheduledStartTime = duration
-        needsScheduling = true
+        simplePlayer = player
+        backend = .simple
+        duration = player.duration
+        pausedTime = 0
+        currentTime = 0
+        isSpatialPlaybackActive = false
+    }
+
+    private func prepareSpatialLoopPlayback(url: URL, volume: Float) throws {
+        let (buffer, duration) = try Self.makeSpatialLoopBuffer(from: url)
+
+        spatialLoopBuffer = buffer
+        backend = .spatialLoop
+        self.duration = duration
+        pausedTime = 0
+        currentTime = 0
+        spatialNeedsScheduling = true
+        isSpatialPlaybackActive = true
+
+        spatialPlayerNode.stop()
+        spatialPlayerNode.volume = volume
+        spatialPlayerNode.position = AVAudio3DPoint(x: 0, y: 0, z: -1.35)
+        environmentNode.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
+
+        engine.disconnectNodeOutput(spatialPlayerNode)
+        engine.connect(spatialPlayerNode, to: environmentNode, format: buffer.format)
+    }
+
+    private func configureSpatialEnvironment() {
+        environmentNode.distanceAttenuationParameters.referenceDistance = 0.7
+        environmentNode.distanceAttenuationParameters.maximumDistance = 6
+        environmentNode.reverbParameters.enable = true
+        environmentNode.reverbParameters.level = -10
+        environmentNode.outputVolume = 1
+    }
+
+    private func scheduleSpatialLoopIfNeeded() {
+        guard let spatialLoopBuffer else { return }
+        spatialPlayerNode.stop()
+        spatialPlayerNode.scheduleBuffer(spatialLoopBuffer, at: nil, options: [.loops], completionHandler: nil)
+        spatialNeedsScheduling = false
+        pausedTime = 0
+        currentTime = 0
     }
 
     private func playbackPosition() -> TimeInterval {
-        guard
-            let nodeTime = playerNode.lastRenderTime,
-            let playerTime = playerNode.playerTime(forNodeTime: nodeTime)
-        else {
-            return pausedTime
-        }
+        switch backend {
+        case .simple:
+            return simplePlayer?.currentTime ?? pausedTime
 
-        let sampleRate = playerTime.sampleRate
-        let elapsed = Double(playerTime.sampleTime) / sampleRate
+        case .spatialLoop:
+            guard
+                let nodeTime = spatialPlayerNode.lastRenderTime,
+                let playerTime = spatialPlayerNode.playerTime(forNodeTime: nodeTime),
+                duration > 0
+            else {
+                return pausedTime
+            }
 
-        if shouldLoop, duration > 0 {
+            let elapsed = Double(playerTime.sampleTime) / playerTime.sampleRate
             let wrapped = elapsed.truncatingRemainder(dividingBy: duration)
             return wrapped >= 0 ? wrapped : wrapped + duration
-        }
 
-        return min(scheduledStartTime + elapsed, duration)
+        case .none:
+            return pausedTime
+        }
     }
 
     private func preparePlaybackSession() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .default, options: [.allowAirPlay, .allowBluetoothA2DP])
+        let mode: AVAudioSession.Mode = backend == .spatialLoop ? .moviePlayback : .default
+        try session.setCategory(.playback, mode: mode, options: [.allowAirPlay, .allowBluetoothA2DP])
         try session.setActive(true)
     }
 
@@ -235,17 +289,79 @@ final class AudioPlayerController: NSObject, ObservableObject {
         timer = nil
     }
 
-    private static func makeLoopBuffer(from file: AVAudioFile) throws -> AVAudioPCMBuffer {
-        let frameCount = AVAudioFrameCount(file.length)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount) else {
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard backend == .simple, !shouldLoop else { return }
+
+        isPlaying = false
+        currentTime = duration
+        pausedTime = duration
+        invalidateTimer()
+    }
+}
+
+private extension AudioPlayerController {
+    static func makeSpatialLoopBuffer(from url: URL) throws -> (buffer: AVAudioPCMBuffer, duration: TimeInterval) {
+        let file = try AVAudioFile(forReading: url)
+        let sourceFrameCount = AVAudioFrameCount(file.length)
+        guard sourceFrameCount > 0 else {
             throw AudioPlayerError.missingBuffer
         }
-        try file.read(into: buffer)
-        return buffer
+
+        let sourceBuffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: sourceFrameCount)
+        guard let sourceBuffer else {
+            throw AudioPlayerError.missingBuffer
+        }
+
+        try file.read(into: sourceBuffer)
+
+        let duration = Double(file.length) / file.processingFormat.sampleRate
+        if sourceBuffer.format.channelCount == 1 {
+            return (sourceBuffer, duration)
+        }
+
+        let monoFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: file.processingFormat.sampleRate,
+            channels: 1,
+            interleaved: false
+        )
+        guard let monoFormat else {
+            throw AudioPlayerError.bufferConversionFailed
+        }
+
+        let estimatedFrameCapacity = AVAudioFrameCount(
+            ceil(Double(sourceBuffer.frameLength) * monoFormat.sampleRate / sourceBuffer.format.sampleRate)
+        ) + 1024
+        guard let monoBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: estimatedFrameCapacity) else {
+            throw AudioPlayerError.missingBuffer
+        }
+
+        guard let converter = AVAudioConverter(from: sourceBuffer.format, to: monoFormat) else {
+            throw AudioPlayerError.bufferConversionFailed
+        }
+
+        var hasProvidedSource = false
+        var conversionError: NSError?
+        let status = converter.convert(to: monoBuffer, error: &conversionError) { _, outStatus in
+            if hasProvidedSource {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+
+            hasProvidedSource = true
+            outStatus.pointee = .haveData
+            return sourceBuffer
+        }
+
+        if status == .error || monoBuffer.frameLength == 0 {
+            throw conversionError ?? AudioPlayerError.bufferConversionFailed
+        }
+
+        return (monoBuffer, duration)
     }
 }
 
 private enum AudioPlayerError: Error {
-    case missingFile
     case missingBuffer
+    case bufferConversionFailed
 }

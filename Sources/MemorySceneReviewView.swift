@@ -34,7 +34,7 @@ struct MemorySceneReviewView: View {
     }
 
     private var weatherSummaryText: String {
-        draft.weatherSnapshot?.compactSummary ?? "取得なし"
+        draft.weatherSnapshot?.compactSummary ?? draft.weatherStatusNote ?? "取得なし"
     }
 
     private var previewDisplayTitle: String {
@@ -269,6 +269,13 @@ struct MemorySceneReviewView: View {
                                 detailLine(title: "場所", value: placeLabel)
                             }
                             detailLine(title: "天気", value: weatherSummaryText)
+                            if draft.weatherSnapshot == nil,
+                               let weatherStatusNote = draft.weatherStatusNote,
+                               !weatherStatusNote.isEmpty {
+                                Text(weatherStatusNote)
+                                    .font(.caption)
+                                    .foregroundStyle(palette.secondaryText)
+                            }
                             if let horizontalAccuracy = draft.sensorSnapshot?.horizontalAccuracy {
                                 detailLine(title: "位置精度", value: String(format: "±%.1f m", horizontalAccuracy))
                             }
@@ -558,18 +565,29 @@ private struct ImmersiveMemoryPlaybackView: View {
                 .onChanged { value in
                     dragOffset = value.translation
                     player.setPan(Float(value.translation.width / 180))
+                    player.setSpatialOffset(
+                        CGSize(
+                            width: environmentService.previewHorizontalShift + (value.translation.width * 0.22),
+                            height: environmentService.previewVerticalShift + (value.translation.height * 0.16)
+                        )
+                    )
                 }
                 .onEnded { _ in
                     withAnimation(.interactiveSpring(response: 0.62, dampingFraction: 0.88, blendDuration: 0.16)) {
                         dragOffset = .zero
                     }
                     player.setPan(0)
+                    player.setSpatialOffset(environmentService.previewParallax)
                 }
         )
         .onAppear {
             if let audioURL = draft.audioTempURL {
                 player.load(url: audioURL, autoPlay: true, loop: true, volume: 0.78)
             }
+            player.setSpatialOffset(environmentService.previewParallax)
+        }
+        .onChange(of: environmentService.previewParallax) { _, newValue in
+            player.setSpatialOffset(newValue)
         }
         .onDisappear {
             player.stop()
@@ -599,6 +617,13 @@ private struct ImmersiveMemoryPlaybackView: View {
 
     private func immersiveTexts(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 6 : 8) {
+            if player.isSpatialPlaybackActive {
+                Label("空間オーディオ", systemImage: "dot.radiowaves.left.and.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .lineLimit(1)
+            }
+
             Text(immersiveTitle)
                 .font(compact ? .headline.weight(.semibold) : .title3.weight(.semibold))
                 .foregroundStyle(.white)
@@ -616,6 +641,12 @@ private struct ImmersiveMemoryPlaybackView: View {
                 Text(atmosphere.restorativeLine)
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.68))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(atmosphere.guidedBreathLine)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.72))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -656,7 +687,7 @@ private struct ImmersiveMemoryPlaybackView: View {
 
                 Spacer(minLength: 12)
 
-                Text(compact ? "そっと揺れます" : "そっと動かすと、気配が静かに揺れます")
+                Text(compact ? "呼吸に合わせて揺らぐ" : "呼吸と傾きに合わせて、音と気配がやわらかく揺らぎます")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.white.opacity(0.68))
                     .multilineTextAlignment(.trailing)
