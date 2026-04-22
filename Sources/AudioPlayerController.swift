@@ -334,7 +334,6 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
             .bluetoothHFP,
             .airPlay,
             .carAudio,
-            .hdmi,
             .usbAudio
         ]
 
