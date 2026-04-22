@@ -28,6 +28,8 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
     private var volume: Float = 1
     private var pausedTime: TimeInterval = 0
     private var spatialNeedsScheduling = true
+    private var fallbackValidationTask: Task<Void, Never>?
+    private var playbackGeneration = 0
 
     override init() {
         super.init()
@@ -86,6 +88,9 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
     }
 
     func stop() {
+        playbackGeneration += 1
+        fallbackValidationTask?.cancel()
+        fallbackValidationTask = nil
         invalidateTimer()
         simplePlayer?.stop()
         simplePlayer = nil
@@ -108,17 +113,22 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
     }
 
     func load(url: URL, autoPlay: Bool = false, loop: Bool = false, volume: Float = 1.0) {
+        load(url: url, autoPlay: autoPlay, loop: loop, volume: volume, preferSpatial: true)
+    }
+
+    private func load(url: URL, autoPlay: Bool, loop: Bool, volume: Float, preferSpatial: Bool) {
         stop()
+        playbackGeneration += 1
 
         loadedURL = url
         shouldLoop = loop
         self.volume = volume
 
         do {
-            if loop {
+            if loop && preferSpatial && supportsSpatialLoopPlaybackRoute() {
                 try prepareSpatialLoopPlayback(url: url, volume: volume)
             } else {
-                try prepareSimplePlayback(url: url, loop: false, volume: volume)
+                try prepareSimplePlayback(url: url, loop: loop, volume: volume)
             }
 
             if autoPlay {
@@ -144,6 +154,8 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
 
             switch backend {
             case .simple:
+                fallbackValidationTask?.cancel()
+                fallbackValidationTask = nil
                 guard let simplePlayer else { return }
                 if !shouldLoop, duration > 0, simplePlayer.currentTime >= duration - 0.01 {
                     simplePlayer.currentTime = 0
@@ -158,6 +170,7 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
                     scheduleSpatialLoopIfNeeded()
                 }
                 spatialPlayerNode.play()
+                scheduleSpatialFallbackValidation()
 
             case .none:
                 return
@@ -171,6 +184,9 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
     }
 
     private func pause() {
+        playbackGeneration += 1
+        fallbackValidationTask?.cancel()
+        fallbackValidationTask = nil
         currentTime = playbackPosition()
         pausedTime = currentTime
 
@@ -287,6 +303,43 @@ final class AudioPlayerController: NSObject, ObservableObject, @preconcurrency A
     private func invalidateTimer() {
         timer?.invalidate()
         timer = nil
+    }
+
+    private func scheduleSpatialFallbackValidation() {
+        fallbackValidationTask?.cancel()
+        let expectedGeneration = playbackGeneration
+        fallbackValidationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard let self else { return }
+            guard self.playbackGeneration == expectedGeneration else { return }
+            guard self.backend == .spatialLoop, self.isPlaying, let loadedURL = self.loadedURL else { return }
+
+            let progressed = max(self.currentTime, self.playbackPosition())
+            guard progressed < 0.05 else { return }
+
+            self.load(
+                url: loadedURL,
+                autoPlay: true,
+                loop: self.shouldLoop,
+                volume: self.volume,
+                preferSpatial: false
+            )
+        }
+    }
+
+    private func supportsSpatialLoopPlaybackRoute() -> Bool {
+        let supportedOutputPorts: Set<AVAudioSession.Port> = [
+            .headphones,
+            .bluetoothA2DP,
+            .bluetoothHFP,
+            .airPlay,
+            .carAudio,
+            .hdmi,
+            .usbAudio
+        ]
+
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+        return outputs.contains { supportedOutputPorts.contains($0.portType) }
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

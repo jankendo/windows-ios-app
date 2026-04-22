@@ -186,14 +186,14 @@ enum MemoryAnalysisService {
             return ""
         }
 
-        let locale = Locale.current.identifier
-        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: locale)) ?? SFSpeechRecognizer() else {
+        guard let recognizer = preferredSpeechRecognizer(), recognizer.isAvailable else {
             return ""
         }
 
         return await withCheckedContinuation { continuation in
             let request = SFSpeechURLRecognitionRequest(url: audioURL)
             request.shouldReportPartialResults = false
+            request.addsPunctuation = true
 
             var task: SFSpeechRecognitionTask?
             task = recognizer.recognitionTask(with: request) { result, error in
@@ -206,6 +206,26 @@ enum MemoryAnalysisService {
                 }
             }
         }
+    }
+
+    private static func preferredSpeechRecognizer() -> SFSpeechRecognizer? {
+        let supportedLocales = SFSpeechRecognizer.supportedLocales()
+        let preferredLocales = [
+            Locale(identifier: "ja-JP"),
+            Locale(identifier: "ja_JP"),
+            Locale.current
+        ]
+
+        for locale in preferredLocales where supportedLocales.contains(where: {
+            $0.identifier.compare(locale.identifier, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+                || ($0.language.languageCode?.identifier == locale.language.languageCode?.identifier && locale.language.languageCode?.identifier == "ja")
+        }) {
+            if let recognizer = SFSpeechRecognizer(locale: locale) {
+                return recognizer
+            }
+        }
+
+        return SFSpeechRecognizer()
     }
 
     private static func inferMood(visualTags: [String], audioTags: [String], transcript: String) -> MemoryMood {

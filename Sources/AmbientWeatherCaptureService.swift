@@ -52,24 +52,16 @@ actor AmbientWeatherCaptureService {
                 }
 
                 if attempt == 3 {
-                    let detail = [
-                        weatherError.errorDescription,
-                        weatherError.failureReason,
-                        weatherError.recoverySuggestion
-                    ]
-                    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .first { !$0.isEmpty }
-
                     return FetchResult(
                         snapshot: nil,
-                        statusNote: detail ?? "天気の取得が完了しませんでした。ネットワークが安定した状態で再表示すると再試行します。"
+                        statusNote: weatherFailureNote(for: weatherError)
                     )
                 }
             } catch {
                 if attempt == 3 {
                     return FetchResult(
                         snapshot: nil,
-                        statusNote: "天気の取得が完了しませんでした。ネットワークが安定した状態で再表示すると再試行します。"
+                        statusNote: weatherFailureNote(for: error)
                     )
                 }
             }
@@ -84,6 +76,34 @@ actor AmbientWeatherCaptureService {
 }
 
 #if canImport(WeatherKit)
+private func weatherFailureNote(for error: Error) -> String {
+    if let weatherError = error as? WeatherError {
+        let detail = [
+            weatherError.errorDescription,
+            weatherError.failureReason,
+            weatherError.recoverySuggestion
+        ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .first { !$0.isEmpty }
+
+        return detail ?? "WeatherKit の取得に失敗しました。App ID の WeatherKit と provisioning の反映を確認してから再試行してください。"
+    }
+
+    let nsError = error as NSError
+    let detail = [
+        nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines),
+        nsError.localizedFailureReason?.trimmingCharacters(in: .whitespacesAndNewlines)
+    ]
+    .compactMap { $0 }
+    .first { !$0.isEmpty }
+
+    if let detail, !detail.isEmpty {
+        return "\(detail) WeatherKit の capability / provisioning も確認してください。"
+    }
+
+    return "WeatherKit の取得に失敗しました。App ID の WeatherKit と provisioning の反映を確認してから再試行してください。"
+}
+
 private func localizedConditionLabel(for rawCondition: String) -> String {
     switch rawCondition.lowercased() {
     case "clear":
