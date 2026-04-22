@@ -25,7 +25,8 @@ enum MediaStore {
         var audioDuration = 0.0
 
         if let audioTempURL, FileManager.default.fileExists(atPath: audioTempURL.path) {
-            audioFileName = UUID().uuidString + ".m4a"
+            let audioExtension = audioTempURL.pathExtension.isEmpty ? "caf" : audioTempURL.pathExtension
+            audioFileName = UUID().uuidString + ".\(audioExtension)"
             let destinationURL = audioURL(for: audioFileName!)
             if FileManager.default.fileExists(atPath: destinationURL.path) {
                 try FileManager.default.removeItem(at: destinationURL)

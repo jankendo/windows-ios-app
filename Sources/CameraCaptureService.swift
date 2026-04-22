@@ -63,6 +63,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     @Published private(set) var isCapturing = false
     @Published private(set) var isProcessingCapture = false
     @Published private(set) var isPreparingSession = true
+    @Published private(set) var isWaitingForRecordingStart = false
     @Published private(set) var captureProgress = 0.0
     @Published private(set) var remainingRecordingSeconds = 6
     @Published private(set) var liveMeterSamples: [CGFloat] = Array(repeating: 0.18, count: 24)
@@ -77,6 +78,8 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     private var isConfigured = false
     private var isConfiguring = false
     private var progressTimer: Timer?
+    private var recordingStartWorkItem: DispatchWorkItem?
+    private var recordingFinishWorkItem: DispatchWorkItem?
     private var minimumCapturedDecibels: Float?
     private var maximumCapturedDecibels: Float?
 
@@ -104,10 +107,12 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         if isCapturing || pendingCapture != nil {
             failPendingCapture(CaptureError.sessionNotReady)
         }
+        cancelScheduledCaptureWork()
         progressTimer?.invalidate()
         progressTimer = nil
         audioRecorder?.stop()
         audioRecorder = nil
+        isWaitingForRecordingStart = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
         sessionQueue.async { [weak self] in
@@ -124,7 +129,11 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         }
     }
 
-    func captureMemory(duration: TimeInterval, completion: @escaping (Result<CapturedMemoryDraft, Error>) -> Void) {
+    func captureMemory(
+        duration: TimeInterval,
+        delayRecordingUntilAfterShutter: Bool,
+        completion: @escaping (Result<CapturedMemoryDraft, Error>) -> Void
+    ) {
         guard duration >= 1 else {
             completion(.failure(CaptureError.invalidDuration))
             return
@@ -142,20 +151,40 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             return
         }
 
-        do {
-            try startAudioRecorder()
-        } catch {
-            completion(.failure(CaptureError.audioRecordingFailed))
-            return
-        }
+        cancelScheduledCaptureWork()
 
-        let pending = PendingCapture(audioURL: audioRecorder?.url, capturedAt: .now, completion: completion)
+        let pending = PendingCapture(
+            audioURL: nil,
+            capturedAt: .now,
+            requestedDuration: duration,
+            delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
+            completion: completion
+        )
         pendingCapture = pending
         isCapturing = true
         isProcessingCapture = false
+        isWaitingForRecordingStart = delayRecordingUntilAfterShutter
         resetLiveMeter()
-        statusText = "写真を撮影し、\(Int(duration.rounded()))秒の環境音を録音しています。"
-        startCaptureProgress(duration: duration)
+
+        if delayRecordingUntilAfterShutter {
+            statusText = "写真を撮影しています。シャッターの余韻が収まってから環境音を録音します。"
+            captureProgress = 0
+            remainingRecordingSeconds = max(Int(ceil(duration)), 1)
+        } else {
+            do {
+                try startAudioRecorder()
+                pending.audioURL = audioRecorder?.url
+                statusText = "写真を撮影し、\(Int(duration.rounded()))秒の環境音を録音しています。"
+                startCaptureProgress(duration: duration)
+                scheduleAudioCaptureFinish(after: duration)
+            } catch {
+                pendingCapture = nil
+                isCapturing = false
+                isWaitingForRecordingStart = false
+                completion(.failure(CaptureError.audioRecordingFailed))
+                return
+            }
+        }
 
         let settings = AVCapturePhotoSettings()
         settings.photoQualityPrioritization = .quality
@@ -166,10 +195,6 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             settings.isDepthDataDeliveryEnabled = true
         }
         photoOutput.capturePhoto(with: settings, delegate: self)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-            self?.finishAudioCapture()
-        }
     }
 
     private func configureSessionIfNeeded() {
@@ -283,12 +308,14 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
 
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("m4a")
+            .appendingPathExtension("caf")
         let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 44_100,
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 48_000,
             AVNumberOfChannelsKey: 2,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false
         ]
 
         audioRecorder = try AVAudioRecorder(url: fileURL, settings: settings)
@@ -338,6 +365,13 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         remainingRecordingSeconds = 6
     }
 
+    private func cancelScheduledCaptureWork() {
+        recordingStartWorkItem?.cancel()
+        recordingStartWorkItem = nil
+        recordingFinishWorkItem?.cancel()
+        recordingFinishWorkItem = nil
+    }
+
     private func resetLiveMeter() {
         liveMeterSamples = Array(repeating: 0.18, count: 24)
     }
@@ -355,9 +389,11 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     }
 
     private func finishAudioCapture() {
+        cancelScheduledCaptureWork()
         pendingCapture?.audioFinished = true
         audioRecorder?.stop()
         audioRecorder = nil
+        isWaitingForRecordingStart = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         isProcessingCapture = true
         statusText = "記憶のシーンを整えています。"
@@ -406,9 +442,11 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     private func failPendingCapture(_ error: Error) {
         let audioURL = pendingCapture?.audioURL
         let completion = pendingCapture?.completion
+        cancelScheduledCaptureWork()
         pendingCapture = nil
         isCapturing = false
         isProcessingCapture = false
+        isWaitingForRecordingStart = false
         audioRecorder?.stop()
         audioRecorder = nil
         resetCaptureProgress()
@@ -435,8 +473,47 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         }
 
         pendingCapture?.photoData = data
-        statusText = "写真を撮影しました。環境音を録音中です。"
+        if pendingCapture?.delayRecordingUntilAfterShutter == true {
+            statusText = "写真を撮影しました。シャッター音が落ち着いてから環境音を始めます。"
+            startAudioCaptureAfterQuietDelay()
+        } else {
+            statusText = "写真を撮影しました。環境音を録音中です。"
+        }
         completePendingCaptureIfPossible()
+    }
+
+    private func startAudioCaptureAfterQuietDelay() {
+        guard let pendingCapture else { return }
+
+        let quietDelay = 0.75
+        isWaitingForRecordingStart = true
+        cancelScheduledCaptureWork()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, let pendingCapture = self.pendingCapture else { return }
+
+            do {
+                try self.startAudioRecorder()
+                pendingCapture.audioURL = self.audioRecorder?.url
+                self.isWaitingForRecordingStart = false
+                self.statusText = "環境音の録音を始めました。"
+                self.startCaptureProgress(duration: pendingCapture.requestedDuration)
+                self.scheduleAudioCaptureFinish(after: pendingCapture.requestedDuration)
+            } catch {
+                self.failPendingCapture(CaptureError.audioRecordingFailed)
+            }
+        }
+
+        recordingStartWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + quietDelay, execute: workItem)
+    }
+
+    private func scheduleAudioCaptureFinish(after duration: TimeInterval) {
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.finishAudioCapture()
+        }
+        recordingFinishWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: workItem)
     }
 }
 
@@ -450,16 +527,26 @@ private extension CameraCaptureService {
 }
 
 private final class PendingCapture {
-    let audioURL: URL?
+    var audioURL: URL?
     let capturedAt: Date
+    let requestedDuration: TimeInterval
+    let delayRecordingUntilAfterShutter: Bool
     let completion: (Result<CapturedMemoryDraft, Error>) -> Void
 
     var photoData: Data?
     var audioFinished = false
 
-    init(audioURL: URL?, capturedAt: Date, completion: @escaping (Result<CapturedMemoryDraft, Error>) -> Void) {
+    init(
+        audioURL: URL?,
+        capturedAt: Date,
+        requestedDuration: TimeInterval,
+        delayRecordingUntilAfterShutter: Bool,
+        completion: @escaping (Result<CapturedMemoryDraft, Error>) -> Void
+    ) {
         self.audioURL = audioURL
         self.capturedAt = capturedAt
+        self.requestedDuration = requestedDuration
+        self.delayRecordingUntilAfterShutter = delayRecordingUntilAfterShutter
         self.completion = completion
     }
 }

@@ -29,7 +29,7 @@ final class CaptureFlowModel: ObservableObject {
         }
     }
 
-    func capture(duration: TimeInterval) {
+    func capture(duration: TimeInterval, delayRecordingUntilAfterShutter: Bool) {
         guard !isSaving else { return }
         errorMessage = nil
         saveMessage = nil
@@ -37,7 +37,7 @@ final class CaptureFlowModel: ObservableObject {
         isPreparingReview = false
         captionGenerationMessage = nil
 
-        camera.captureMemory(duration: duration) { [weak self] result in
+        camera.captureMemory(duration: duration, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter) { [weak self] result in
             guard let self else { return }
 
             Task { @MainActor in
@@ -250,6 +250,7 @@ struct CaptureView: View {
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
     @ObservedObject private var environmentService = CaptureLocationService.shared
     @AppStorage("captureDurationSeconds") private var captureDurationSeconds = 6.0
+    @AppStorage("delayRecordingUntilAfterShutter") private var delayRecordingUntilAfterShutter = true
     @StateObject private var model = CaptureFlowModel()
     @State private var showingCaptureSettings = false
     @State private var hasCompletedInitialStartup = false
@@ -508,7 +509,11 @@ struct CaptureView: View {
                             .foregroundStyle(.white)
                             .symbolEffect(.pulse, options: .repeating, isActive: model.camera.isCapturing || model.camera.isProcessingCapture)
                         Spacer()
-                        if model.camera.isCapturing {
+                        if model.camera.isWaitingForRecordingStart {
+                            Text("静音待ち")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white.opacity(0.82))
+                        } else if model.camera.isCapturing {
                             Text("\(model.camera.remainingRecordingSeconds)秒")
                                 .font(.title3.weight(.bold))
                                 .foregroundStyle(palette.accent)
@@ -520,7 +525,13 @@ struct CaptureView: View {
                         }
                     }
 
-                    Text(model.camera.isCapturing ? "シャッターのあとも、その場の空気を静かに集めています。" : "写真と音、場所と空気をひとつのシーンとしてまとめています。")
+                    Text(
+                        model.camera.isWaitingForRecordingStart
+                        ? "シャッター音が録音に混ざらないよう、静かな立ち上がりを待っています。"
+                        : (model.camera.isCapturing
+                            ? "シャッターのあとも、その場の空気を静かに集めています。"
+                            : "写真と音、場所と空気をひとつのシーンとしてまとめています。")
+                    )
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.82))
 
@@ -548,7 +559,11 @@ struct CaptureView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "sparkles")
                         .foregroundStyle(.white)
-                    Text("シャッターで写真を撮影し、そのまま\(Int(captureDurationSeconds.rounded()))秒間の空気を記録します")
+                    Text(
+                        delayRecordingUntilAfterShutter
+                        ? "シャッター後の静けさから\(Int(captureDurationSeconds.rounded()))秒間の空気を記録します"
+                        : "シャッターと同時に\(Int(captureDurationSeconds.rounded()))秒間の空気を記録します"
+                    )
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
@@ -577,7 +592,10 @@ struct CaptureView: View {
                 progress: model.camera.captureProgress,
                 accent: palette.accent
             ) {
-                model.capture(duration: captureDurationSeconds)
+                model.capture(
+                    duration: captureDurationSeconds,
+                    delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter
+                )
             }
 
             Spacer()
@@ -627,6 +645,9 @@ struct CaptureView: View {
             Text("\(Int(captureDurationSeconds.rounded()))s")
                 .font(.headline.weight(.bold))
                 .foregroundStyle(.white)
+            Text(delayRecordingUntilAfterShutter ? "quiet" : "instant")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.7))
             }
             .frame(width: 72)
             .padding(.vertical, 10)
@@ -835,6 +856,17 @@ struct CaptureView: View {
                 Slider(value: $captureDurationSeconds, in: 3...20, step: 1)
                     .tint(palette.accent)
             }
+
+            Toggle(isOn: $delayRecordingUntilAfterShutter) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("シャッター音を避けて録音を始める")
+                        .font(.subheadline.weight(.semibold))
+                    Text("iPhone ではシャッター音を無効化できないため、オンにすると撮影後に少し待ってから環境音を記録します。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .tint(palette.accent)
 
             Spacer()
         }
