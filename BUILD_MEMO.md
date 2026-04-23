@@ -71,6 +71,8 @@ pwsh -File .\scripts\publish-github-secrets.ps1 `
 6. `Resonance.ipa` を Artifact として保存
 7. GitHub Actions の **run number** を使って `CURRENT_PROJECT_VERSION` を自動加算し、`MARKETING_VERSION` も `1.0.<run number>` で毎回更新
 
+Spatial Audio については、iOS 26 SDK の AVFoundation stream-capture path を使い、対応端末では FOA + stereo fallback + metadata を含む `.mov` を生成します。true spatial capture の実機条件は Apple sample と同様に **iPhone 16 Pro 以降** です。
+
 ## 実機導入
 
 1. Actions 完了後に **`resonance-ipa`** Artifact をダウンロード

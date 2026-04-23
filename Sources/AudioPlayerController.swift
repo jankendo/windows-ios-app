@@ -69,7 +69,8 @@ final class AudioPlayerController: NSObject, ObservableObject {
         self.volume = volume
         duration = Self.assetDuration(for: url)
         currentTime = 0
-        isSpatialPlaybackActive = false
+        let assetProfile = AudioAssetProfile.inspect(url: url)
+        isSpatialPlaybackActive = assetProfile.isTrueSpatialAudio
 
         let item = AVPlayerItem(url: url)
         if loop {
@@ -90,7 +91,11 @@ final class AudioPlayerController: NSObject, ObservableObject {
         }
 
         diagnostics.record("player created: duration=\(Self.timeString(duration)) loop=\(loop) volume=\(String(format: "%.2f", volume))")
-        diagnostics.record("spatial audio playback check: false (mono asset + AVPlayer stereo playback, no spatial renderer)")
+        diagnostics.record(
+            assetProfile.isTrueSpatialAudio
+                ? "spatial audio playback check: true (\(assetProfile.diagnosticSummary))"
+                : "spatial audio playback check: false (\(assetProfile.diagnosticSummary))"
+        )
 
         if autoPlay {
             play()
@@ -126,7 +131,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
 
     private func preparePlaybackSession() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowAirPlay, .allowBluetoothA2DP])
+        try session.setCategory(.playback, mode: .moviePlayback, options: [.allowAirPlay, .allowBluetoothA2DP])
         try session.setActive(true)
         diagnostics.record("audio session active: category=\(session.category.rawValue) mode=\(session.mode.rawValue)")
     }
@@ -247,7 +252,8 @@ private extension AudioPlayerController {
             formatDescription = "format unreadable"
         }
 
-        return "file=\(url.lastPathComponent) exists=\(fileExists) size=\(fileSize) \(formatDescription)"
+        let assetProfile = AudioAssetProfile.inspect(url: url)
+        return "file=\(url.lastPathComponent) exists=\(fileExists) size=\(fileSize) \(formatDescription) \(assetProfile.diagnosticSummary)"
     }
 
     static func routeDescription() -> String {

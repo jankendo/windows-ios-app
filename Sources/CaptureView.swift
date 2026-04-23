@@ -56,7 +56,10 @@ final class CaptureFlowModel: ObservableObject {
                     _ = await resolvedLocation
                     self.isPreparingReview = false
                     self.capturedDraft = draft
-                    self.diagnostics.record("capture draft ready audio=\(draft.audioTempURL?.lastPathComponent ?? "none")", category: "capture")
+                    self.diagnostics.record(
+                        "capture draft ready audio=\(draft.audioTempURL?.lastPathComponent ?? "none") spatial=\(draft.isSpatialAudio)",
+                        category: "capture"
+                    )
                     self.scheduleDraftCaptionRefresh()
                 } catch {
                     self.isPreparingReview = false
@@ -86,7 +89,8 @@ final class CaptureFlowModel: ObservableObject {
             do {
                 let storedMedia = try MediaStore.save(photoData: draft.photoData, audioTempURL: draft.audioTempURL)
                 let storedAudioURL = storedMedia.audioFileName.map(MediaStore.audioURL(for:))
-                let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: storedAudioURL)
+                let analysisAudioURL = draft.analysisAudioURL ?? storedAudioURL
+                let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: analysisAudioURL)
                 let captionGeneration = await MemoryAnalysisService.captionGeneration(
                     from: draft.photoData,
                     title: currentTitle,
@@ -121,7 +125,7 @@ final class CaptureFlowModel: ObservableObject {
 
                 let metadata = MemoryAtmosphereMetadata(
                     placeLabel: draft.placeLabel,
-                    waveformFingerprint: WaveformExtractor.samples(from: storedAudioURL, sampleCount: 28).map { Double($0) },
+                    waveformFingerprint: WaveformExtractor.samples(from: analysisAudioURL, sampleCount: 28).map { Double($0) },
                     photoCaption: resolvedPhotoCaption,
                     atmosphereStyle: draft.atmosphereStyle,
                     captureDuration: draft.audioDuration,
@@ -145,6 +149,9 @@ final class CaptureFlowModel: ObservableObject {
                 capturedDraft = nil
                 lastSavedEntry = entry
                 saveMessage = draft.placeLabel.map { "\($0)の空気を保存しました。" } ?? "記録を保存しました。"
+                if let analysisAudioTempURL = draft.analysisAudioTempURL, analysisAudioTempURL != draft.audioTempURL {
+                    try? FileManager.default.removeItem(at: analysisAudioTempURL)
+                }
             } catch {
                 errorMessage = error.localizedDescription
                 diagnostics.record("save draft failed: \(error.localizedDescription)", category: "storage")
@@ -159,6 +166,9 @@ final class CaptureFlowModel: ObservableObject {
         if let audioURL = capturedDraft?.audioTempURL {
             try? FileManager.default.removeItem(at: audioURL)
         }
+        if let analysisAudioURL = capturedDraft?.analysisAudioTempURL, analysisAudioURL != capturedDraft?.audioTempURL {
+            try? FileManager.default.removeItem(at: analysisAudioURL)
+        }
         capturedDraft = nil
     }
 
@@ -171,6 +181,7 @@ final class CaptureFlowModel: ObservableObject {
         guard let draft = capturedDraft else { return }
 
         let currentTitle = title
+        guard !currentTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let currentPlaceLabel = draft.placeLabel
         let draftID = draft.id
         let photoData = draft.photoData

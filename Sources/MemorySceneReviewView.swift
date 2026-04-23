@@ -76,7 +76,7 @@ struct MemorySceneReviewView: View {
             )
         }
         .onAppear {
-            waveformSamples = WaveformExtractor.samples(from: draft.audioTempURL, sampleCount: 64)
+            waveformSamples = WaveformExtractor.samples(from: draft.analysisAudioURL, sampleCount: 64)
             startLoopingAmbientPlayback()
         }
         .onChange(of: showingImmersivePreview) { _, isPresented in
@@ -146,6 +146,14 @@ struct MemorySceneReviewView: View {
                             tint: .white,
                             atmosphere: atmosphere
                         )
+                        if draft.isSpatialAudio {
+                            ResonanceBadge(
+                                title: "Spatial Audio",
+                                systemImage: "dot.radiowaves.left.and.right",
+                                tint: .white,
+                                atmosphere: atmosphere
+                            )
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 8) {

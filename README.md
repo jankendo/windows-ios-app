@@ -16,6 +16,7 @@
 - ライブカメラを全面に出した撮影画面
 - 起動直後は “Preparing your scene” で心地よく待てる導入
 - シャッターひとつで写真 + 可変長の環境音を記録
+- 対応端末では FOA + stereo fallback + metadata を含む **true spatial audio** を記録
 - 撮影中も「いま何が起きているか」が分かる明快な UI
 - 録音中は波形と進行が静かに立ち上がる capture ceremony
 - 録音秒数をその場の空気に合わせて変更可能
@@ -54,6 +55,7 @@
 - SwiftUI ベースの iOS アプリ
 - `SwiftData` によるローカル保存
 - 写真 + 音声ファイル保存
+- iPhone 16 Pro 以降での true spatial audio capture / playback path
 - 地図ブラウズとフィルター
 - 空間センサー情報の保存
 - `Vision` / `Speech` / 軽量音声解析による自動タグ付け

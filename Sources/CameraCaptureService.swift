@@ -6,8 +6,10 @@ struct CapturedMemoryDraft: Identifiable {
     let id = UUID()
     let photoData: Data
     let audioTempURL: URL?
+    let analysisAudioTempURL: URL?
     let capturedAt: Date
     let audioDuration: TimeInterval
+    let isSpatialAudio: Bool
     var placeLabel: String?
     var photoCaption: String?
     var photoCaptionSource: PhotoCaptionSource?
@@ -17,6 +19,10 @@ struct CapturedMemoryDraft: Identifiable {
 
     var atmosphereStyle: AtmosphereStyle {
         AtmosphereStyle(date: capturedAt)
+    }
+
+    var analysisAudioURL: URL? {
+        analysisAudioTempURL ?? audioTempURL
     }
 }
 
@@ -73,7 +79,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     private let sessionQueue = DispatchQueue(label: "resonance.camera.session")
     private let photoOutput = AVCapturePhotoOutput()
     private var pendingCapture: PendingCapture?
-    private var audioRecorder: AVAudioRecorder?
+    private let ambientAudioCapture = AmbientAudioCaptureCoordinator()
     private var isConfigured = false
     private var isConfiguring = false
     private var progressTimer: Timer?
@@ -89,6 +95,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
 
     func prepare() {
         isPreparingSession = true
+        ambientAudioCapture.latestAveragePower = -60
         Task {
             let granted = await requestPermissions()
             guard granted else {
@@ -110,10 +117,8 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         cancelScheduledCaptureWork()
         progressTimer?.invalidate()
         progressTimer = nil
-        audioRecorder?.stop()
-        audioRecorder = nil
+        ambientAudioCapture.cancelRecording()
         isWaitingForRecordingStart = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
         sessionQueue.async { [weak self] in
             guard let self else { return }
@@ -172,12 +177,12 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             remainingRecordingSeconds = max(Int(ceil(duration)), 1)
         } else {
             do {
-                try startAudioRecorder()
-                pending.audioURL = audioRecorder?.url
+                pending.audioURL = try startAmbientCapture()
                 statusText = "写真を撮影し、\(Int(duration.rounded()))秒の環境音を録音しています。"
                 startCaptureProgress(duration: duration)
                 scheduleAudioCaptureFinish(after: duration)
             } catch {
+                ambientAudioCapture.cancelRecording()
                 pendingCapture = nil
                 isCapturing = false
                 isWaitingForRecordingStart = false
@@ -251,6 +256,36 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
 
             session.addInput(input)
 
+            guard
+                let audioDevice = AVCaptureDevice.default(for: .audio),
+                let audioInput = try? AVCaptureDeviceInput(device: audioDevice),
+                session.canAddInput(audioInput)
+            else {
+                DispatchQueue.main.async {
+                    self.isConfiguring = false
+                    self.isPreparingSession = false
+                    self.statusText = CaptureError.configurationFailed.localizedDescription
+                }
+                session.commitConfiguration()
+                return
+            }
+
+            session.addInput(audioInput)
+            do {
+                let spatialAvailable = try self.ambientAudioCapture.configure(session: session, audioInput: audioInput)
+                DispatchQueue.main.async {
+                    self.audioDiagnostics.record("capture capability spatial=\(spatialAvailable)")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isConfiguring = false
+                    self.isPreparingSession = false
+                    self.statusText = CaptureError.configurationFailed.localizedDescription
+                }
+                session.commitConfiguration()
+                return
+            }
+
             guard session.canAddOutput(photoOutput) else {
                 DispatchQueue.main.async {
                     self.isConfiguring = false
@@ -302,38 +337,10 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         }
     }
 
-    private func startAudioRecorder() throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP, .allowAirPlay])
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
-
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("m4a")
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 48_000,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 192_000,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-        ]
-
-        audioRecorder = try AVAudioRecorder(url: fileURL, settings: settings)
-        audioRecorder?.isMeteringEnabled = true
-        audioRecorder?.prepareToRecord()
-        guard audioRecorder?.record() == true else {
-            audioDiagnostics.record("recorder failed to start: file=\(fileURL.lastPathComponent)")
-            throw CaptureError.audioRecordingFailed
-        }
-        let routeDescription = session.currentRoute.outputs
-            .map { "\($0.portType.rawValue):\($0.portName)" }
-            .joined(separator: ", ")
-        audioDiagnostics.record(
-            "recorder started: file=\(fileURL.lastPathComponent) category=\(session.category.rawValue) route=\(routeDescription) settings=\(settings)"
-        )
-        audioDiagnostics.record("spatial audio capture check: false (AAC m4a / 1 channel recording)")
+    private func startAmbientCapture() throws -> URL {
         minimumCapturedDecibels = nil
         maximumCapturedDecibels = nil
+        return try ambientAudioCapture.startRecording()
     }
 
     private func startCaptureProgress(duration: TimeInterval) {
@@ -352,8 +359,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
                 let elapsed = min(Date().timeIntervalSince(startedAt), duration)
                 self.captureProgress = duration > 0 ? elapsed / duration : 1
                 self.remainingRecordingSeconds = max(Int(ceil(duration - elapsed)), 0)
-                self.audioRecorder?.updateMeters()
-                let averagePower = self.averageMeterPower()
+                let averagePower = self.ambientAudioCapture.latestAveragePower
                 let normalizedLevel = max(0.08, min(1, CGFloat((averagePower + 60) / 60)))
                 self.minimumCapturedDecibels = min(self.minimumCapturedDecibels ?? averagePower, averagePower)
                 self.maximumCapturedDecibels = max(self.maximumCapturedDecibels ?? averagePower, averagePower)
@@ -387,32 +393,35 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         liveMeterSamples = Array(repeating: 0.18, count: 24)
     }
 
-    private func averageMeterPower() -> Float {
-        guard let audioRecorder else { return -60 }
-
-        let configuredChannelCount = (audioRecorder.settings[AVNumberOfChannelsKey] as? NSNumber)?.intValue ?? 1
-        let channelCount = max(Int(configuredChannelCount), 1)
-        let totalPower = (0..<channelCount).reduce(Float(0)) { partialResult, channel in
-            partialResult + audioRecorder.averagePower(forChannel: channel)
-        }
-
-        return totalPower / Float(channelCount)
-    }
-
     private func finishAudioCapture() {
         cancelScheduledCaptureWork()
-        pendingCapture?.audioFinished = true
-        audioRecorder?.stop()
-        if let audioURL = pendingCapture?.audioURL {
-            audioDiagnostics.record("recorder stopped: file=\(audioURL.lastPathComponent)")
-        }
-        audioRecorder = nil
         isWaitingForRecordingStart = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         isProcessingCapture = true
-        statusText = "記憶のシーンを整えています。"
+        statusText = "記憶のシーンを仕上げています。"
         resetCaptureProgress()
-        completePendingCaptureIfPossible()
+        if let audioURL = pendingCapture?.audioURL {
+            audioDiagnostics.record("recorder stop requested: file=\(audioURL.lastPathComponent)")
+        }
+        ambientAudioCapture.stopRecording { [weak self] result in
+            guard let self else { return }
+
+            switch result {
+            case .success(let recording):
+                self.pendingCapture?.audioURL = recording.primaryURL
+                self.pendingCapture?.analysisAudioURL = recording.analysisURL
+                self.pendingCapture?.recordedDuration = recording.duration
+                self.pendingCapture?.isSpatialAudio = recording.isSpatialAudio
+                self.pendingCapture?.audioFinished = true
+                self.audioDiagnostics.record(
+                    recording.isSpatialAudio
+                        ? "spatial audio capture confirmed: \(recording.assetProfile.diagnosticSummary)"
+                        : "spatial audio capture unavailable: \(recording.assetProfile.diagnosticSummary)"
+                )
+                self.completePendingCaptureIfPossible()
+            case .failure(let error):
+                self.failPendingCapture(error)
+            }
+        }
     }
 
     private func completePendingCaptureIfPossible() {
@@ -421,13 +430,15 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
 
         let completion = pendingCapture.completion
         let audioURL = pendingCapture.audioURL
+        let analysisAudioURL = pendingCapture.analysisAudioURL
         let capturedAt = pendingCapture.capturedAt
         let audioDuration: TimeInterval
 
-        if let audioURL {
+        if let recordedDuration = pendingCapture.recordedDuration {
+            audioDuration = recordedDuration
+        } else if let audioURL {
             let asset = AVURLAsset(url: audioURL)
             audioDuration = asset.duration.seconds.isFinite ? asset.duration.seconds : 0
-            audioDiagnostics.record("capture completed: file=\(audioURL.lastPathComponent) duration=\(String(format: "%.2fs", audioDuration))")
         } else {
             audioDuration = 0
             audioDiagnostics.record("capture completed without audio file")
@@ -441,8 +452,10 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         completion(.success(CapturedMemoryDraft(
             photoData: photoData,
             audioTempURL: audioURL,
+            analysisAudioTempURL: analysisAudioURL,
             capturedAt: capturedAt,
             audioDuration: audioDuration,
+            isSpatialAudio: pendingCapture.isSpatialAudio,
             placeLabel: nil,
             photoCaption: nil,
             photoCaptionSource: nil,
@@ -456,19 +469,21 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
 
     private func failPendingCapture(_ error: Error) {
         let audioURL = pendingCapture?.audioURL
+        let analysisAudioURL = pendingCapture?.analysisAudioURL
         let completion = pendingCapture?.completion
         cancelScheduledCaptureWork()
         pendingCapture = nil
         isCapturing = false
         isProcessingCapture = false
         isWaitingForRecordingStart = false
-        audioRecorder?.stop()
-        audioRecorder = nil
+        ambientAudioCapture.cancelRecording()
         resetCaptureProgress()
         resetLiveMeter()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         if let audioURL {
             try? FileManager.default.removeItem(at: audioURL)
+        }
+        if let analysisAudioURL, analysisAudioURL != audioURL {
+            try? FileManager.default.removeItem(at: analysisAudioURL)
         }
         minimumCapturedDecibels = nil
         maximumCapturedDecibels = nil
@@ -509,8 +524,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             guard let self, let pendingCapture = self.pendingCapture else { return }
 
             do {
-                try self.startAudioRecorder()
-                pendingCapture.audioURL = self.audioRecorder?.url
+                pendingCapture.audioURL = try self.startAmbientCapture()
                 self.isWaitingForRecordingStart = false
                 self.statusText = "環境音の録音を始めました。"
                 self.startCaptureProgress(duration: pendingCapture.requestedDuration)
@@ -544,6 +558,7 @@ private extension CameraCaptureService {
 
 private final class PendingCapture {
     var audioURL: URL?
+    var analysisAudioURL: URL?
     let capturedAt: Date
     let requestedDuration: TimeInterval
     let delayRecordingUntilAfterShutter: Bool
@@ -551,6 +566,8 @@ private final class PendingCapture {
 
     var photoData: Data?
     var audioFinished = false
+    var recordedDuration: TimeInterval?
+    var isSpatialAudio = false
 
     init(
         audioURL: URL?,
