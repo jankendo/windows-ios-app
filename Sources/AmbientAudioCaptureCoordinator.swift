@@ -166,7 +166,7 @@ final class AmbientAudioCaptureCoordinator: NSObject, AVCaptureAudioDataOutputSa
 
                 Task {
                     let assetProfile = AudioAssetProfile.inspect(url: fileURL)
-                    let duration = AVURLAsset(url: fileURL).duration.seconds
+                    let duration = try await AVURLAsset(url: fileURL).load(.duration).seconds
                     let resolvedDuration = duration.isFinite ? duration : 0
                     let analysisURL: URL?
 
@@ -440,7 +440,7 @@ private extension AmbientAudioCaptureCoordinator {
             throw AmbientAudioCaptureError.missingStereoFallback
         }
 
-        let duration = asset.duration
+        let duration = try await asset.load(.duration)
         try compositionTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: stereoTrack, at: .zero)
 
         let outputURL = FileManager.default.temporaryDirectory

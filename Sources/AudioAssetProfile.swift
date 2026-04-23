@@ -59,8 +59,7 @@ struct AudioAssetProfile {
 
     private static func channelCount(from description: Any) -> Int? {
         guard
-            let formatDescription = description as? CMAudioFormatDescription,
-            let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)
+            let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(description as! CMAudioFormatDescription)
         else {
             return nil
         }
@@ -69,12 +68,8 @@ struct AudioAssetProfile {
     }
 
     private static func layoutTag(from description: Any) -> AudioChannelLayoutTag? {
-        guard let formatDescription = description as? CMAudioFormatDescription else {
-            return nil
-        }
-
         var layoutSize: Int = 0
-        guard let layout = CMAudioFormatDescriptionGetChannelLayout(formatDescription, sizeOut: &layoutSize) else {
+        guard let layout = CMAudioFormatDescriptionGetChannelLayout(description as! CMAudioFormatDescription, sizeOut: &layoutSize) else {
             return nil
         }
 
