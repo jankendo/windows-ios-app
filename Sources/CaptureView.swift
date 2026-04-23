@@ -608,6 +608,13 @@ struct CaptureView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+        .onChange(of: captureModeRawValue) { _, newValue in
+            AudioPlaybackDiagnostics.shared.record("capture mode changed: \(newValue)", category: "capture")
+            if newValue != CaptureModeOption.interval.rawValue,
+               model.intervalSession != nil {
+                model.stopIntervalCapture(modelContext: modelContext)
+            }
+        }
     }
 
     private var cameraSurface: some View {
@@ -716,6 +723,7 @@ struct CaptureView: View {
             if model.camera.permissionState == .denied {
                 permissionBottomCard
             } else {
+                captureModeQuickSelector
                 captureInfoPill
                 captureControlsBar
             }
@@ -1059,16 +1067,13 @@ struct CaptureView: View {
             Text(captureMode == .ambient ? "Ambient capture" : "Interval capture")
                 .font(.title3.bold())
 
-            Text("環境音の長さをシーンに合わせて調整できます。短く素早く残すことも、少し長めに空気を集めることもできます。")
+            Text(captureMode == .ambient
+                 ? "環境音の長さをシーンに合わせて調整できます。短く素早く残すことも、少し長めに空気を集めることもできます。"
+                 : "一定間隔で複数のシーンを残すモードです。主画面からも切り替えられ、ここでは間隔や枚数を調整できます。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            Picker("モード", selection: $captureModeRawValue) {
-                ForEach(CaptureModeOption.allCases) { mode in
-                    Text(mode.localizedLabel).tag(mode.rawValue)
-                }
-            }
-            .pickerStyle(.segmented)
+            captureModeSelectionButtons
 
             let columns = [GridItem(.adaptive(minimum: 92), spacing: 10)]
 
@@ -1134,6 +1139,63 @@ struct CaptureView: View {
         }
         .padding(24)
         .presentationBackground(.regularMaterial)
+    }
+
+    private var captureModeQuickSelector: some View {
+        HStack(spacing: 10) {
+            ForEach(CaptureModeOption.allCases) { mode in
+                captureModeButton(for: mode, compact: true)
+            }
+        }
+    }
+
+    private var captureModeSelectionButtons: some View {
+        HStack(spacing: 12) {
+            ForEach(CaptureModeOption.allCases) { mode in
+                captureModeButton(for: mode, compact: false)
+            }
+        }
+    }
+
+    private func captureModeButton(for mode: CaptureModeOption, compact: Bool) -> some View {
+        let isSelected = captureMode == mode
+        return Button {
+            setCaptureMode(mode)
+        } label: {
+            VStack(alignment: compact ? .center : .leading, spacing: compact ? 4 : 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: mode == .ambient ? "sparkles" : "timer")
+                        .font(compact ? .caption.weight(.bold) : .headline.weight(.semibold))
+                    Text(mode.localizedLabel)
+                        .font(compact ? .caption.weight(.bold) : .headline.weight(.semibold))
+                }
+
+                if !compact {
+                    Text(mode == .ambient ? "通常の 1 シーン撮影" : "一定間隔で複数シーンを連続保存")
+                        .font(.footnote)
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.88) : palette.secondaryText)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: compact ? .center : .leading)
+            .padding(.horizontal, compact ? 12 : 16)
+            .padding(.vertical, compact ? 10 : 14)
+            .background(isSelected ? palette.accent : palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: compact ? 18 : 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: compact ? 18 : 20, style: .continuous)
+                    .strokeBorder(isSelected ? Color.white.opacity(0.22) : palette.stroke)
+            }
+            .foregroundStyle(isSelected ? Color.white : palette.primaryText)
+        }
+        .buttonStyle(.plain)
+        .disabled(model.camera.isCapturing || model.isPreparingReview)
+    }
+
+    private func setCaptureMode(_ mode: CaptureModeOption) {
+        guard captureMode != mode else { return }
+        captureModeRawValue = mode.rawValue
+        if mode == .interval, intervalCaptureSceneTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            intervalCaptureSceneTitle = "Memory Scene \(Date.now.formatted(date: .abbreviated, time: .shortened))"
+        }
     }
 
     private var idleCaptureDescription: String {

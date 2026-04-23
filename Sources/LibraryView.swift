@@ -949,20 +949,26 @@ struct LibraryView: View {
         )
     }
 
-    private func matchesDateFilter(_ entry: MemoryEntry) -> Bool {
+    private var selectedDateBounds: (start: Date, end: Date) {
         let calendar = Calendar.current
+        let now = Date.now
 
         switch selectedDateFilter {
         case .all:
-            return true
+            return (.distantPast, .distantFuture)
         case .today:
-            return calendar.isDateInToday(entry.createdAt)
+            let start = calendar.startOfDay(for: now)
+            let end = calendar.date(byAdding: .day, value: 1, to: start) ?? .distantFuture
+            return (start, end)
         case .week:
-            return calendar.isDate(entry.createdAt, equalTo: .now, toGranularity: .weekOfYear)
+            let interval = calendar.dateInterval(of: .weekOfYear, for: now)
+            return (interval?.start ?? .distantPast, interval?.end ?? .distantFuture)
         case .month:
-            return calendar.isDate(entry.createdAt, equalTo: .now, toGranularity: .month)
+            let interval = calendar.dateInterval(of: .month, for: now)
+            return (interval?.start ?? .distantPast, interval?.end ?? .distantFuture)
         case .year:
-            return calendar.isDate(entry.createdAt, equalTo: .now, toGranularity: .year)
+            let interval = calendar.dateInterval(of: .year, for: now)
+            return (interval?.start ?? .distantPast, interval?.end ?? .distantFuture)
         }
     }
 
@@ -1158,23 +1164,50 @@ struct LibraryView: View {
     }
 
     private func recomputeFilteredEntries() {
-        let base = entries
-            .filter(matchesDateFilter)
-            .filter { !favoritesOnly || $0.isFavorite }
-            .filter { !hasAudioOnly || $0.hasAudio }
-            .filter { selectedAtmosphere == nil || $0.atmosphereStyle == selectedAtmosphere }
+        let bounds = selectedDateBounds
+        let startDate = bounds.start
+        let endDate = bounds.end
+        let selectedMoodValue = selectedMood ?? "__all__"
+        let shouldMatchMood = selectedMood != nil
+        let shouldMatchFavorites = favoritesOnly
+        let shouldMatchAudio = hasAudioOnly
+        let emptyAudioName = ""
+        let sortOrder: SortOrder = sortOption == .newest ? .reverse : .forward
 
-        let moodFiltered = MemorySearchEngine.filter(base, query: "", mood: selectedMood)
-        let ordered: [MemoryEntry]
-
-        switch sortOption {
-        case .newest:
-            ordered = moodFiltered.sorted { $0.createdAt > $1.createdAt }
-        case .oldest:
-            ordered = moodFiltered.sorted { $0.createdAt < $1.createdAt }
+        let predicate = #Predicate<MemoryEntry> { entry in
+            entry.createdAt >= startDate
+                && entry.createdAt < endDate
+                && (!shouldMatchFavorites || entry.isFavorite)
+                && (!shouldMatchAudio || (entry.audioFileName != nil && entry.audioFileName != emptyAudioName))
+                && (!shouldMatchMood || entry.mood == selectedMoodValue)
         }
 
-        filteredEntryIDsCache = ordered.map(\.id)
+        var descriptor = FetchDescriptor<MemoryEntry>(
+            predicate: predicate,
+            sortBy: [SortDescriptor<MemoryEntry>(\.createdAt, order: sortOrder)]
+        )
+        descriptor.fetchLimit = 5000
+
+        do {
+            let fetched = try modelContext.fetch(descriptor)
+            let atmosphereFiltered = fetched.filter { selectedAtmosphere == nil || $0.atmosphereStyle == selectedAtmosphere }
+            filteredEntryIDsCache = atmosphereFiltered.map(\.id)
+        } catch {
+            AudioPlaybackDiagnostics.shared.record("library fetch failed: \(error.localizedDescription)", category: "storage")
+            let fallback = entries
+                .filter { $0.createdAt >= bounds.start && $0.createdAt < bounds.end }
+                .filter { !favoritesOnly || $0.isFavorite }
+                .filter { !hasAudioOnly || $0.hasAudio }
+                .filter { !shouldMatchMood || $0.mood == selectedMoodValue }
+                .filter { selectedAtmosphere == nil || $0.atmosphereStyle == selectedAtmosphere }
+
+            switch sortOption {
+            case .newest:
+                filteredEntryIDsCache = fallback.sorted { $0.createdAt > $1.createdAt }.map(\.id)
+            case .oldest:
+                filteredEntryIDsCache = fallback.sorted { $0.createdAt < $1.createdAt }.map(\.id)
+            }
+        }
     }
 
     private func addEntries(_ ids: [UUID], to collection: MemoryCollection) {
