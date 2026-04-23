@@ -282,34 +282,23 @@ struct LibraryView: View {
     }
 
     private var libraryScaffold: some View {
-        libraryChrome
-            .sheet(isPresented: $showingFilterSheet) {
-                AdvancedLibraryFilterSheet(
-                    selectedMood: $selectedMood,
-                    selectedAtmosphere: $selectedAtmosphere,
-                    favoritesOnly: $favoritesOnly,
-                    hasAudioOnly: $hasAudioOnly
-                )
-                .presentationDetents([.medium])
+        libraryAlertView
+    }
+
+    private var libraryAlertView: some View {
+        libraryObservedView
+            .alert("選択した記録を削除しますか？", isPresented: $showingBulkDeleteConfirmation) {
+                Button("削除", role: .destructive) {
+                    deleteSelectedEntries()
+                }
+                Button("キャンセル", role: .cancel) {}
+            } message: {
+                Text("\(selectedEntries.count)件の写真、音声、メモ情報がこの端末から削除されます。")
             }
-            .sheet(isPresented: $showingCollectionPicker) {
-                CollectionPickerSheet(
-                    collections: manualCollections,
-                    onSelect: { collection in
-                        addEntries(collectionDraftEntryIDs, to: collection)
-                    },
-                    onCreateNew: {
-                        editingCollection = nil
-                        showingCollectionEditor = true
-                    }
-                )
-            }
-            .sheet(isPresented: $showingCollectionEditor) {
-                MemoryCollectionEditorView(
-                    collection: editingCollection,
-                    initialEntryIDs: collectionDraftEntryIDs
-                )
-            }
+    }
+
+    private var libraryObservedView: some View {
+        librarySheetsView
             .onAppear {
                 refreshLibraryState()
                 Task { await refreshCurrentLocation() }
@@ -335,13 +324,48 @@ struct LibraryView: View {
             .onChange(of: mapRegion.center.longitude) { _, _ in syncVisibleMapSelection() }
             .onChange(of: mapRegion.span.latitudeDelta) { _, _ in syncVisibleMapSelection() }
             .onChange(of: mapRegion.span.longitudeDelta) { _, _ in syncVisibleMapSelection() }
-            .alert("選択した記録を削除しますか？", isPresented: $showingBulkDeleteConfirmation) {
-                Button("削除", role: .destructive) {
-                    deleteSelectedEntries()
-                }
-                Button("キャンセル", role: .cancel) {}
-            } message: {
-                Text("\(selectedEntries.count)件の写真、音声、メモ情報がこの端末から削除されます。")
+    }
+
+    private var librarySheetsView: some View {
+        libraryCollectionEditorSheet
+    }
+
+    private var libraryCollectionEditorSheet: some View {
+        libraryCollectionPickerSheet
+            .sheet(isPresented: $showingCollectionEditor) {
+                MemoryCollectionEditorView(
+                    collection: editingCollection,
+                    initialEntryIDs: collectionDraftEntryIDs
+                )
+            }
+    }
+
+    private var libraryCollectionPickerSheet: some View {
+        libraryFilterSheet
+            .sheet(isPresented: $showingCollectionPicker) {
+                CollectionPickerSheet(
+                    collections: manualCollections,
+                    onSelect: { collection in
+                        addEntries(collectionDraftEntryIDs, to: collection)
+                    },
+                    onCreateNew: {
+                        editingCollection = nil
+                        showingCollectionEditor = true
+                    }
+                )
+            }
+    }
+
+    private var libraryFilterSheet: some View {
+        libraryChrome
+            .sheet(isPresented: $showingFilterSheet) {
+                AdvancedLibraryFilterSheet(
+                    selectedMood: $selectedMood,
+                    selectedAtmosphere: $selectedAtmosphere,
+                    favoritesOnly: $favoritesOnly,
+                    hasAudioOnly: $hasAudioOnly
+                )
+                .presentationDetents([.medium])
             }
     }
 
