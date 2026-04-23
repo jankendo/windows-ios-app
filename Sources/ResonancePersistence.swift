@@ -266,7 +266,9 @@ enum ResonancePersistence {
         do {
             let configuration = ModelConfiguration(isStoredInMemoryOnly: inMemory)
             return try ModelContainer(
-                for: ResonanceSchemaV2.self,
+                for: MemoryEntry.self,
+                MemoryCollection.self,
+                MemoryScene.self,
                 migrationPlan: ResonanceMigrationPlan.self,
                 configurations: configuration
             )
