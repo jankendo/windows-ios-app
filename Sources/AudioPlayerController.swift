@@ -179,14 +179,16 @@ final class AudioPlayerController: NSObject, ObservableObject {
         }
 
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { [weak self] time in
-            guard let self else { return }
-            let seconds = time.seconds
-            if seconds.isFinite {
-                self.currentTime = seconds
-                if !self.playbackEnvelope.isEmpty, self.duration > 0 {
-                    let progress = max(0, min(seconds / max(self.duration, 0.1), 0.999))
-                    let index = min(Int(progress * Double(self.playbackEnvelope.count)), self.playbackEnvelope.count - 1)
-                    self.reactiveLevel = Double(self.playbackEnvelope[index])
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let seconds = time.seconds
+                if seconds.isFinite {
+                    self.currentTime = seconds
+                    if !self.playbackEnvelope.isEmpty, self.duration > 0 {
+                        let progress = max(0, min(seconds / max(self.duration, 0.1), 0.999))
+                        let index = min(Int(progress * Double(self.playbackEnvelope.count)), self.playbackEnvelope.count - 1)
+                        self.reactiveLevel = Double(self.playbackEnvelope[index])
+                    }
                 }
             }
         }

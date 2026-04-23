@@ -96,8 +96,8 @@ struct AtmosphericImmersiveOverlay: View {
             x += drift.width * CGFloat(sin(phase + Double(index)))
             y += drift.height * CGFloat(cos((phase * 0.9) + Double(index)))
 
-            let radius = CGFloat(1.4 + ((index % 4) * 0.8))
-            let opacity = 0.08 + Double(index % 3) * 0.04
+            let radius = CGFloat(1.4) + (CGFloat(index % 4) * CGFloat(0.8))
+            let opacity = 0.08 + (Double(index % 3) * 0.04)
             let color = particleColor.opacity(opacity)
             let rect = CGRect(x: x, y: y, width: radius, height: radius)
             context.fill(Path(ellipseIn: rect), with: .color(color))

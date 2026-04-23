@@ -313,8 +313,9 @@ final class CaptureFlowModel: ObservableObject {
                 Task { @MainActor in
                     do {
                         var draft = try result.get()
+                        let photoData = draft.photoData
                         async let placeLabel = self.locationService.currentPlaceLabel(forceRefresh: true)
-                        async let photoCaption = MemoryAnalysisService.captionGeneration(from: draft.photoData, style: self.captionStyle)
+                        async let photoCaption = MemoryAnalysisService.captionGeneration(from: photoData, style: self.captionStyle)
                         async let sensorSnapshot = self.locationService.currentEnvironmentSnapshot(forceRefresh: true)
                         async let resolvedLocation = self.locationService.currentLocation(forceRefresh: true)
                         let captionGeneration = await photoCaption
