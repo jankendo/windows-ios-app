@@ -474,11 +474,11 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             capturedAt: capturedAt,
             audioDuration: audioDuration,
             isSpatialAudio: pendingCapture.isSpatialAudio,
+            recoveryState: pendingCapture.recoveryState,
             placeLabel: nil,
             photoCaption: nil,
             photoCaptionSource: nil,
             photoCaptionStyle: nil,
-            recoveryState: pendingCapture.recoveryState,
             sensorSnapshot: nil,
             minimumDecibels: minimumCapturedDecibels.map(Double.init),
             maximumDecibels: maximumCapturedDecibels.map(Double.init)
