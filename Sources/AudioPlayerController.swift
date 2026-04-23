@@ -131,9 +131,16 @@ final class AudioPlayerController: NSObject, ObservableObject {
 
     private func preparePlaybackSession() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .moviePlayback, options: [.allowAirPlay, .allowBluetoothA2DP])
-        try session.setActive(true)
-        diagnostics.record("audio session active: category=\(session.category.rawValue) mode=\(session.mode.rawValue)")
+        do {
+            try session.setCategory(.playback, mode: .moviePlayback, options: [.allowAirPlay, .allowBluetoothA2DP])
+            try session.setActive(true)
+            diagnostics.record("audio session active: category=\(session.category.rawValue) mode=\(session.mode.rawValue) strategy=preferred")
+        } catch {
+            diagnostics.record("audio session preferred strategy failed: \(error.localizedDescription)")
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowAirPlay, .allowBluetoothA2DP])
+            try session.setActive(true)
+            diagnostics.record("audio session active: category=\(session.category.rawValue) mode=\(session.mode.rawValue) strategy=compatibility")
+        }
     }
 
     private func attachObservers(to player: AVPlayer, item: AVPlayerItem, url: URL) {
