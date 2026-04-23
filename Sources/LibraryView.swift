@@ -298,11 +298,28 @@ struct LibraryView: View {
     }
 
     private var libraryObservedView: some View {
-        librarySheetsView
-            .onAppear {
-                refreshLibraryState()
-                Task { await refreshCurrentLocation() }
+        libraryMapTrackingView
+    }
+
+    private var libraryMapTrackingView: some View {
+        libraryModeTrackingView
+            .onChange(of: mapRegion.center.latitude) { _, _ in syncVisibleMapSelection() }
+            .onChange(of: mapRegion.center.longitude) { _, _ in syncVisibleMapSelection() }
+            .onChange(of: mapRegion.span.latitudeDelta) { _, _ in syncVisibleMapSelection() }
+            .onChange(of: mapRegion.span.longitudeDelta) { _, _ in syncVisibleMapSelection() }
+    }
+
+    private var libraryModeTrackingView: some View {
+        libraryRefreshTrackingView
+            .onChange(of: selectedMode) { _, newMode in
+                if newMode != .timeline {
+                    endSelectionMode()
+                }
             }
+    }
+
+    private var libraryRefreshTrackingView: some View {
+        libraryLifecycleView
             .onChange(of: entries.count) { _, _ in refreshLibraryState() }
             .onChange(of: collections.count) { _, _ in refreshLibraryState() }
             .onChange(of: scenes.count) { _, _ in refreshLibraryState() }
@@ -315,15 +332,14 @@ struct LibraryView: View {
             .onChange(of: nearbyMemoriesEnabled) { _, _ in refreshLibraryState() }
             .onChange(of: nearbyMemoriesRadius) { _, _ in refreshLibraryState() }
             .onChange(of: filteredEntryIDs) { _, _ in pruneSelectionToVisibleEntries() }
-            .onChange(of: selectedMode) { _, newMode in
-                if newMode != .timeline {
-                    endSelectionMode()
-                }
+    }
+
+    private var libraryLifecycleView: some View {
+        librarySheetsView
+            .onAppear {
+                refreshLibraryState()
+                Task { await refreshCurrentLocation() }
             }
-            .onChange(of: mapRegion.center.latitude) { _, _ in syncVisibleMapSelection() }
-            .onChange(of: mapRegion.center.longitude) { _, _ in syncVisibleMapSelection() }
-            .onChange(of: mapRegion.span.latitudeDelta) { _, _ in syncVisibleMapSelection() }
-            .onChange(of: mapRegion.span.longitudeDelta) { _, _ in syncVisibleMapSelection() }
     }
 
     private var librarySheetsView: some View {
