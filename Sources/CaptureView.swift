@@ -18,8 +18,10 @@ final class CaptureFlowModel: ObservableObject {
     let camera = CameraCaptureService()
     private let locationService = CaptureLocationService.shared
     private var captionRefreshTask: Task<Void, Never>?
+    private let diagnostics = AudioPlaybackDiagnostics.shared
 
     func prepare() {
+        diagnostics.record("capture flow prepare", category: "capture")
         camera.prepare()
         locationService.prepare()
         Task {
@@ -29,6 +31,7 @@ final class CaptureFlowModel: ObservableObject {
 
     func capture(duration: TimeInterval, delayRecordingUntilAfterShutter: Bool) {
         guard !isSaving else { return }
+        diagnostics.record("capture requested duration=\(String(format: "%.2fs", duration)) delayedRecording=\(delayRecordingUntilAfterShutter)", category: "capture")
         errorMessage = nil
         saveMessage = nil
         lastSavedEntry = nil
@@ -53,10 +56,12 @@ final class CaptureFlowModel: ObservableObject {
                     _ = await resolvedLocation
                     self.isPreparingReview = false
                     self.capturedDraft = draft
+                    self.diagnostics.record("capture draft ready audio=\(draft.audioTempURL?.lastPathComponent ?? "none")", category: "capture")
                     self.scheduleDraftCaptionRefresh()
                 } catch {
                     self.isPreparingReview = false
                     self.errorMessage = error.localizedDescription
+                    self.diagnostics.record("capture failed: \(error.localizedDescription)", category: "capture")
                 }
             }
         }
@@ -68,6 +73,7 @@ final class CaptureFlowModel: ObservableObject {
 
     func saveDraft(using modelContext: ModelContext) {
         guard let draft = capturedDraft, !isSaving else { return }
+        diagnostics.record("save draft started", category: "storage")
         errorMessage = nil
         saveMessage = nil
         isSaving = true
@@ -132,6 +138,7 @@ final class CaptureFlowModel: ObservableObject {
                 try MediaStore.saveAtmosphereMetadata(finalMetadata, for: entry.id)
                 modelContext.insert(entry)
                 try modelContext.save()
+                diagnostics.record("save draft completed entry=\(entry.id.uuidString)", category: "storage")
 
                 title = ""
                 notes = ""
@@ -140,6 +147,7 @@ final class CaptureFlowModel: ObservableObject {
                 saveMessage = draft.placeLabel.map { "\($0)の空気を保存しました。" } ?? "記録を保存しました。"
             } catch {
                 errorMessage = error.localizedDescription
+                diagnostics.record("save draft failed: \(error.localizedDescription)", category: "storage")
             }
 
             isSaving = false

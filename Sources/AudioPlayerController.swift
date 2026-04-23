@@ -14,6 +14,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
     private var itemStatusObservation: NSKeyValueObservation?
     private var timeControlObservation: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
+    private var looper: AVPlayerLooper?
     private var loadedURL: URL?
     private var shouldLoop = false
     private var volume: Float = 1
@@ -71,11 +72,22 @@ final class AudioPlayerController: NSObject, ObservableObject {
         isSpatialPlaybackActive = false
 
         let item = AVPlayerItem(url: url)
-        let player = AVPlayer(playerItem: item)
-        player.volume = volume
-        player.automaticallyWaitsToMinimizeStalling = false
-        self.player = player
-        attachObservers(to: player, item: item, url: url)
+        if loop {
+            let queuePlayer = AVQueuePlayer()
+            queuePlayer.volume = volume
+            queuePlayer.automaticallyWaitsToMinimizeStalling = false
+            looper = AVPlayerLooper(player: queuePlayer, templateItem: item)
+            player = queuePlayer
+            diagnostics.record("loop strategy: AVPlayerLooper enabled for seam-minimized looping")
+        } else {
+            let player = AVPlayer(playerItem: item)
+            player.volume = volume
+            player.automaticallyWaitsToMinimizeStalling = false
+            self.player = player
+        }
+        if let player {
+            attachObservers(to: player, item: item, url: url)
+        }
 
         diagnostics.record("player created: duration=\(Self.timeString(duration)) loop=\(loop) volume=\(String(format: "%.2f", volume))")
         diagnostics.record("spatial audio playback check: false (mono asset + AVPlayer stereo playback, no spatial renderer)")
@@ -154,21 +166,16 @@ final class AudioPlayerController: NSObject, ObservableObject {
             }
         }
 
+        guard !shouldLoop else { return }
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            if self.shouldLoop {
-                self.diagnostics.record("loop restart")
-                player.seek(to: .zero)
-                player.play()
-            } else {
-                self.isPlaying = false
-                self.currentTime = self.duration
-                self.diagnostics.record("playback finished")
-            }
+            self.isPlaying = false
+            self.currentTime = self.duration
+            self.diagnostics.record("playback finished")
         }
     }
 
@@ -201,6 +208,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
 
         player?.pause()
         player = nil
+        looper = nil
         loadedURL = nil
         shouldLoop = false
         isPlaying = false

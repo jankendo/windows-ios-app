@@ -11,8 +11,8 @@ final class AudioPlaybackDiagnostics: ObservableObject {
         entries.joined(separator: "\n")
     }
 
-    func record(_ message: String) {
-        let stamped = "[\(Self.timestampFormatter.string(from: .now))] \(message)"
+    func record(_ message: String, category: String = "audio") {
+        let stamped = "[\(Self.timestampFormatter.string(from: .now))] [\(category.uppercased())] \(message)"
         entries.append(stamped)
         if entries.count > 160 {
             entries.removeFirst(entries.count - 160)
@@ -25,7 +25,7 @@ final class AudioPlaybackDiagnostics: ObservableObject {
 
     func copyToPasteboard() {
         UIPasteboard.general.string = text
-        record("diagnostics copied to clipboard")
+        record("diagnostics copied to clipboard", category: "diagnostics")
     }
 
     private static let timestampFormatter: DateFormatter = {
@@ -84,7 +84,7 @@ struct AudioDiagnosticsPanel: View {
             }
             .padding(.top, 10)
         } label: {
-            Label("音声診断ログ", systemImage: "stethoscope")
+            Label("診断ログ", systemImage: "stethoscope")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(palette.secondaryText)
         }

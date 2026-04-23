@@ -28,6 +28,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     private let preferredHorizontalAccuracy: CLLocationAccuracy = 6
     private let cachedLocationFreshnessLimit: TimeInterval = 8
     private let preciseLocationRetryInterval: TimeInterval = 30
+    private let diagnostics = AudioPlaybackDiagnostics.shared
 
     private var latestLocation: CLLocation?
     private var latestPlaceLabel: String?
@@ -55,6 +56,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
 
     func prepare() {
         authorizationStatus = manager.authorizationStatus
+        diagnostics.record("prepare auth=\(authorizationStatus.rawValue) precise=\(manager.accuracyAuthorization == .fullAccuracy)", category: "location")
         UIDevice.current.beginGeneratingDeviceOrientationNotifications()
         startSpatialSensors()
 
@@ -70,6 +72,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     }
 
     func suspend() {
+        diagnostics.record("suspend location pipeline", category: "location")
         stopLocationPipeline()
         stopSpatialSensors()
     }
@@ -138,6 +141,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     private func startLocationPipeline() {
         guard !isLocationPipelineActive else { return }
         isLocationPipelineActive = true
+        diagnostics.record("start location updates", category: "location")
         manager.startUpdatingLocation()
         if CLLocationManager.headingAvailable() {
             manager.headingFilter = 5
@@ -150,6 +154,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         locationTimeoutTask = nil
         guard isLocationPipelineActive else { return }
         isLocationPipelineActive = false
+        diagnostics.record("stop location updates", category: "location")
         manager.stopUpdatingLocation()
         if CLLocationManager.headingAvailable() {
             manager.stopUpdatingHeading()
@@ -258,7 +263,9 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
         .filter { !$0.isEmpty }
 
-        return parts.first
+        let label = parts.first
+        diagnostics.record("reverse geocode label=\(label ?? "nil")", category: "location")
+        return label
     }
 
     private func requestPreciseLocationIfNeeded() {
@@ -297,6 +304,7 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
         Task { @MainActor in
             authorizationStatus = manager.authorizationStatus
             accuracyAuthorization = manager.accuracyAuthorization
+            diagnostics.record("authorization changed auth=\(authorizationStatus.rawValue) precise=\(accuracyAuthorization == .fullAccuracy)", category: "location")
             if authorizationStatus.allowsLocationAccess {
                 startLocationPipeline()
                 requestPreciseLocationIfNeeded()
@@ -319,6 +327,12 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
                 lhs.horizontalAccuracy < rhs.horizontalAccuracy
             } ?? candidateLocations.last
             updateStoredLocation(bestLocation)
+            if let bestLocation {
+                diagnostics.record(
+                    "location update lat=\(String(format: "%.6f", bestLocation.coordinate.latitude)) lon=\(String(format: "%.6f", bestLocation.coordinate.longitude)) acc=\(String(format: "%.1f", bestLocation.horizontalAccuracy))",
+                    category: "location"
+                )
+            }
             if shouldResumeLocationWait(with: bestLocation) {
                 resumeLocationContinuationIfNeeded()
             }

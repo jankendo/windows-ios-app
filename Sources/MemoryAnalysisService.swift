@@ -13,6 +13,7 @@ struct PhotoCaptionGeneration {
 
 enum MemoryAnalysisService {
     static func requestSpeechAuthorizationIfNeeded() async {
+        await log("speech authorization status=\(SFSpeechRecognizer.authorizationStatus().rawValue)", category: "analysis")
         guard SFSpeechRecognizer.authorizationStatus() == .notDetermined else { return }
 
         await withCheckedContinuation { continuation in
@@ -23,6 +24,7 @@ enum MemoryAnalysisService {
     }
 
     static func analyze(photoData: Data, audioURL: URL?) async -> MemoryAnalysis {
+        await log("analysis started audio=\(audioURL?.lastPathComponent ?? "none") photoBytes=\(photoData.count)", category: "analysis")
         async let visualTags = imageTags(from: photoData)
         async let transcript = transcript(from: audioURL)
 
@@ -31,12 +33,14 @@ enum MemoryAnalysisService {
         let resolvedAudioTags = await audioTags(from: audioURL, transcript: resolvedTranscript)
         let mood = inferMood(visualTags: resolvedVisualTags, audioTags: resolvedAudioTags, transcript: resolvedTranscript)
 
-        return MemoryAnalysis(
+        let analysis = MemoryAnalysis(
             visualTags: resolvedVisualTags,
             audioTags: resolvedAudioTags,
             transcript: resolvedTranscript,
             mood: mood.rawValue
         )
+        await log("analysis completed visualTags=\(resolvedVisualTags.count) audioTags=\(resolvedAudioTags.count) transcriptChars=\(resolvedTranscript.count) mood=\(mood.rawValue)", category: "analysis")
+        return analysis
     }
 
     static func imageCaption(from data: Data, title: String? = nil, placeLabel: String? = nil) async -> String? {
@@ -57,10 +61,12 @@ enum MemoryAnalysisService {
                 tags: tags,
                 baseCaption: baseCaption
            ) {
+            await log("caption generated with FoundationModels", category: "analysis")
             return PhotoCaptionGeneration(text: aiCaption, source: .foundationModels)
         }
         #endif
 
+        await log("caption generated with composed fallback", category: "analysis")
         return PhotoCaptionGeneration(
             text: refinedFallbackCaption(
             title: trimmedTitle,
@@ -187,6 +193,7 @@ enum MemoryAnalysisService {
         }
 
         guard let recognizer = preferredSpeechRecognizer(), recognizer.isAvailable else {
+            await log("transcript skipped: recognizer unavailable", category: "analysis")
             return ""
         }
 
@@ -198,9 +205,15 @@ enum MemoryAnalysisService {
             var task: SFSpeechRecognitionTask?
             task = recognizer.recognitionTask(with: request) { result, error in
                 if let result, result.isFinal {
+                    Task { @MainActor in
+                        AudioPlaybackDiagnostics.shared.record("transcript completed locale=\(recognizer.locale.identifier) chars=\(result.bestTranscription.formattedString.count)", category: "analysis")
+                    }
                     task?.cancel()
                     continuation.resume(returning: result.bestTranscription.formattedString)
                 } else if error != nil {
+                    Task { @MainActor in
+                        AudioPlaybackDiagnostics.shared.record("transcript failed: \(error?.localizedDescription ?? "unknown")", category: "analysis")
+                    }
                     task?.cancel()
                     continuation.resume(returning: "")
                 }
@@ -226,6 +239,11 @@ enum MemoryAnalysisService {
         }
 
         return SFSpeechRecognizer()
+    }
+
+    @MainActor
+    private static func log(_ message: String, category: String) {
+        AudioPlaybackDiagnostics.shared.record(message, category: category)
     }
 
     private static func inferMood(visualTags: [String], audioTags: [String], transcript: String) -> MemoryMood {

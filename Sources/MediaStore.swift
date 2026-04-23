@@ -16,6 +16,9 @@ enum MediaStore {
 
     static func save(photoData: Data, audioTempURL: URL?) throws -> StoredMedia {
         try ensureDirectories()
+        Task { @MainActor in
+            AudioPlaybackDiagnostics.shared.record("media save started photoBytes=\(photoData.count) audioTemp=\(audioTempURL?.lastPathComponent ?? "none")", category: "storage")
+        }
 
         let photoFileName = UUID().uuidString + ".jpg"
         let photoURL = photoURL(for: photoFileName)
@@ -37,6 +40,10 @@ enum MediaStore {
             audioDuration = asset.duration.seconds.isFinite ? asset.duration.seconds : 0
         }
 
+        Task { @MainActor in
+            AudioPlaybackDiagnostics.shared.record("media save completed photo=\(photoFileName) audio=\(audioFileName ?? "none") duration=\(String(format: "%.2fs", audioDuration))", category: "storage")
+        }
+
         return StoredMedia(
             photoFileName: photoFileName,
             audioFileName: audioFileName,
@@ -45,6 +52,9 @@ enum MediaStore {
     }
 
     static func deleteAssets(for entry: MemoryEntry) {
+        Task { @MainActor in
+            AudioPlaybackDiagnostics.shared.record("delete assets entry=\(entry.id.uuidString)", category: "storage")
+        }
         try? FileManager.default.removeItem(at: photoURL(for: entry.photoFileName))
         if let audioFileName = entry.audioFileName {
             try? FileManager.default.removeItem(at: audioURL(for: audioFileName))
@@ -66,6 +76,9 @@ enum MediaStore {
         let data = try JSONEncoder().encode(metadata)
         try data.write(to: fileURL, options: .atomic)
         metadataCache[entryID] = metadata
+        Task { @MainActor in
+            AudioPlaybackDiagnostics.shared.record("metadata saved entry=\(entryID.uuidString)", category: "storage")
+        }
     }
 
     static func updateAtmosphereMetadata(for entryID: UUID, transform: (inout MemoryAtmosphereMetadata) -> Void) throws {
