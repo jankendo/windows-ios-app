@@ -38,6 +38,9 @@
 ### 4. Revisit experience
 - ライブラリで写真と音の“気配”を一覧
 - 一覧 / 地図 を切り替え、full-screen map で場所から記憶を選択
+- 同じ日に残した記録と再会する **Time Capsule**
+- 現在地の近くにある記録をすぐ開ける **Nearby memories**
+- 複数の記録を束ねる **Collections** と、連続撮影で残す **Scenes**
 - 時期・時間帯・お気に入り・音声有無・ムードで絞り込み
 - 検索は generic な例ではなく、実際の保存記録に存在する言葉から提案
 - 詳細画面で、場所・音・時間帯をまとめて再訪
@@ -60,6 +63,9 @@
 - 空間センサー情報の保存
 - `Vision` / `Speech` / 軽量音声解析による自動タグ付け
 - Memory Scene レビュー
+- 俳句調 / 日記調 / 事実的などの caption style
+- foreground-only interval capture と scene 保存
+- collection / smart collection / slideshow
 - ライブラリ / 詳細 / 検索
 - ダークモード対応の atmospheric UI
 

@@ -115,6 +115,32 @@ enum PhotoCaptionSource: String, Codable {
     }
 }
 
+enum InterruptionReason: String, Codable {
+    case phoneCall
+    case audioRouteLost
+    case appBackgrounded
+    case unknown
+
+    var localizedLabel: String {
+        switch self {
+        case .phoneCall:
+            return "電話着信"
+        case .audioRouteLost:
+            return "音声ルート変更"
+        case .appBackgrounded:
+            return "アプリ遷移"
+        case .unknown:
+            return "外部要因"
+        }
+    }
+}
+
+enum PartialCaptureRecoveryState: Equatable, Codable {
+    case none
+    case recovered(duration: TimeInterval, reason: InterruptionReason)
+    case failed(reason: InterruptionReason)
+}
+
 struct MemoryAtmosphereMetadata: Codable {
     static let currentPhotoCaptionVersion = 3
 
@@ -122,6 +148,7 @@ struct MemoryAtmosphereMetadata: Codable {
     var waveformFingerprint: [Double]
     var photoCaption: String?
     var photoCaptionSourceRaw: String?
+    var photoCaptionStyleRaw: String?
     var photoCaptionVersion: Int?
     var atmosphereStyleRaw: String
     var captureDuration: Double?
@@ -146,6 +173,7 @@ struct MemoryAtmosphereMetadata: Codable {
         self.waveformFingerprint = waveformFingerprint
         self.photoCaption = normalizedCaption
         self.photoCaptionSourceRaw = normalizedCaption == nil ? nil : PhotoCaptionSource.composedFallback.rawValue
+        self.photoCaptionStyleRaw = normalizedCaption == nil ? nil : PhotoCaptionStyle.poetic.rawValue
         self.photoCaptionVersion = normalizedCaption == nil ? nil : Self.currentPhotoCaptionVersion
         self.atmosphereStyleRaw = atmosphereStyle.rawValue
         self.captureDuration = captureDuration
@@ -166,6 +194,11 @@ struct MemoryAtmosphereMetadata: Codable {
     var photoCaptionSource: PhotoCaptionSource? {
         guard let photoCaptionSourceRaw else { return nil }
         return PhotoCaptionSource(rawValue: photoCaptionSourceRaw)
+    }
+
+    var photoCaptionStyle: PhotoCaptionStyle {
+        guard let photoCaptionStyleRaw else { return .poetic }
+        return PhotoCaptionStyle(rawValue: photoCaptionStyleRaw) ?? .poetic
     }
 }
 
@@ -345,6 +378,10 @@ final class MemoryEntry: Identifiable {
 
     var photoCaptionSource: PhotoCaptionSource? {
         atmosphereMetadata?.photoCaptionSource
+    }
+
+    var photoCaptionStyle: PhotoCaptionStyle {
+        atmosphereMetadata?.photoCaptionStyle ?? .poetic
     }
 
     var descriptiveCaption: String {

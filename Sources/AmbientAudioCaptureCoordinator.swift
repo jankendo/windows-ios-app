@@ -48,9 +48,18 @@ final class AmbientAudioCaptureCoordinator: NSObject, AVCaptureAudioDataOutputSa
     private var currentFileURL: URL?
     private var isRecording = false
     private var hasStartedWriting = false
+    private var recordingStartedAt: Date?
 
+    let minimumViableDuration: TimeInterval = 3.0
     var latestAveragePower: Float = -60
     private(set) var supportsSpatialCapture = false
+
+    var currentRecordingDuration: TimeInterval {
+        captureQueue.sync {
+            guard let recordingStartedAt else { return 0 }
+            return max(Date().timeIntervalSince(recordingStartedAt), 0)
+        }
+    }
 
     func configure(session: AVCaptureSession, audioInput: AVCaptureDeviceInput) throws -> Bool {
         if standardOutput != nil || spatialOutput != nil || stereoFallbackOutput != nil {
@@ -110,6 +119,7 @@ final class AmbientAudioCaptureCoordinator: NSObject, AVCaptureAudioDataOutputSa
             latestAveragePower = -60
             hasStartedWriting = false
             isRecording = true
+            recordingStartedAt = .now
         }
 
         log("recorder started: file=\(fileURL.lastPathComponent) route=\(Self.routeDescription()) mode=\(supportsSpatialCapture ? "spatial-foa" : "standard")")
@@ -339,6 +349,7 @@ private extension AmbientAudioCaptureCoordinator {
         metadataWriterInput = nil
         currentFileURL = nil
         hasStartedWriting = false
+        recordingStartedAt = nil
     }
 
     func updateAveragePower(using sampleBuffer: CMSampleBuffer, from output: AVCaptureOutput) {

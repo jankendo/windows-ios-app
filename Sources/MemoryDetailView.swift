@@ -16,6 +16,9 @@ struct MemoryDetailView: View {
     @State private var showingAutoTags = false
     @State private var showingImmersivePreview = false
     @State private var resolvedPhotoCaption: String?
+    @State private var selectedCaptionStyle: PhotoCaptionStyle = .poetic
+    @State private var captionGenerationMessage: String?
+    @State private var isRegeneratingCaption = false
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
@@ -70,6 +73,8 @@ struct MemoryDetailView: View {
                             }
                         }
                     }
+
+                    captionStyleCard
 
                     if entry.sensorSnapshot != nil
                         || entry.minimumDecibels != nil
@@ -205,6 +210,7 @@ struct MemoryDetailView: View {
         .onAppear {
             waveformSamples = entry.waveformFingerprint
             resolvedPhotoCaption = entry.photoCaption
+            selectedCaptionStyle = entry.photoCaptionStyle
             if let audioURL = entry.audioURL {
                 player.load(url: audioURL)
             }
@@ -236,14 +242,14 @@ struct MemoryDetailView: View {
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.84))
 
-                        if let source = entry.photoCaptionSource {
-                            ResonanceBadge(
-                                title: source.localizedLabel,
-                                systemImage: source.systemImage,
-                                tint: .white,
-                                atmosphere: entry.atmosphereStyle
-                            )
-                        }
+                if let source = entry.photoCaptionSource {
+                    ResonanceBadge(
+                        title: "\(source.localizedLabel) • \(selectedCaptionStyle.localizedLabel)",
+                        systemImage: source.systemImage,
+                        tint: .white,
+                        atmosphere: entry.atmosphereStyle
+                    )
+                }
                     }
 
                     Spacer()
@@ -344,6 +350,60 @@ struct MemoryDetailView: View {
         dismiss()
     }
 
+    private var captionStyleCard: some View {
+        ResonanceCard(atmosphere: entry.atmosphereStyle) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("キャプション文体")
+                            .font(.headline)
+                            .foregroundStyle(palette.primaryText)
+                        Text(selectedCaptionStyle.localizedDescription)
+                            .font(.caption)
+                            .foregroundStyle(palette.secondaryText)
+                    }
+
+                    Spacer()
+
+                    Menu {
+                        ForEach(PhotoCaptionStyle.allCases) { style in
+                            Button {
+                                selectedCaptionStyle = style
+                            } label: {
+                                if style == selectedCaptionStyle {
+                                    Label(style.localizedLabel, systemImage: "checkmark")
+                                } else {
+                                    Text(style.localizedLabel)
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(selectedCaptionStyle.localizedLabel, systemImage: "text.quote")
+                            .font(.caption.weight(.semibold))
+                    }
+                }
+
+                Button {
+                    regenerateCaption()
+                } label: {
+                    Label(isRegeneratingCaption ? "再生成中…" : "この文体で再生成", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(palette.accent)
+                .disabled(isRegeneratingCaption)
+
+                if let captionGenerationMessage, !captionGenerationMessage.isEmpty {
+                    Text(captionGenerationMessage)
+                        .font(.caption)
+                        .foregroundStyle(palette.secondaryText)
+                }
+            }
+        }
+    }
+
     private func backfillPhotoCaptionIfNeeded() async {
         let needsCaptionRefresh = entry.atmosphereMetadata?.needsPhotoCaptionRefresh ?? true
         guard needsCaptionRefresh || resolvedPhotoCaption == nil else { return }
@@ -361,7 +421,42 @@ struct MemoryDetailView: View {
         try? MediaStore.updateAtmosphereMetadata(for: entry.id) { metadata in
             metadata.photoCaption = generation.text
             metadata.photoCaptionSourceRaw = generation.source.rawValue
+            metadata.photoCaptionStyleRaw = generation.style.rawValue
             metadata.photoCaptionVersion = MemoryAtmosphereMetadata.currentPhotoCaptionVersion
+        }
+    }
+
+    private func regenerateCaption() {
+        guard let imageData = try? Data(contentsOf: entry.photoURL) else { return }
+
+        isRegeneratingCaption = true
+        captionGenerationMessage = nil
+
+        Task {
+            let generation = await MemoryAnalysisService.captionGeneration(
+                from: imageData,
+                title: entry.title,
+                placeLabel: entry.placeLabel,
+                style: selectedCaptionStyle
+            )
+
+            await MainActor.run {
+                defer { isRegeneratingCaption = false }
+                guard let generation else {
+                    captionGenerationMessage = "キャプションを再生成できませんでした。"
+                    return
+                }
+
+                resolvedPhotoCaption = generation.text
+                captionGenerationMessage = "\(generation.style.localizedLabel)で更新しました。"
+
+                try? MediaStore.updateAtmosphereMetadata(for: entry.id) { metadata in
+                    metadata.photoCaption = generation.text
+                    metadata.photoCaptionSourceRaw = generation.source.rawValue
+                    metadata.photoCaptionStyleRaw = generation.style.rawValue
+                    metadata.photoCaptionVersion = MemoryAtmosphereMetadata.currentPhotoCaptionVersion
+                }
+            }
         }
     }
 
@@ -418,6 +513,8 @@ private struct SavedMemoryImmersivePreviewView: View {
     @StateObject private var player = AudioPlayerController()
     @State private var controlsVisible = true
     @State private var dragOffset: CGSize = .zero
+    @State private var saliencyFocus = CGPoint(x: 0.5, y: 0.5)
+    @State private var kenBurnsExpanded = false
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
@@ -437,6 +534,14 @@ private struct SavedMemoryImmersivePreviewView: View {
         return dragOffset.height * 0.1 + environmentService.previewVerticalShift
     }
 
+    private var saliencyShift: CGSize {
+        guard !reduceMotion else { return .zero }
+        return CGSize(
+            width: (saliencyFocus.x - 0.5) * -42,
+            height: (saliencyFocus.y - 0.5) * -30
+        )
+    }
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -445,20 +550,28 @@ private struct SavedMemoryImmersivePreviewView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .scaleEffect(reduceMotion ? 1.04 : 1.14)
+                    .scaleEffect(reduceMotion ? 1.04 : (kenBurnsExpanded ? 1.12 : 1.04))
                     .offset(
-                        x: motionHorizontalShift,
-                        y: motionVerticalShift
+                        x: motionHorizontalShift + saliencyShift.width,
+                        y: motionVerticalShift + saliencyShift.height
                     )
                     .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(-environmentService.previewHorizontalShift) * 0.16), axis: (x: 0, y: 1, z: 0))
                     .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(environmentService.previewVerticalShift) * 0.1), axis: (x: 1, y: 0, z: 0))
                     .ignoresSafeArea()
+                    .animation(reduceMotion ? .default : .linear(duration: 20).repeatForever(autoreverses: true), value: kenBurnsExpanded)
             }
 
             LinearGradient(
                 colors: [Color.black.opacity(0.08), .clear, Color.black.opacity(0.58)],
                 startPoint: .top,
                 endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            AtmosphericImmersiveOverlay(
+                atmosphere: entry.atmosphereStyle,
+                snapshot: entry.sensorSnapshot,
+                audioReactiveLevel: player.reactiveLevel
             )
             .ignoresSafeArea()
         }
@@ -536,7 +649,14 @@ private struct SavedMemoryImmersivePreviewView: View {
             if let audioURL = entry.audioURL {
                 player.load(url: audioURL, autoPlay: true, loop: true, volume: 0.78)
             }
+            player.setPlaybackEnvelope(entry.waveformFingerprint)
             player.setSpatialOffset(environmentService.previewParallax)
+            kenBurnsExpanded = true
+            if let image = UIImage(contentsOfFile: entry.photoURL.path) {
+                Task {
+                    saliencyFocus = await SaliencyFocusResolver.focusPoint(for: image)
+                }
+            }
         }
         .onChange(of: environmentService.previewParallax) { _, newValue in
             player.setSpatialOffset(newValue)
@@ -737,5 +857,5 @@ private struct MemoryEditView: View {
             )
         )
     }
-    .modelContainer(for: [MemoryEntry.self], inMemory: true)
+    .modelContainer(ResonancePersistence.makeContainer(inMemory: true))
 }

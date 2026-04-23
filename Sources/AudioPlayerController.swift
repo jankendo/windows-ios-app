@@ -7,6 +7,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var isSpatialPlaybackActive = false
+    @Published private(set) var reactiveLevel: Double = 0.18
     @Published var currentTime: TimeInterval = 0
 
     private var player: AVPlayer?
@@ -18,6 +19,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
     private var loadedURL: URL?
     private var shouldLoop = false
     private var volume: Float = 1
+    private var playbackEnvelope: [CGFloat] = []
     private let diagnostics = AudioPlaybackDiagnostics.shared
 
     func togglePlayback(for url: URL?) {
@@ -55,6 +57,11 @@ final class AudioPlayerController: NSObject, ObservableObject {
 
     func setSpatialOffset(_ offset: CGSize) {}
 
+    func setPlaybackEnvelope(_ samples: [CGFloat]) {
+        playbackEnvelope = samples
+        reactiveLevel = Double(samples.first ?? 0.18)
+    }
+
     func stop() {
         diagnostics.record("stop requested")
         tearDownPlayer(deactivateSession: true)
@@ -69,6 +76,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
         self.volume = volume
         duration = Self.assetDuration(for: url)
         currentTime = 0
+        reactiveLevel = Double(playbackEnvelope.first ?? 0.18)
         let assetProfile = AudioAssetProfile.inspect(url: url)
         isSpatialPlaybackActive = assetProfile.isTrueSpatialAudio
 
@@ -175,6 +183,11 @@ final class AudioPlayerController: NSObject, ObservableObject {
             let seconds = time.seconds
             if seconds.isFinite {
                 self.currentTime = seconds
+                if !self.playbackEnvelope.isEmpty, self.duration > 0 {
+                    let progress = max(0, min(seconds / max(self.duration, 0.1), 0.999))
+                    let index = min(Int(progress * Double(self.playbackEnvelope.count)), self.playbackEnvelope.count - 1)
+                    self.reactiveLevel = Double(self.playbackEnvelope[index])
+                }
             }
         }
 
@@ -225,8 +238,10 @@ final class AudioPlayerController: NSObject, ObservableObject {
         shouldLoop = false
         isPlaying = false
         isSpatialPlaybackActive = false
+        playbackEnvelope = []
         duration = 0
         currentTime = 0
+        reactiveLevel = 0.18
 
         if deactivateSession {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)

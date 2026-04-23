@@ -12,6 +12,8 @@ private struct MemorySearchSuggestion: Identifiable {
 struct SearchView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
+    @Query(sort: \MemoryCollection.updatedAt, order: .reverse) private var collections: [MemoryCollection]
+    @Query(sort: \MemoryScene.startedAt, order: .reverse) private var scenes: [MemoryScene]
     @State private var searchText = ""
     @State private var selectedMood: String?
     @State private var favoritesOnly = false
@@ -47,9 +49,19 @@ struct SearchView: View {
             merge(entry.placeLabel, systemImage: "location.fill")
             merge(entry.localizedMood, systemImage: "sparkles")
             merge(entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName)
+            merge(entry.photoCaptionStyle.localizedLabel, systemImage: "text.quote")
             for tag in entry.autoTags.prefix(4) {
                 merge(tag, systemImage: "tag.fill")
             }
+            merge(entry.descriptiveCaption.components(separatedBy: .punctuationCharacters).first, systemImage: "waveform")
+        }
+
+        for collection in collections {
+            merge(collection.title, systemImage: collection.isSmartCollection ? "wand.and.stars" : "photo.stack")
+        }
+
+        for scene in scenes {
+            merge(scene.title, systemImage: "timer")
         }
 
         return suggestions.values
@@ -67,6 +79,25 @@ struct SearchView: View {
         ResonancePalette.make(for: colorScheme)
     }
 
+    private var filteredCollections: [MemoryCollection] {
+        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        let query = searchText.lowercased()
+        return collections.filter {
+            $0.title.lowercased().contains(query)
+                || $0.collectionDescription.lowercased().contains(query)
+        }
+    }
+
+    private var filteredScenes: [MemoryScene] {
+        guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        let query = searchText.lowercased()
+        return scenes.filter { $0.title.lowercased().contains(query) }
+    }
+
+    private var hasAnyResults: Bool {
+        !filteredEntries.isEmpty || !filteredCollections.isEmpty || !filteredScenes.isEmpty
+    }
+
     var body: some View {
         ZStack {
             ResonanceGradientBackground()
@@ -76,13 +107,47 @@ struct SearchView: View {
                     suggestionSection
                     moodFilterSection
 
-                    if filteredEntries.isEmpty {
+                    if !filteredCollections.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("コレクション")
+                                .font(.headline)
+                                .foregroundStyle(palette.primaryText)
+
+                            ForEach(filteredCollections) { collection in
+                                NavigationLink {
+                                    MemoryCollectionDetailView(collection: collection)
+                                } label: {
+                                    MemoryCollectionCardView(collection: collection, entries: collection.resolvedEntries(from: entries))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    if !filteredScenes.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("シーン")
+                                .font(.headline)
+                                .foregroundStyle(palette.primaryText)
+
+                            ForEach(filteredScenes) { scene in
+                                NavigationLink {
+                                    MemorySceneDetailView(scene: scene)
+                                } label: {
+                                    MemorySceneCardView(scene: scene, entries: scene.resolvedEntries(from: entries))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    if !hasAnyResults {
                         ResonanceEmptyState(
                             title: "一致する記録が見つかりませんでした",
                             message: "気分や音のキーワードを変えて探してみてください。",
                             symbol: "magnifyingglass.circle"
                         )
-                    } else {
+                    } else if !filteredEntries.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("\(filteredEntries.count)件の記録")
                                 .font(.headline)
@@ -200,5 +265,5 @@ struct SearchView: View {
     NavigationStack {
         SearchView()
     }
-    .modelContainer(for: [MemoryEntry.self], inMemory: true)
+    .modelContainer(ResonancePersistence.makeContainer(inMemory: true))
 }

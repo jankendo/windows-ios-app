@@ -2,6 +2,44 @@ import SwiftData
 import SwiftUI
 import UIKit
 
+enum CaptureModeOption: String, CaseIterable, Identifiable {
+    case ambient
+    case interval
+
+    var id: String { rawValue }
+
+    var localizedLabel: String {
+        switch self {
+        case .ambient:
+            return "Ambient"
+        case .interval:
+            return "Interval"
+        }
+    }
+}
+
+struct IntervalCaptureSessionState: Identifiable {
+    enum Phase {
+        case running
+        case paused
+        case finished
+    }
+
+    let id: UUID
+    let title: String
+    let sceneID: UUID
+    let intervalSeconds: Int
+    let plannedCount: Int
+    let clipDuration: TimeInterval
+    var completedCount: Int
+    var nextCaptureAt: Date?
+    var phase: Phase
+
+    var isActive: Bool {
+        phase == .running || phase == .paused
+    }
+}
+
 @MainActor
 final class CaptureFlowModel: ObservableObject {
     @Published var title = ""
@@ -14,10 +52,13 @@ final class CaptureFlowModel: ObservableObject {
     @Published var saveMessage: String?
     @Published var isGeneratingAICaption = false
     @Published var captionGenerationMessage: String?
+    @Published var captionStyle: PhotoCaptionStyle = ResonancePreferences.defaultCaptionStyle
+    @Published var intervalSession: IntervalCaptureSessionState?
 
     let camera = CameraCaptureService()
     private let locationService = CaptureLocationService.shared
     private var captionRefreshTask: Task<Void, Never>?
+    private var intervalTask: Task<Void, Never>?
     private let diagnostics = AudioPlaybackDiagnostics.shared
 
     func prepare() {
@@ -35,42 +76,24 @@ final class CaptureFlowModel: ObservableObject {
         errorMessage = nil
         saveMessage = nil
         lastSavedEntry = nil
-        isPreparingReview = false
+        isPreparingReview = true
         captionGenerationMessage = nil
 
-        camera.captureMemory(duration: duration, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter) { [weak self] result in
-            guard let self else { return }
-
-            Task { @MainActor in
-                do {
-                    var draft = try result.get()
-                    async let placeLabel = self.locationService.currentPlaceLabel(forceRefresh: true)
-                    async let photoCaption = MemoryAnalysisService.captionGeneration(from: draft.photoData)
-                    async let sensorSnapshot = self.locationService.currentEnvironmentSnapshot(forceRefresh: true)
-                    async let resolvedLocation = self.locationService.currentLocation(forceRefresh: true)
-                    let captionGeneration = await photoCaption
-                    draft.placeLabel = await placeLabel
-                    draft.photoCaption = captionGeneration?.text
-                    draft.photoCaptionSource = captionGeneration?.source
-                    draft.sensorSnapshot = await sensorSnapshot
-                    _ = await resolvedLocation
-                    self.isPreparingReview = false
-                    self.capturedDraft = draft
-                    self.diagnostics.record(
-                        "capture draft ready audio=\(draft.audioTempURL?.lastPathComponent ?? "none") spatial=\(draft.isSpatialAudio)",
-                        category: "capture"
-                    )
-                    self.scheduleDraftCaptionRefresh()
-                } catch {
-                    self.isPreparingReview = false
-                    self.errorMessage = error.localizedDescription
-                    self.diagnostics.record("capture failed: \(error.localizedDescription)", category: "capture")
-                }
+        Task {
+            do {
+                let draft = try await prepareDraft(duration: duration, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter)
+                isPreparingReview = false
+                capturedDraft = draft
+                diagnostics.record(
+                    "capture draft ready audio=\(draft.audioTempURL?.lastPathComponent ?? "none") spatial=\(draft.isSpatialAudio)",
+                    category: "capture"
+                )
+                scheduleDraftCaptionRefresh()
+            } catch {
+                isPreparingReview = false
+                errorMessage = error.localizedDescription
+                diagnostics.record("capture failed: \(error.localizedDescription)", category: "capture")
             }
-        }
-
-        if camera.isCapturing {
-            isPreparingReview = true
         }
     }
 
@@ -87,61 +110,12 @@ final class CaptureFlowModel: ObservableObject {
 
         Task { @MainActor in
             do {
-                let storedMedia = try MediaStore.save(photoData: draft.photoData, audioTempURL: draft.audioTempURL)
-                let storedAudioURL = storedMedia.audioFileName.map(MediaStore.audioURL(for:))
-                let analysisAudioURL = draft.analysisAudioURL ?? storedAudioURL
-                let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: analysisAudioURL)
-                let captionGeneration = await MemoryAnalysisService.captionGeneration(
-                    from: draft.photoData,
-                    title: currentTitle,
-                    placeLabel: draft.placeLabel
-                )
-                let hasVerifiedFoundationCaption =
-                    draft.photoCaptionSource == .foundationModels
-                    && !(draft.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-                let shouldPreserveVerifiedFoundationCaption =
-                    hasVerifiedFoundationCaption && captionGeneration?.source != .foundationModels
-                let resolvedPhotoCaption =
-                    shouldPreserveVerifiedFoundationCaption
-                    ? draft.photoCaption
-                    : (captionGeneration?.text ?? draft.photoCaption)
-                let resolvedPhotoCaptionSource =
-                    shouldPreserveVerifiedFoundationCaption
-                    ? draft.photoCaptionSource
-                    : (captionGeneration?.source ?? draft.photoCaptionSource)
-
-                let entry = MemoryEntry(
-                    createdAt: draft.capturedAt,
+                let entry = try await persistDraft(
+                    draft,
                     title: currentTitle,
                     notes: currentNotes,
-                    photoFileName: storedMedia.photoFileName,
-                    audioFileName: storedMedia.audioFileName,
-                    audioDuration: storedMedia.audioDuration,
-                    visualTags: analysis.visualTags,
-                    audioTags: analysis.audioTags,
-                    transcript: analysis.transcript,
-                    mood: analysis.mood
+                    modelContext: modelContext
                 )
-
-                let metadata = MemoryAtmosphereMetadata(
-                    placeLabel: draft.placeLabel,
-                    waveformFingerprint: WaveformExtractor.samples(from: analysisAudioURL, sampleCount: 28).map { Double($0) },
-                    photoCaption: resolvedPhotoCaption,
-                    atmosphereStyle: draft.atmosphereStyle,
-                    captureDuration: draft.audioDuration,
-                    sensorSnapshot: draft.sensorSnapshot,
-                    minimumDecibels: draft.minimumDecibels,
-                    maximumDecibels: draft.maximumDecibels
-                )
-                var finalMetadata = metadata
-                finalMetadata.photoCaptionSourceRaw =
-                    (resolvedPhotoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
-                    ? resolvedPhotoCaptionSource?.rawValue
-                    : nil
-
-                try MediaStore.saveAtmosphereMetadata(finalMetadata, for: entry.id)
-                modelContext.insert(entry)
-                try modelContext.save()
                 diagnostics.record("save draft completed entry=\(entry.id.uuidString)", category: "storage")
 
                 title = ""
@@ -159,6 +133,78 @@ final class CaptureFlowModel: ObservableObject {
 
             isSaving = false
         }
+    }
+
+    func startIntervalCapture(
+        intervalSeconds: Int,
+        plannedCount: Int,
+        clipDuration: TimeInterval,
+        sceneTitle: String,
+        delayRecordingUntilAfterShutter: Bool,
+        modelContext: ModelContext
+    ) {
+        guard intervalSession == nil else { return }
+        let trimmedTitle = sceneTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle = trimmedTitle.isEmpty ? "Memory Scene \(Date.now.formatted(date: .abbreviated, time: .shortened))" : trimmedTitle
+        let scene = MemoryScene(
+            title: resolvedTitle,
+            intervalSeconds: intervalSeconds,
+            plannedCount: plannedCount,
+            clipDurationSeconds: clipDuration
+        )
+        modelContext.insert(scene)
+        try? modelContext.save()
+
+        intervalSession = IntervalCaptureSessionState(
+            id: UUID(),
+            title: resolvedTitle,
+            sceneID: scene.id,
+            intervalSeconds: intervalSeconds,
+            plannedCount: plannedCount,
+            clipDuration: clipDuration,
+            completedCount: 0,
+            nextCaptureAt: .now,
+            phase: .running
+        )
+        saveMessage = nil
+        errorMessage = nil
+        runIntervalLoop(scene: scene, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter, modelContext: modelContext)
+    }
+
+    func pauseIntervalCapture() {
+        guard intervalSession?.phase == .running else { return }
+        intervalTask?.cancel()
+        intervalTask = nil
+        intervalSession?.phase = .paused
+        intervalSession?.nextCaptureAt = nil
+        saveMessage = "Interval capture を一時停止しました。"
+    }
+
+    func resumeIntervalCapture(delayRecordingUntilAfterShutter: Bool, modelContext: ModelContext) {
+        guard let session = intervalSession, session.phase == .paused else { return }
+        guard let scene = fetchScene(id: session.sceneID, modelContext: modelContext) else { return }
+        intervalSession?.phase = .running
+        intervalSession?.nextCaptureAt = .now.addingTimeInterval(Double(session.intervalSeconds))
+        runIntervalLoop(scene: scene, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter, modelContext: modelContext)
+    }
+
+    func stopIntervalCapture(modelContext: ModelContext) {
+        intervalTask?.cancel()
+        intervalTask = nil
+
+        guard let session = intervalSession,
+              let scene = fetchScene(id: session.sceneID, modelContext: modelContext) else {
+            intervalSession = nil
+            return
+        }
+
+        scene.endedAt = .now
+        if scene.entryIDs.isEmpty {
+            modelContext.delete(scene)
+        }
+        try? modelContext.save()
+        intervalSession = nil
+        saveMessage = scene.entryIDs.isEmpty ? "Interval capture を終了しました。" : "シーンの記録を終了しました。"
     }
 
     func discardDraft() {
@@ -194,7 +240,8 @@ final class CaptureFlowModel: ObservableObject {
             let refreshedCaption = await MemoryAnalysisService.captionGeneration(
                 from: photoData,
                 title: currentTitle,
-                placeLabel: currentPlaceLabel
+                placeLabel: currentPlaceLabel,
+                style: self?.captionStyle ?? .poetic
             )
             guard !Task.isCancelled else { return }
 
@@ -202,6 +249,7 @@ final class CaptureFlowModel: ObservableObject {
                 guard let self, var currentDraft = self.capturedDraft, currentDraft.id == draftID else { return }
                 currentDraft.photoCaption = refreshedCaption?.text ?? currentDraft.photoCaption
                 currentDraft.photoCaptionSource = refreshedCaption?.source ?? currentDraft.photoCaptionSource
+                currentDraft.photoCaptionStyle = refreshedCaption?.style ?? self.captionStyle
                 self.capturedDraft = currentDraft
             }
         }
@@ -235,12 +283,14 @@ final class CaptureFlowModel: ObservableObject {
                 let generation = try await MemoryAnalysisService.forceFoundationModelsCaption(
                     from: photoData,
                     title: currentTitle,
-                    placeLabel: currentPlaceLabel
+                    placeLabel: currentPlaceLabel,
+                    style: self?.captionStyle ?? .poetic
                 )
                 await MainActor.run {
                     guard let self, var currentDraft = self.capturedDraft, currentDraft.id == draftID else { return }
                     currentDraft.photoCaption = generation.text
                     currentDraft.photoCaptionSource = generation.source
+                    currentDraft.photoCaptionStyle = generation.style
                     self.capturedDraft = currentDraft
                     self.captionGenerationMessage = "Apple Intelligence で内容を再作成しました。"
                 }
@@ -251,6 +301,161 @@ final class CaptureFlowModel: ObservableObject {
             }
         }
     }
+
+    private func prepareDraft(duration: TimeInterval, delayRecordingUntilAfterShutter: Bool) async throws -> CapturedMemoryDraft {
+        try await withCheckedThrowingContinuation { continuation in
+            camera.captureMemory(duration: duration, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter) { [weak self] result in
+                guard let self else {
+                    continuation.resume(throwing: CaptureError.sessionNotReady)
+                    return
+                }
+
+                Task { @MainActor in
+                    do {
+                        var draft = try result.get()
+                        async let placeLabel = self.locationService.currentPlaceLabel(forceRefresh: true)
+                        async let photoCaption = MemoryAnalysisService.captionGeneration(from: draft.photoData, style: self.captionStyle)
+                        async let sensorSnapshot = self.locationService.currentEnvironmentSnapshot(forceRefresh: true)
+                        async let resolvedLocation = self.locationService.currentLocation(forceRefresh: true)
+                        let captionGeneration = await photoCaption
+                        draft.placeLabel = await placeLabel
+                        draft.photoCaption = captionGeneration?.text
+                        draft.photoCaptionSource = captionGeneration?.source
+                        draft.photoCaptionStyle = captionGeneration?.style ?? self.captionStyle
+                        draft.sensorSnapshot = await sensorSnapshot
+                        _ = await resolvedLocation
+                        continuation.resume(returning: draft)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        }
+    }
+
+    private func persistDraft(
+        _ draft: CapturedMemoryDraft,
+        title: String,
+        notes: String,
+        modelContext: ModelContext
+    ) async throws -> MemoryEntry {
+        let storedMedia = try MediaStore.save(photoData: draft.photoData, audioTempURL: draft.audioTempURL)
+        let storedAudioURL = storedMedia.audioFileName.map(MediaStore.audioURL(for:))
+        let analysisAudioURL = draft.analysisAudioURL ?? storedAudioURL
+        let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: analysisAudioURL)
+        let captionGeneration = await MemoryAnalysisService.captionGeneration(
+            from: draft.photoData,
+            title: title,
+            placeLabel: draft.placeLabel,
+            style: captionStyle
+        )
+        let hasVerifiedFoundationCaption =
+            draft.photoCaptionSource == .foundationModels
+            && !(draft.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let shouldPreserveVerifiedFoundationCaption =
+            hasVerifiedFoundationCaption && captionGeneration?.source != .foundationModels
+        let resolvedPhotoCaption =
+            shouldPreserveVerifiedFoundationCaption
+            ? draft.photoCaption
+            : (captionGeneration?.text ?? draft.photoCaption)
+        let resolvedPhotoCaptionSource =
+            shouldPreserveVerifiedFoundationCaption
+            ? draft.photoCaptionSource
+            : (captionGeneration?.source ?? draft.photoCaptionSource)
+
+        let entry = MemoryEntry(
+            createdAt: draft.capturedAt,
+            title: title,
+            notes: notes,
+            photoFileName: storedMedia.photoFileName,
+            audioFileName: storedMedia.audioFileName,
+            audioDuration: storedMedia.audioDuration,
+            visualTags: analysis.visualTags,
+            audioTags: analysis.audioTags,
+            transcript: analysis.transcript,
+            mood: analysis.mood
+        )
+
+        let metadata = MemoryAtmosphereMetadata(
+            placeLabel: draft.placeLabel,
+            waveformFingerprint: WaveformExtractor.samples(from: analysisAudioURL, sampleCount: 28).map { Double($0) },
+            photoCaption: resolvedPhotoCaption,
+            atmosphereStyle: draft.atmosphereStyle,
+            captureDuration: draft.audioDuration,
+            sensorSnapshot: draft.sensorSnapshot,
+            minimumDecibels: draft.minimumDecibels,
+            maximumDecibels: draft.maximumDecibels
+        )
+        var finalMetadata = metadata
+        finalMetadata.photoCaptionSourceRaw =
+            (resolvedPhotoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? resolvedPhotoCaptionSource?.rawValue
+            : nil
+        finalMetadata.photoCaptionStyleRaw = resolvedPhotoCaption == nil ? nil : captionStyle.rawValue
+
+        try MediaStore.saveAtmosphereMetadata(finalMetadata, for: entry.id)
+        modelContext.insert(entry)
+        try modelContext.save()
+        return entry
+    }
+
+    private func runIntervalLoop(scene: MemoryScene, delayRecordingUntilAfterShutter: Bool, modelContext: ModelContext) {
+        intervalTask?.cancel()
+        intervalTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            while let session = self.intervalSession,
+                  session.phase == .running,
+                  session.completedCount < session.plannedCount {
+                if session.completedCount > 0 {
+                    let nextCaptureAt = Date.now.addingTimeInterval(Double(session.intervalSeconds))
+                    self.intervalSession?.nextCaptureAt = nextCaptureAt
+                    while Date.now < nextCaptureAt {
+                        try? await Task.sleep(nanoseconds: 200_000_000)
+                        guard !Task.isCancelled else { return }
+                        guard self.intervalSession?.phase == .running else { return }
+                    }
+                }
+
+                do {
+                    let draft = try await self.prepareDraft(
+                        duration: session.clipDuration,
+                        delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter
+                    )
+                    let title = "\(session.title) \(session.completedCount + 1)"
+                    let entry = try await self.persistDraft(draft, title: title, notes: "", modelContext: modelContext)
+                    scene.appendEntry(entry.id)
+                    scene.endedAt = nil
+                    try? modelContext.save()
+                    self.lastSavedEntry = entry
+                    self.intervalSession?.completedCount += 1
+                    self.intervalSession?.nextCaptureAt = nil
+                    self.saveMessage = "\(self.intervalSession?.completedCount ?? 0)/\(session.plannedCount) 枚を保存しました。"
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                    self.intervalSession?.phase = .paused
+                    self.intervalSession?.nextCaptureAt = nil
+                    self.diagnostics.record("interval capture paused: \(error.localizedDescription)", category: "capture")
+                    return
+                }
+            }
+
+            guard let finalSession = self.intervalSession else { return }
+            scene.endedAt = .now
+            try? modelContext.save()
+            self.intervalSession?.phase = .finished
+            self.intervalSession?.nextCaptureAt = nil
+            self.saveMessage = "\(finalSession.title) を保存しました。"
+        }
+    }
+
+    private func fetchScene(id: UUID, modelContext: ModelContext) -> MemoryScene? {
+        scenes(in: modelContext).first(where: { $0.id == id })
+    }
+
+    private func scenes(in modelContext: ModelContext) -> [MemoryScene] {
+        (try? modelContext.fetch(FetchDescriptor<MemoryScene>())) ?? []
+    }
 }
 
 struct CaptureView: View {
@@ -258,16 +463,26 @@ struct CaptureView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
     @ObservedObject private var environmentService = CaptureLocationService.shared
     @AppStorage("captureDurationSeconds") private var captureDurationSeconds = 6.0
     @AppStorage("delayRecordingUntilAfterShutter") private var delayRecordingUntilAfterShutter = true
+    @AppStorage(ResonancePreferenceKey.defaultCaptionStyle) private var defaultCaptionStyle = PhotoCaptionStyle.poetic.rawValue
+    @AppStorage("captureModeOption") private var captureModeRawValue = CaptureModeOption.ambient.rawValue
+    @AppStorage(ResonancePreferenceKey.intervalCaptureSpacingSeconds) private var intervalCaptureSpacingSeconds = 30.0
+    @AppStorage(ResonancePreferenceKey.intervalCapturePlannedCount) private var intervalCapturePlannedCount = 3
+    @AppStorage(ResonancePreferenceKey.intervalCaptureSceneTitle) private var intervalCaptureSceneTitle = ""
     @StateObject private var model = CaptureFlowModel()
     @State private var showingCaptureSettings = false
     @State private var hasCompletedInitialStartup = false
 
     private var atmosphere: AtmosphereStyle {
         model.capturedDraft?.atmosphereStyle ?? AtmosphereStyle(date: .now)
+    }
+
+    private var captureMode: CaptureModeOption {
+        CaptureModeOption(rawValue: captureModeRawValue) ?? .ambient
     }
 
     private var palette: ResonancePalette {
@@ -324,14 +539,26 @@ struct CaptureView: View {
         .animation(.easeInOut(duration: 0.25), value: needsStartupOverlay)
         .onAppear {
             if isActive {
+                model.captionStyle = PhotoCaptionStyle(rawValue: defaultCaptionStyle) ?? .poetic
                 model.prepare()
             }
         }
         .onChange(of: isActive) { _, active in
             if active {
+                model.captionStyle = PhotoCaptionStyle(rawValue: defaultCaptionStyle) ?? .poetic
                 model.prepare()
             } else {
+                model.pauseIntervalCapture()
                 model.camera.suspend()
+            }
+        }
+        .onChange(of: defaultCaptionStyle) { _, newValue in
+            model.captionStyle = PhotoCaptionStyle(rawValue: newValue) ?? .poetic
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard model.intervalSession?.phase == .running else { return }
+            if newPhase != .active {
+                model.pauseIntervalCapture()
             }
         }
         .onChange(of: model.camera.isSessionRunning) { _, isRunning in
@@ -346,6 +573,7 @@ struct CaptureView: View {
         }
         .onDisappear {
             model.cancelDraftCaptionRefresh()
+            model.pauseIntervalCapture()
             model.camera.suspend()
         }
         .onChange(of: model.title) { _, _ in
@@ -359,6 +587,7 @@ struct CaptureView: View {
                 draft: draft,
                 title: $model.title,
                 notes: $model.notes,
+                captionStyle: $model.captionStyle,
                 isSaving: model.isSaving,
                 isRegeneratingCaption: model.isGeneratingAICaption,
                 captionGenerationMessage: model.captionGenerationMessage,
@@ -375,7 +604,7 @@ struct CaptureView: View {
         }
         .sheet(isPresented: $showingCaptureSettings) {
             captureSettingsSheet
-                .presentationDetents([.height(320)])
+                .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
     }
@@ -414,7 +643,7 @@ struct CaptureView: View {
                     showingCaptureSettings = true
                 } label: {
                     ResonanceBadge(
-                        title: "Ambient \(Int(captureDurationSeconds.rounded()))s",
+                        title: captureMode == .ambient ? "Ambient \(Int(captureDurationSeconds.rounded()))s" : "Interval \(intervalCapturePlannedCount)x",
                         systemImage: "slider.horizontal.3",
                         tint: .white,
                         atmosphere: atmosphere
@@ -559,25 +788,27 @@ struct CaptureView: View {
                         .strokeBorder(.white.opacity(0.18))
                 }
             } else {
-                HStack(spacing: 10) {
-                    Image(systemName: "sparkles")
-                        .foregroundStyle(.white)
-                    Text(
-                        delayRecordingUntilAfterShutter
-                        ? "シャッター後の静けさから\(Int(captureDurationSeconds.rounded()))秒間の空気を記録します"
-                        : "シャッターと同時に\(Int(captureDurationSeconds.rounded()))秒間の空気を記録します"
-                    )
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(.black.opacity(0.5), in: Capsule())
-                .overlay {
-                    Capsule()
-                        .strokeBorder(.white.opacity(0.18))
+                VStack(spacing: 10) {
+                    HStack(spacing: 10) {
+                        Image(systemName: captureMode == .ambient ? "sparkles" : "timer")
+                            .foregroundStyle(.white)
+                        Text(idleCaptureDescription)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(.black.opacity(0.5), in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .strokeBorder(.white.opacity(0.18))
+                    }
+
+                    if let session = model.intervalSession {
+                        intervalStatusCard(session: session)
+                    }
                 }
             }
         }
@@ -590,15 +821,12 @@ struct CaptureView: View {
             Spacer()
 
             CameraShutterButton(
-                isEnabled: model.camera.isReadyToCapture && !model.isSaving && !model.camera.isCapturing,
-                isRecording: model.camera.isCapturing || model.camera.isProcessingCapture,
+                isEnabled: model.camera.isReadyToCapture && !model.isSaving && (!model.camera.isCapturing || captureMode == .interval),
+                isRecording: model.camera.isCapturing || model.camera.isProcessingCapture || model.intervalSession?.isActive == true,
                 progress: model.camera.captureProgress,
                 accent: palette.accent
             ) {
-                model.capture(
-                    duration: captureDurationSeconds,
-                    delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter
-                )
+                handlePrimaryCaptureAction()
             }
 
             Spacer()
@@ -642,15 +870,15 @@ struct CaptureView: View {
             showingCaptureSettings = true
         } label: {
             VStack(spacing: 6) {
-            Text("AMBIENT")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.white.opacity(0.7))
-            Text("\(Int(captureDurationSeconds.rounded()))s")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.white)
-            Text(delayRecordingUntilAfterShutter ? "quiet" : "instant")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.7))
+                Text(captureMode == .ambient ? "AMBIENT" : "INTERVAL")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.7))
+                Text(captureMode == .ambient ? "\(Int(captureDurationSeconds.rounded()))s" : "\(intervalCapturePlannedCount)x")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(.white)
+                Text(captureMode == .ambient ? (delayRecordingUntilAfterShutter ? "quiet" : "instant") : "\(Int(intervalCaptureSpacingSeconds.rounded()))s")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.7))
             }
             .frame(width: 72)
             .padding(.vertical, 10)
@@ -827,12 +1055,19 @@ struct CaptureView: View {
 
     private var captureSettingsSheet: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Ambient capture")
+            Text(captureMode == .ambient ? "Ambient capture" : "Interval capture")
                 .font(.title3.bold())
 
             Text("環境音の長さをシーンに合わせて調整できます。短く素早く残すことも、少し長めに空気を集めることもできます。")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+
+            Picker("モード", selection: $captureModeRawValue) {
+                ForEach(CaptureModeOption.allCases) { mode in
+                    Text(mode.localizedLabel).tag(mode.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
 
             let columns = [GridItem(.adaptive(minimum: 92), spacing: 10)]
 
@@ -871,10 +1106,138 @@ struct CaptureView: View {
             }
             .tint(palette.accent)
 
+            if captureMode == .interval {
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField("シーン名", text: $intervalCaptureSceneTitle)
+                        .textFieldStyle(.roundedBorder)
+
+                    HStack {
+                        Text("間隔")
+                        Spacer()
+                        Text("\(Int(intervalCaptureSpacingSeconds.rounded()))秒")
+                            .fontWeight(.semibold)
+                    }
+
+                    Slider(value: $intervalCaptureSpacingSeconds, in: 10...180, step: 5)
+                        .tint(palette.accent)
+
+                    Stepper("枚数 \(intervalCapturePlannedCount)", value: $intervalCapturePlannedCount, in: 2...12)
+
+                    Text("Interval は前景動作のみ対応です。バックグラウンドへ移ると一時停止し、再開ボタンで続きから再開できます。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Spacer()
         }
         .padding(24)
         .presentationBackground(.regularMaterial)
+    }
+
+    private var idleCaptureDescription: String {
+        if captureMode == .ambient {
+            return delayRecordingUntilAfterShutter
+                ? "シャッター後の静けさから\(Int(captureDurationSeconds.rounded()))秒間の空気を記録します"
+                : "シャッターと同時に\(Int(captureDurationSeconds.rounded()))秒間の空気を記録します"
+        }
+
+        if let session = model.intervalSession {
+            switch session.phase {
+            case .running:
+                return "\(session.title) を \(session.completedCount)/\(session.plannedCount) 枚 進行中"
+            case .paused:
+                return "\(session.title) は一時停止中です"
+            case .finished:
+                return "\(session.title) の記録が完了しました"
+            }
+        }
+
+        return "\(Int(intervalCaptureSpacingSeconds.rounded()))秒ごとに\(intervalCapturePlannedCount)枚のシーンを残します"
+    }
+
+    @ViewBuilder
+    private func intervalStatusCard(session: IntervalCaptureSessionState) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(session.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                Spacer()
+                Text("\(session.completedCount)/\(session.plannedCount)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.82))
+            }
+
+            if let nextCaptureAt = session.nextCaptureAt, session.phase == .running {
+                Text("次の撮影まで \(max(Int(nextCaptureAt.timeIntervalSinceNow.rounded(.up)), 0)) 秒")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.78))
+            } else if session.phase == .paused {
+                Text("前景に戻ったあと、再開ボタンで続きから再開できます。")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.78))
+            } else if session.phase == .finished {
+                Text("シーンとしてライブラリに保存されました。")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.78))
+            }
+
+            HStack(spacing: 10) {
+                if session.phase == .paused {
+                    Button("再開") {
+                        model.resumeIntervalCapture(
+                            delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
+                            modelContext: modelContext
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(palette.accent)
+                }
+
+                if session.isActive {
+                    Button("終了") {
+                        model.stopIntervalCapture(modelContext: modelContext)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+                }
+            }
+        }
+        .padding(14)
+        .background(.black.opacity(0.46), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(.white.opacity(0.14))
+        }
+    }
+
+    private func handlePrimaryCaptureAction() {
+        if captureMode == .ambient {
+            model.capture(
+                duration: captureDurationSeconds,
+                delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter
+            )
+            return
+        }
+
+        if model.intervalSession?.isActive == true {
+            model.stopIntervalCapture(modelContext: modelContext)
+            return
+        }
+
+        if model.intervalSession?.phase == .finished {
+            model.stopIntervalCapture(modelContext: modelContext)
+        }
+
+        model.startIntervalCapture(
+            intervalSeconds: Int(intervalCaptureSpacingSeconds.rounded()),
+            plannedCount: intervalCapturePlannedCount,
+            clipDuration: captureDurationSeconds,
+            sceneTitle: intervalCaptureSceneTitle,
+            delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
+            modelContext: modelContext
+        )
     }
 }
 
@@ -953,5 +1316,5 @@ struct StatusMessageView: View {
     NavigationStack {
         CaptureView(isActive: true)
     }
-    .modelContainer(for: [MemoryEntry.self], inMemory: true)
+    .modelContainer(ResonancePersistence.makeContainer(inMemory: true))
 }

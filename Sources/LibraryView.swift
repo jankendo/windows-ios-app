@@ -89,6 +89,12 @@ struct LibraryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
+    @Query(sort: \MemoryCollection.updatedAt, order: .reverse) private var collections: [MemoryCollection]
+    @Query(sort: \MemoryScene.startedAt, order: .reverse) private var scenes: [MemoryScene]
+    @ObservedObject private var locationService = CaptureLocationService.shared
+    @AppStorage(ResonancePreferenceKey.timeCapsuleEnabled) private var timeCapsuleEnabled = true
+    @AppStorage(ResonancePreferenceKey.nearbyMemoriesEnabled) private var nearbyMemoriesEnabled = true
+    @AppStorage(ResonancePreferenceKey.nearbyMemoriesRadius) private var nearbyMemoriesRadius = NearbyMemoriesRadius.meters500.rawValue
 
     @State private var selectedMode: LibraryMode = .timeline
     @State private var timelineLayout: LibraryTimelineLayout = .list
@@ -108,9 +114,23 @@ struct LibraryView: View {
     @State private var isSelectionModeEnabled = false
     @State private var selectedEntryIDs: Set<UUID> = []
     @State private var showingBulkDeleteConfirmation = false
+    @State private var filteredEntryIDsCache: [UUID] = []
+    @State private var currentLocation: CLLocation?
+    @State private var showingCollectionPicker = false
+    @State private var showingCollectionEditor = false
+    @State private var collectionDraftEntryIDs: [UUID] = []
+    @State private var editingCollection: MemoryCollection?
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme)
+    }
+
+    private var manualCollections: [MemoryCollection] {
+        collections.filter { !$0.isSmartCollection }
+    }
+
+    private var nearbyRadius: NearbyMemoriesRadius {
+        NearbyMemoriesRadius(rawValue: nearbyMemoriesRadius) ?? .meters500
     }
 
     private var filteredEntryIDs: [UUID] {
@@ -126,20 +146,8 @@ struct LibraryView: View {
     }
 
     private var filteredEntries: [MemoryEntry] {
-        let base = entries
-            .filter(matchesDateFilter)
-            .filter { !favoritesOnly || $0.isFavorite }
-            .filter { !hasAudioOnly || $0.hasAudio }
-            .filter { selectedAtmosphere == nil || $0.atmosphereStyle == selectedAtmosphere }
-
-        let moodFiltered = MemorySearchEngine.filter(base, query: "", mood: selectedMood)
-
-        switch sortOption {
-        case .newest:
-            return moodFiltered.sorted { $0.createdAt > $1.createdAt }
-        case .oldest:
-            return moodFiltered.sorted { $0.createdAt < $1.createdAt }
-        }
+        let entryLookup = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
+        return filteredEntryIDsCache.compactMap { entryLookup[$0] }
     }
 
     private var mapEntries: [MemoryEntry] {
@@ -238,6 +246,36 @@ struct LibraryView: View {
         .filter { !$0.entries.isEmpty }
     }
 
+    private var timeCapsuleEntries: [MemoryEntry] {
+        guard timeCapsuleEnabled else { return [] }
+        let calendar = Calendar.current
+        let todayComponents = calendar.dateComponents([.month, .day], from: .now)
+
+        return filteredEntries
+            .filter {
+                let components = calendar.dateComponents([.month, .day, .year], from: $0.createdAt)
+                return components.month == todayComponents.month
+                    && components.day == todayComponents.day
+                    && (components.year ?? 0) < calendar.component(.year, from: .now)
+            }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private var nearbyEntries: [MemoryEntry] {
+        guard nearbyMemoriesEnabled, let currentLocation else { return [] }
+
+        return filteredEntries
+            .filter { entry in
+                guard let coordinate = entry.coordinate else { return false }
+                let distance = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+                    .distance(from: currentLocation)
+                return distance <= nearbyRadius.rawValue
+            }
+            .sorted { lhs, rhs in
+                distance(to: lhs) < distance(to: rhs)
+            }
+    }
+
     var body: some View {
         let _ = captionRefreshToken
         ZStack {
@@ -259,6 +297,14 @@ struct LibraryView: View {
                     }
 
                     if isSelectionModeEnabled {
+                        Button {
+                            collectionDraftEntryIDs = selectedEntries.map(\.id)
+                            showingCollectionPicker = true
+                        } label: {
+                            Image(systemName: "folder.badge.plus")
+                        }
+                        .disabled(selectedEntries.isEmpty)
+
                         Button(role: .destructive) {
                             showingBulkDeleteConfirmation = true
                         } label: {
@@ -278,16 +324,39 @@ struct LibraryView: View {
             )
             .presentationDetents([.medium])
         }
+        .sheet(isPresented: $showingCollectionPicker) {
+            CollectionPickerSheet(
+                collections: manualCollections,
+                onSelect: { collection in
+                    addEntries(collectionDraftEntryIDs, to: collection)
+                },
+                onCreateNew: {
+                    editingCollection = nil
+                    showingCollectionEditor = true
+                }
+            )
+        }
+        .sheet(isPresented: $showingCollectionEditor) {
+            MemoryCollectionEditorView(
+                collection: editingCollection,
+                initialEntryIDs: collectionDraftEntryIDs
+            )
+        }
         .onAppear {
             refreshLibraryState()
+            Task { await refreshCurrentLocation() }
         }
         .onChange(of: entries.count) { _, _ in refreshLibraryState() }
+        .onChange(of: collections.count) { _, _ in refreshLibraryState() }
+        .onChange(of: scenes.count) { _, _ in refreshLibraryState() }
         .onChange(of: selectedDateFilter) { _, _ in refreshLibraryState() }
         .onChange(of: selectedMood) { _, _ in refreshLibraryState() }
         .onChange(of: selectedAtmosphere) { _, _ in refreshLibraryState() }
         .onChange(of: favoritesOnly) { _, _ in refreshLibraryState() }
         .onChange(of: hasAudioOnly) { _, _ in refreshLibraryState() }
         .onChange(of: sortOption) { _, _ in refreshLibraryState() }
+        .onChange(of: nearbyMemoriesEnabled) { _, _ in refreshLibraryState() }
+        .onChange(of: nearbyMemoriesRadius) { _, _ in refreshLibraryState() }
         .onChange(of: filteredEntryIDs) { _, _ in pruneSelectionToVisibleEntries() }
         .onChange(of: selectedMode) { _, newMode in
             if newMode != .timeline {
@@ -315,6 +384,9 @@ struct LibraryView: View {
                 modePicker
                 layoutPicker
                 filterBar
+                reunionSection
+                collectionsSection
+                scenesSection
 
                 if entries.isEmpty {
                     emptyState
@@ -404,6 +476,9 @@ struct LibraryView: View {
                 HStack(spacing: 12) {
                     ResonanceStatTile(title: "合計", value: "\(entries.count)", symbol: "square.stack.3d.down.right.fill")
                     ResonanceStatTile(title: "地図対応", value: "\(entries.filter(\.hasMapLocation).count)", symbol: "map.fill")
+                    if nearbyMemoriesEnabled {
+                        ResonanceStatTile(title: "近く", value: "\(nearbyEntries.count)", symbol: "location.fill")
+                    }
                 }
             }
         }
@@ -523,6 +598,152 @@ struct LibraryView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .strokeBorder(palette.stroke)
+        }
+    }
+
+    @ViewBuilder
+    private var reunionSection: some View {
+        if timeCapsuleEnabled || nearbyMemoriesEnabled {
+            VStack(alignment: .leading, spacing: 14) {
+                if !timeCapsuleEntries.isEmpty {
+                    sectionHeader(title: "Time Capsule", subtitle: "過去の同じ日に残した空気")
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 14) {
+                            ForEach(timeCapsuleEntries.prefix(6)) { entry in
+                                NavigationLink {
+                                    MemoryDetailView(entry: entry)
+                                } label: {
+                                    TimeCapsuleCard(entry: entry)
+                                        .frame(width: 248)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                if nearbyMemoriesEnabled {
+                    nearbySection
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var nearbySection: some View {
+        if let currentLocation {
+            if nearbyEntries.isEmpty {
+                ResonanceCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("近くの記録")
+                            .font(.headline)
+                            .foregroundStyle(palette.primaryText)
+                        Text("\(nearbyRadius.localizedLabel)圏内にはまだ記録がありません。少し離れた場所で残した空気は、再び訪れたときにここへ出ます。")
+                            .font(.subheadline)
+                            .foregroundStyle(palette.secondaryText)
+                    }
+                }
+            } else {
+                sectionHeader(title: "近くの記録", subtitle: "\(nearbyRadius.localizedLabel) 圏内で再会できる記録")
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 14) {
+                        ForEach(nearbyEntries.prefix(8)) { entry in
+                            NearbyMemoryCard(
+                                entry: entry,
+                                distanceText: distanceText(for: entry, from: currentLocation),
+                                onOpenMap: { focusMap(on: entry) }
+                            )
+                            .frame(width: 272)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        } else {
+            ResonanceCard {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("近くの記録")
+                        .font(.headline)
+                        .foregroundStyle(palette.primaryText)
+                    Text("現在地の取得後に、今いる場所の近くに残した記録を表示します。")
+                        .font(.subheadline)
+                        .foregroundStyle(palette.secondaryText)
+                }
+            }
+            .task {
+                await refreshCurrentLocation()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var collectionsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                sectionHeader(title: "コレクション", subtitle: "場所やテーマで束ねた記憶")
+                Spacer()
+                Button {
+                    collectionDraftEntryIDs = []
+                    editingCollection = nil
+                    showingCollectionEditor = true
+                } label: {
+                    Label("作成", systemImage: "plus")
+                        .font(.caption.weight(.semibold))
+                }
+            }
+
+            if collections.isEmpty {
+                ResonanceCard {
+                    Text("手動コレクションやスマートコレクションを作ると、複数の記録をひとまとまりで再生できます。")
+                        .font(.subheadline)
+                        .foregroundStyle(palette.secondaryText)
+                }
+            } else {
+                LazyVGrid(columns: timelineGridColumns, spacing: 14) {
+                    ForEach(collections) { collection in
+                        NavigationLink {
+                            MemoryCollectionDetailView(collection: collection)
+                        } label: {
+                            MemoryCollectionCardView(collection: collection, entries: collection.resolvedEntries(from: entries))
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("編集") {
+                                editingCollection = collection
+                                collectionDraftEntryIDs = collection.entryIDs
+                                showingCollectionEditor = true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var scenesSection: some View {
+        if !scenes.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                sectionHeader(title: "シーン", subtitle: "連続して残した記録の束")
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 14) {
+                        ForEach(scenes) { scene in
+                            NavigationLink {
+                                MemorySceneDetailView(scene: scene)
+                            } label: {
+                                MemorySceneCardView(scene: scene, entries: scene.resolvedEntries(from: entries))
+                                    .frame(width: 280)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
         }
     }
 
@@ -736,6 +957,7 @@ struct LibraryView: View {
     }
 
     private func refreshLibraryState() {
+        recomputeFilteredEntries()
         pruneSelectionToVisibleEntries()
         syncMapSelection()
         Task {
@@ -783,6 +1005,7 @@ struct LibraryView: View {
         AudioPlaybackDiagnostics.shared.record("bulk delete requested count=\(entriesToDelete.count)", category: "storage")
 
         for entry in entriesToDelete {
+            ResonancePersistence.prune(entryID: entry.id, collections: collections, scenes: scenes)
             MediaStore.deleteAssets(for: entry)
             modelContext.delete(entry)
         }
@@ -881,6 +1104,97 @@ struct LibraryView: View {
         }
     }
 
+    private func recomputeFilteredEntries() {
+        let base = entries
+            .filter(matchesDateFilter)
+            .filter { !favoritesOnly || $0.isFavorite }
+            .filter { !hasAudioOnly || $0.hasAudio }
+            .filter { selectedAtmosphere == nil || $0.atmosphereStyle == selectedAtmosphere }
+
+        let moodFiltered = MemorySearchEngine.filter(base, query: "", mood: selectedMood)
+        let ordered: [MemoryEntry]
+
+        switch sortOption {
+        case .newest:
+            ordered = moodFiltered.sorted { $0.createdAt > $1.createdAt }
+        case .oldest:
+            ordered = moodFiltered.sorted { $0.createdAt < $1.createdAt }
+        }
+
+        filteredEntryIDsCache = ordered.map(\.id)
+    }
+
+    private func addEntries(_ ids: [UUID], to collection: MemoryCollection) {
+        guard !ids.isEmpty else { return }
+        collection.addEntries(ids)
+        collection.updatedAt = .now
+        try? modelContext.save()
+        AudioPlaybackDiagnostics.shared.record(
+            "collection add entries collection=\(collection.title) count=\(ids.count)",
+            category: "storage"
+        )
+        if isSelectionModeEnabled {
+            endSelectionMode()
+        }
+    }
+
+    private func focusMap(on entry: MemoryEntry) {
+        guard let coordinate = entry.coordinate else { return }
+        selectedMode = .map
+        selectedMapEntry = entry
+        mapRegion = MKCoordinateRegion(
+            center: coordinate,
+            span: MKCoordinateSpan(latitudeDelta: 0.018, longitudeDelta: 0.018)
+        )
+    }
+
+    private func refreshCurrentLocation() async {
+        currentLocation = await locationService.currentLocation(forceRefresh: true)
+    }
+
+    private func distance(to entry: MemoryEntry) -> CLLocationDistance {
+        guard let currentLocation, let coordinate = entry.coordinate else { return .greatestFiniteMagnitude }
+        return CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            .distance(from: currentLocation)
+    }
+
+    private func distanceText(for entry: MemoryEntry, from currentLocation: CLLocation) -> String {
+        guard let coordinate = entry.coordinate else { return "位置情報なし" }
+        let distance = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            .distance(from: currentLocation)
+        let formatter = MeasurementFormatter()
+        formatter.unitStyle = .short
+        formatter.unitOptions = .providedUnit
+        if distance >= 1000 {
+            return formatter.string(from: Measurement(value: distance / 1000, unit: UnitLength.kilometers))
+        }
+        return formatter.string(from: Measurement(value: distance.rounded(), unit: UnitLength.meters))
+    }
+
+    private func contextMenu(for entry: MemoryEntry) -> some View {
+        Group {
+            if !manualCollections.isEmpty {
+                ForEach(manualCollections) { collection in
+                    Button("「\(collection.title)」に追加") {
+                        addEntries([entry.id], to: collection)
+                    }
+                }
+            }
+
+            Button("新しいコレクションを作成") {
+                collectionDraftEntryIDs = [entry.id]
+                editingCollection = nil
+                showingCollectionEditor = true
+            }
+
+            if entry.coordinate != nil {
+                Button("地図で開く") {
+                    focusMap(on: entry)
+                }
+            }
+        }
+    }
+
     private func menuFilterLabel(title: String, isSelected: Bool) -> some View {
         Text(title)
             .font(.caption.weight(.semibold))
@@ -921,6 +1235,9 @@ struct LibraryView: View {
                 MemoryCardView(entry: entry)
             }
             .buttonStyle(.plain)
+            .contextMenu {
+                contextMenu(for: entry)
+            }
         }
     }
 
@@ -942,6 +1259,9 @@ struct LibraryView: View {
                 MemoryGridCardView(entry: entry)
             }
             .buttonStyle(.plain)
+            .contextMenu {
+                contextMenu(for: entry)
+            }
         }
     }
 }
@@ -1083,6 +1403,57 @@ private struct ClusteredMapPinView: View {
                     .font(isSelected ? .title2 : .title3)
                     .foregroundStyle(isSelected ? palette.accent : .white)
             }
+        }
+    }
+}
+
+private struct LibrarySectionHeader: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        let palette = ResonancePalette.make(for: colorScheme)
+
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.title3.bold())
+                .foregroundStyle(palette.primaryText)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(palette.secondaryText)
+        }
+    }
+}
+
+private struct TimeCapsuleCard: View {
+    let entry: MemoryEntry
+
+    var body: some View {
+        MemoryGridCardView(entry: entry)
+    }
+}
+
+private struct NearbyMemoryCard: View {
+    let entry: MemoryEntry
+    let distanceText: String
+    let onOpenMap: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            NavigationLink {
+                MemoryDetailView(entry: entry)
+            } label: {
+                MemoryGridCardView(entry: entry)
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onOpenMap) {
+                Label("\(distanceText)先を地図で開く", systemImage: "map.fill")
+                    .font(.caption.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 }
@@ -1323,9 +1694,15 @@ struct FilterChip: View {
     }
 }
 
+private extension LibraryView {
+    func sectionHeader(title: String, subtitle: String) -> some View {
+        LibrarySectionHeader(title: title, subtitle: subtitle)
+    }
+}
+
 #Preview {
     NavigationStack {
         LibraryView()
     }
-    .modelContainer(for: [MemoryEntry.self], inMemory: true)
+    .modelContainer(ResonancePersistence.makeContainer(inMemory: true))
 }

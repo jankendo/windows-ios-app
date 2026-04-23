@@ -10,9 +10,11 @@ struct CapturedMemoryDraft: Identifiable {
     let capturedAt: Date
     let audioDuration: TimeInterval
     let isSpatialAudio: Bool
+    var recoveryState: PartialCaptureRecoveryState
     var placeLabel: String?
     var photoCaption: String?
     var photoCaptionSource: PhotoCaptionSource?
+    var photoCaptionStyle: PhotoCaptionStyle?
     var sensorSnapshot: CaptureEnvironmentSnapshot?
     var minimumDecibels: Double?
     var maximumDecibels: Double?
@@ -34,6 +36,8 @@ enum CaptureError: LocalizedError {
     case invalidDuration
     case photoCaptureFailed
     case audioRecordingFailed
+    case captureInterrupted(reason: InterruptionReason)
+    case captureInterruptedTooShort(reason: InterruptionReason)
 
     var errorDescription: String? {
         switch self {
@@ -51,6 +55,10 @@ enum CaptureError: LocalizedError {
             return "写真の取得に失敗しました。"
         case .audioRecordingFailed:
             return "環境音の録音に失敗しました。"
+        case .captureInterrupted(let reason):
+            return "\(reason.localizedLabel)により録音が終了しました。部分的な記録を確認してください。"
+        case .captureInterruptedTooShort(let reason):
+            return "\(reason.localizedLabel)により録音が3秒未満で中断されたため保存できませんでした。"
         }
     }
 }
@@ -88,9 +96,19 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     private var minimumCapturedDecibels: Float?
     private var maximumCapturedDecibels: Float?
     private let audioDiagnostics = AudioPlaybackDiagnostics.shared
+    private var notificationTokens: [NSObjectProtocol] = []
 
     var isReadyToCapture: Bool {
         permissionState == .ready && isSessionRunning && !isCapturing
+    }
+
+    override init() {
+        super.init()
+        registerSystemObservers()
+    }
+
+    deinit {
+        notificationTokens.forEach(NotificationCenter.default.removeObserver)
     }
 
     func prepare() {
@@ -459,6 +477,8 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             placeLabel: nil,
             photoCaption: nil,
             photoCaptionSource: nil,
+            photoCaptionStyle: nil,
+            recoveryState: pendingCapture.recoveryState,
             sensorSnapshot: nil,
             minimumDecibels: minimumCapturedDecibels.map(Double.init),
             maximumDecibels: maximumCapturedDecibels.map(Double.init)
@@ -490,6 +510,94 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         statusText = error.localizedDescription
         audioDiagnostics.record("capture failed: \(error.localizedDescription)")
         completion?(.failure(error))
+    }
+
+    private func registerSystemObservers() {
+        let center = NotificationCenter.default
+
+        notificationTokens.append(
+            center.addObserver(
+                forName: AVAudioSession.interruptionNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleAudioInterruption(notification)
+            }
+        )
+
+        notificationTokens.append(
+            center.addObserver(
+                forName: AVAudioSession.routeChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleAudioRouteChange(notification)
+            }
+        )
+
+        notificationTokens.append(
+            center.addObserver(
+                forName: UIApplication.willResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.handleCaptureInterruption(reason: .appBackgrounded)
+            }
+        )
+    }
+
+    private func handleAudioInterruption(_ notification: Notification) {
+        guard
+            let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+            let type = AVAudioSession.InterruptionType(rawValue: rawType)
+        else {
+            return
+        }
+
+        switch type {
+        case .began:
+            handleCaptureInterruption(reason: .phoneCall)
+        case .ended:
+            let optionsRaw = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
+            if options.contains(.shouldResume) {
+                audioDiagnostics.record("capture interruption ended with shouldResume; partial review is available instead of auto-resume", category: "capture")
+            } else {
+                audioDiagnostics.record("capture interruption ended without resume option", category: "capture")
+            }
+        @unknown default:
+            handleCaptureInterruption(reason: .unknown)
+        }
+    }
+
+    private func handleAudioRouteChange(_ notification: Notification) {
+        guard isCapturing else { return }
+
+        let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
+        guard let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
+
+        if reason == .oldDeviceUnavailable {
+            audioDiagnostics.record("audio route changed: previous device unavailable, continuing capture on active route", category: "capture")
+            statusText = "音声ルートが切り替わりましたが、録音は継続しています。"
+        }
+    }
+
+    private func handleCaptureInterruption(reason: InterruptionReason) {
+        guard isCapturing, pendingCapture != nil else { return }
+
+        let capturedDuration = ambientAudioCapture.currentRecordingDuration
+        audioDiagnostics.record(
+            "capture interrupted reason=\(reason.rawValue) duration=\(String(format: "%.2f", capturedDuration))",
+            category: "capture"
+        )
+
+        if capturedDuration >= ambientAudioCapture.minimumViableDuration {
+            pendingCapture?.recoveryState = .recovered(duration: capturedDuration, reason: reason)
+            finishAudioCapture()
+        } else {
+            pendingCapture?.recoveryState = .failed(reason: reason)
+            failPendingCapture(CaptureError.captureInterruptedTooShort(reason: reason))
+        }
     }
 
     func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
@@ -568,6 +676,7 @@ private final class PendingCapture {
     var audioFinished = false
     var recordedDuration: TimeInterval?
     var isSpatialAudio = false
+    var recoveryState: PartialCaptureRecoveryState = .none
 
     init(
         audioURL: URL?,

@@ -9,6 +9,7 @@ import FoundationModels
 struct PhotoCaptionGeneration {
     let text: String
     let source: PhotoCaptionSource
+    let style: PhotoCaptionStyle
 }
 
 enum MemoryAnalysisService {
@@ -43,42 +44,60 @@ enum MemoryAnalysisService {
         return analysis
     }
 
-    static func imageCaption(from data: Data, title: String? = nil, placeLabel: String? = nil) async -> String? {
-        await captionGeneration(from: data, title: title, placeLabel: placeLabel)?.text
+    static func imageCaption(
+        from data: Data,
+        title: String? = nil,
+        placeLabel: String? = nil,
+        style: PhotoCaptionStyle = ResonancePreferences.defaultCaptionStyle
+    ) async -> String? {
+        await captionGeneration(from: data, title: title, placeLabel: placeLabel, style: style)?.text
     }
 
-    static func captionGeneration(from data: Data, title: String? = nil, placeLabel: String? = nil) async -> PhotoCaptionGeneration? {
+    static func captionGeneration(
+        from data: Data,
+        title: String? = nil,
+        placeLabel: String? = nil,
+        style: PhotoCaptionStyle = ResonancePreferences.defaultCaptionStyle
+    ) async -> PhotoCaptionGeneration? {
         let tags = await imageTags(from: data)
         let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let baseCaption = generatedCaption(from: tags) ?? "光と空気のあわいが、まだこの写真の中で静かに呼吸している。"
+        let baseCaption = generatedCaption(from: tags, style: style)
 
         #if canImport(FoundationModels)
         if #available(iOS 26.0, *),
            !trimmedTitle.isEmpty,
-           let aiCaption = await foundationModelCaption(
-                title: trimmedTitle,
-                placeLabel: placeLabel,
-                tags: tags,
-                baseCaption: baseCaption
-           ) {
+            let aiCaption = await foundationModelCaption(
+                 title: trimmedTitle,
+                 placeLabel: placeLabel,
+                 tags: tags,
+                 baseCaption: baseCaption,
+                 style: style
+            ) {
             await log("caption generated with FoundationModels", category: "analysis")
-            return PhotoCaptionGeneration(text: aiCaption, source: .foundationModels)
+            return PhotoCaptionGeneration(text: aiCaption, source: .foundationModels, style: style)
         }
         #endif
 
         await log("caption generated with composed fallback", category: "analysis")
         return PhotoCaptionGeneration(
             text: refinedFallbackCaption(
-            title: trimmedTitle,
-            placeLabel: placeLabel,
-            tags: tags,
-            baseCaption: baseCaption
-            ),
-            source: .composedFallback
+                title: trimmedTitle,
+                placeLabel: placeLabel,
+                tags: tags,
+                baseCaption: baseCaption,
+                style: style
+             ),
+            source: .composedFallback,
+            style: style
         )
     }
 
-    static func forceFoundationModelsCaption(from data: Data, title: String, placeLabel: String? = nil) async throws -> PhotoCaptionGeneration {
+    static func forceFoundationModelsCaption(
+        from data: Data,
+        title: String,
+        placeLabel: String? = nil,
+        style: PhotoCaptionStyle
+    ) async throws -> PhotoCaptionGeneration {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else {
             throw CaptionGenerationError.missingTitle
@@ -87,14 +106,15 @@ enum MemoryAnalysisService {
         #if canImport(FoundationModels)
         if #available(iOS 26.0, *) {
             let tags = await imageTags(from: data)
-            let baseCaption = generatedCaption(from: tags) ?? "光と空気のあわいが、まだこの写真の中で静かに呼吸している。"
+            let baseCaption = generatedCaption(from: tags, style: style)
             if let aiCaption = await foundationModelCaption(
                 title: trimmedTitle,
                 placeLabel: placeLabel,
                 tags: tags,
-                baseCaption: baseCaption
+                baseCaption: baseCaption,
+                style: style
             ) {
-                return PhotoCaptionGeneration(text: aiCaption, source: .foundationModels)
+                return PhotoCaptionGeneration(text: aiCaption, source: .foundationModels, style: style)
             }
             throw CaptionGenerationError.foundationModelsUnavailable
         }
@@ -264,7 +284,22 @@ enum MemoryAnalysisService {
         return .reflective
     }
 
-    private static func generatedCaption(from tags: [String]) -> String? {
+    private static func generatedCaption(from tags: [String], style: PhotoCaptionStyle) -> String {
+        switch style {
+        case .poetic:
+            return poeticCaption(from: tags)
+        case .factual:
+            return factualCaption(title: nil, placeLabel: nil, tags: tags)
+        case .diary:
+            return diaryCaption(title: nil, placeLabel: nil, tags: tags)
+        case .haiku:
+            return haikuCaption(title: nil, placeLabel: nil, tags: tags)
+        case .oneLine:
+            return oneLineCaption(title: nil, placeLabel: nil, tags: tags)
+        }
+    }
+
+    private static func poeticCaption(from tags: [String]) -> String {
         let normalizedTags = tags.map { $0.lowercased() }
         guard !normalizedTags.isEmpty else {
             return "光と空気のあわいが、まだこの写真の中で静かに呼吸している。"
@@ -404,7 +439,28 @@ enum MemoryAnalysisService {
         return "この瞬間の空気だけが、少し遅れて心に届く"
     }
 
-    private static func refinedFallbackCaption(title: String, placeLabel: String?, tags: [String], baseCaption: String) -> String {
+    private static func refinedFallbackCaption(
+        title: String,
+        placeLabel: String?,
+        tags: [String],
+        baseCaption: String,
+        style: PhotoCaptionStyle
+    ) -> String {
+        switch style {
+        case .poetic:
+            return refinedPoeticFallbackCaption(title: title, placeLabel: placeLabel, tags: tags, baseCaption: baseCaption)
+        case .factual:
+            return factualCaption(title: title, placeLabel: placeLabel, tags: tags)
+        case .diary:
+            return diaryCaption(title: title, placeLabel: placeLabel, tags: tags)
+        case .haiku:
+            return haikuCaption(title: title, placeLabel: placeLabel, tags: tags)
+        case .oneLine:
+            return oneLineCaption(title: title, placeLabel: placeLabel, tags: tags)
+        }
+    }
+
+    private static func refinedPoeticFallbackCaption(title: String, placeLabel: String?, tags: [String], baseCaption: String) -> String {
         let normalizedTags = tags.map { $0.lowercased() }
         guard !title.isEmpty else { return baseCaption }
 
@@ -421,22 +477,63 @@ enum MemoryAnalysisService {
         return "\(titleLine)。\(poeticAfterglow(from: normalizedTags))。"
     }
 
+    private static func factualCaption(title: String?, placeLabel: String?, tags: [String]) -> String {
+        let timeLine = AtmosphereStyle(date: .now).localizedLabel
+        let place = placeLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tag = localizedVisualHints(from: tags.map { $0.lowercased() }).first ?? "記録"
+        let titleLine = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return [
+            place.map { "\($0)で\(timeLine)に撮影。" } ?? "\(timeLine)に撮影。",
+            titleLine?.isEmpty == false ? "題名は「\(titleLine!)」で、主な要素は\(tag)。" : "主な要素は\(tag)。"
+        ]
+        .joined(separator: " ")
+    }
+
+    private static func diaryCaption(title: String?, placeLabel: String?, tags: [String]) -> String {
+        let subject = localizedPrimarySubject(from: tags.map { $0.lowercased() }) ?? "景色"
+        if let placeLabel, !placeLabel.isEmpty {
+            return "\(placeLabel)で過ごした時間。\(subject)の気配がまだ心に残っている。"
+        }
+        if let title, !title.isEmpty {
+            return "「\(title)」と名づけたこの時間。\(subject)の気配がまだ心に残っている。"
+        }
+        return "\(subject)のある時間を、自分のためにそっと残した。"
+    }
+
+    private static func haikuCaption(title: String?, placeLabel: String?, tags: [String]) -> String {
+        let hints = Array(localizedVisualHints(from: tags.map { $0.lowercased() }).prefix(3))
+        let primary = hints.indices.contains(0) ? hints[0] : "光"
+        let secondary = hints.indices.contains(1) ? hints[1] : (placeLabel?.isEmpty == false ? placeLabel! : "気配")
+        let tertiary = hints.indices.contains(2) ? hints[2] : (title?.isEmpty == false ? title! : "余韻")
+        return "\(primary)ゆれ \(secondary)しずかに \(tertiary)"
+    }
+
+    private static func oneLineCaption(title: String?, placeLabel: String?, tags: [String]) -> String {
+        let subject = localizedPrimarySubject(from: tags.map { $0.lowercased() }) ?? "気配"
+        if let placeLabel, !placeLabel.isEmpty {
+            return "\(placeLabel)の\(subject)。"
+        }
+        if let title, !title.isEmpty {
+            return "「\(title)」の\(subject)。"
+        }
+        return "\(subject)の一瞬。"
+    }
+
     #if canImport(FoundationModels)
     @available(iOS 26.0, *)
-    private static func foundationModelCaption(title: String, placeLabel: String?, tags: [String], baseCaption: String) async -> String? {
+    private static func foundationModelCaption(
+        title: String,
+        placeLabel: String?,
+        tags: [String],
+        baseCaption: String,
+        style: PhotoCaptionStyle
+    ) async -> String? {
         let languageModel = SystemLanguageModel.default
         guard languageModel.isAvailable else { return nil }
 
         let localizedHints = localizedVisualHints(from: tags.map { $0.lowercased() })
-        let instructions = """
-        You write one short poetic Japanese caption for a photo memory app.
-        You must combine both the user's title and the actual photo analysis.
-        Keep the output to exactly two Japanese sentences.
-        Do not use bullet points, quotes, emoji, or headings.
-        Avoid generic filler and avoid repeating the same sentence across different photos.
-        Do not write from the title alone. The photo-derived hints must appear in the meaning of the caption.
-        Stay grounded in the provided visual hints and atmosphere.
-        """
+        let instructions = foundationModelInstructions(for: style)
 
         let visualHints = localizedHints.joined(separator: "、")
         let placePrompt = placeLabel?.isEmpty == false ? "場所ヒント: \(placeLabel!)." : ""
@@ -445,9 +542,8 @@ enum MemoryAnalysisService {
         写真から読み取れた要素: \(visualHints.isEmpty ? "明確な要素なし" : visualHints)
         写真の情景要約: \(baseCaption)
         \(placePrompt)
-        1文目ではタイトルと写真の被写体・情景を結びつけてください。
-        2文目では写真から感じられる空気感や余韻を書いてください。
-        写真解析にない要素を勝手に足さず、タイトルだけを言い換える文章にもせず、日本語で静かに美しく生成してください。
+        出力スタイル: \(style.localizedLabel)
+        \(foundationModelStylePrompt(for: style))
         """
 
         do {
@@ -460,6 +556,58 @@ enum MemoryAnalysisService {
         }
     }
     #endif
+
+    private static func foundationModelInstructions(for style: PhotoCaptionStyle) -> String {
+        switch style {
+        case .poetic:
+            return """
+            You write one short poetic Japanese caption for a photo memory app.
+            Keep the output to exactly two Japanese sentences.
+            Avoid filler, headings, emoji, quotes, and repetition.
+            """
+        case .factual:
+            return """
+            You write a concise factual Japanese caption for a photo memory app.
+            Keep the output to one or two sentences.
+            Focus on place, time, and observed situation.
+            """
+        case .diary:
+            return """
+            You write a gentle first-person Japanese diary line for a photo memory app.
+            Keep the output to one or two sentences.
+            The tone should be personal and soft.
+            """
+        case .haiku:
+            return """
+            You write a haiku-like Japanese caption for a photo memory app.
+            Keep the output very short, with a 5-7-5 feeling when possible.
+            Do not explain the format.
+            """
+        case .oneLine:
+            return """
+            You write a single concise Japanese line for a photo memory app.
+            Keep the output within roughly 30 Japanese characters.
+            """
+        }
+    }
+
+    private static func foundationModelStylePrompt(for style: PhotoCaptionStyle) -> String {
+        switch style {
+        case .poetic:
+            return """
+            1文目ではタイトルと写真の被写体・情景を結びつけてください。
+            2文目では写真から感じられる空気感や余韻を書いてください。
+            """
+        case .factual:
+            return "場所・時間・状況を客観的に整理し、観察事実を優先してください。"
+        case .diary:
+            return "一人称のやわらかな日記調で、静かな感情の余韻を含めてください。"
+        case .haiku:
+            return "短く余白のある表現にし、俳句調のリズム感を優先してください。"
+        case .oneLine:
+            return "一行で簡潔にまとめ、説明を増やしすぎないでください。"
+        }
+    }
 }
 
 enum CaptionGenerationError: LocalizedError {

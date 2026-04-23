@@ -28,6 +28,14 @@ struct ContentView: View {
                 Label("検索", systemImage: "magnifyingglass")
             }
             .tag(ResonanceTab.search)
+
+            NavigationStack {
+                SettingsView()
+            }
+            .tabItem {
+                Label("設定", systemImage: "gearshape")
+            }
+            .tag(ResonanceTab.settings)
         }
         .tint(.indigo)
     }
@@ -37,9 +45,10 @@ private enum ResonanceTab: Hashable {
     case capture
     case library
     case search
+    case settings
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: [MemoryEntry.self], inMemory: true)
+        .modelContainer(ResonancePersistence.makeContainer(inMemory: true))
 }

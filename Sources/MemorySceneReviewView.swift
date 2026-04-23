@@ -5,6 +5,7 @@ struct MemorySceneReviewView: View {
     let draft: CapturedMemoryDraft
     @Binding var title: String
     @Binding var notes: String
+    @Binding var captionStyle: PhotoCaptionStyle
     let isSaving: Bool
     let isRegeneratingCaption: Bool
     let captionGenerationMessage: String?
@@ -238,6 +239,10 @@ struct MemorySceneReviewView: View {
                         .textInputAutocapitalization(.sentences)
                         .writingToolsBehavior(.complete)
 
+                    if draft.recoveryState != .none {
+                        recoveryBanner
+                    }
+
                     captionComposerCard
 
                     AudioDiagnosticsPanel(palette: palette)
@@ -333,9 +338,40 @@ struct MemorySceneReviewView: View {
 
     private var captionComposerCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("余韻のことば")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(palette.secondaryText)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("余韻のことば")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(palette.secondaryText)
+                    Text(captionStyle.localizedLabel)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(palette.tertiaryText)
+                }
+
+                Spacer(minLength: 12)
+
+                Menu {
+                    ForEach(PhotoCaptionStyle.allCases) { style in
+                        Button {
+                            captionStyle = style
+                            onRegenerateCaption()
+                        } label: {
+                            if style == captionStyle {
+                                Label(style.localizedLabel, systemImage: "checkmark")
+                            } else {
+                                Text(style.localizedLabel)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("文体", systemImage: "text.quote")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(palette.accentSoft, in: Capsule())
+                }
+                .foregroundStyle(palette.accent)
+            }
 
             Text(previewDisplayCaption)
                 .font(.subheadline)
@@ -345,7 +381,7 @@ struct MemorySceneReviewView: View {
             HStack(spacing: 8) {
                 if let source = draft.photoCaptionSource {
                     ResonanceBadge(
-                        title: source.localizedLabel,
+                        title: "\(source.localizedLabel) • \(captionStyle.localizedLabel)",
                         systemImage: source.systemImage,
                         atmosphere: atmosphere
                     )
@@ -379,6 +415,45 @@ struct MemorySceneReviewView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(palette.stroke)
+        }
+    }
+
+    private var recoveryBanner: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(recoveryMessage, systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(palette.primaryText)
+
+            HStack(spacing: 10) {
+                Button("キャンセル") {
+                    onRetake()
+                }
+                .buttonStyle(.bordered)
+
+                Button("このまま保存") {
+                    onSave()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(palette.accent)
+                .disabled(isSaving)
+            }
+        }
+        .padding(16)
+        .background(palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(palette.stroke)
+        }
+    }
+
+    private var recoveryMessage: String {
+        switch draft.recoveryState {
+        case .none:
+            return ""
+        case .recovered(let duration, let reason):
+            return "\(reason.localizedLabel)により \(String(format: "%.1f", duration)) 秒で録音が終了しました。このまま保存できます。"
+        case .failed(let reason):
+            return "\(reason.localizedLabel)により録音が完了しませんでした。"
         }
     }
 
@@ -446,6 +521,8 @@ private struct ImmersiveMemoryPlaybackView: View {
     @StateObject private var player = AudioPlayerController()
     @State private var controlsVisible = true
     @State private var dragOffset: CGSize = .zero
+    @State private var saliencyFocus = CGPoint(x: 0.5, y: 0.5)
+    @State private var kenBurnsExpanded = false
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
@@ -475,6 +552,14 @@ private struct ImmersiveMemoryPlaybackView: View {
         return dragOffset.height * 0.1 + environmentService.previewVerticalShift
     }
 
+    private var saliencyShift: CGSize {
+        guard !reduceMotion else { return .zero }
+        return CGSize(
+            width: (saliencyFocus.x - 0.5) * -42,
+            height: (saliencyFocus.y - 0.5) * -30
+        )
+    }
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -483,20 +568,28 @@ private struct ImmersiveMemoryPlaybackView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .scaleEffect(reduceMotion ? 1.04 : 1.14)
+                    .scaleEffect(reduceMotion ? 1.04 : (kenBurnsExpanded ? 1.12 : 1.04))
                     .offset(
-                        x: motionHorizontalShift,
-                        y: motionVerticalShift
+                        x: motionHorizontalShift + saliencyShift.width,
+                        y: motionVerticalShift + saliencyShift.height
                     )
                     .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(-environmentService.previewHorizontalShift) * 0.16), axis: (x: 0, y: 1, z: 0))
                     .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(environmentService.previewVerticalShift) * 0.1), axis: (x: 1, y: 0, z: 0))
                     .ignoresSafeArea()
+                    .animation(reduceMotion ? .default : .linear(duration: 20).repeatForever(autoreverses: true), value: kenBurnsExpanded)
             }
 
             LinearGradient(
                 colors: [Color.black.opacity(0.1), .clear, Color.black.opacity(0.58)],
                 startPoint: .top,
                 endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            AtmosphericImmersiveOverlay(
+                atmosphere: atmosphere,
+                snapshot: draft.sensorSnapshot,
+                audioReactiveLevel: player.reactiveLevel
             )
             .ignoresSafeArea()
         }
@@ -574,7 +667,14 @@ private struct ImmersiveMemoryPlaybackView: View {
             if let audioURL = draft.audioTempURL {
                 player.load(url: audioURL, autoPlay: true, loop: true, volume: 0.78)
             }
+            player.setPlaybackEnvelope(waveformSamples)
             player.setSpatialOffset(environmentService.previewParallax)
+            kenBurnsExpanded = true
+            if let image = UIImage(data: draft.photoData) {
+                Task {
+                    saliencyFocus = await SaliencyFocusResolver.focusPoint(for: image)
+                }
+            }
         }
         .onChange(of: environmentService.previewParallax) { _, newValue in
             player.setSpatialOffset(newValue)
