@@ -35,6 +35,22 @@ private enum LibraryMode: String, CaseIterable, Identifiable {
     }
 }
 
+private enum LibraryTimelineLayout: String, CaseIterable, Identifiable {
+    case list
+    case grid
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .list:
+            return "リスト"
+        case .grid:
+            return "グリッド"
+        }
+    }
+}
+
 private enum MemoryDateFilter: String, CaseIterable, Identifiable {
     case all
     case today
@@ -71,9 +87,11 @@ private struct MapPinGroup: Identifiable {
 
 struct LibraryView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
 
     @State private var selectedMode: LibraryMode = .timeline
+    @State private var timelineLayout: LibraryTimelineLayout = .list
     @State private var selectedMood: String?
     @State private var selectedAtmosphere: AtmosphereStyle?
     @State private var favoritesOnly = false
@@ -87,9 +105,24 @@ struct LibraryView: View {
         span: MKCoordinateSpan(latitudeDelta: 0.2, longitudeDelta: 0.2)
     )
     @State private var captionRefreshToken = 0
+    @State private var isSelectionModeEnabled = false
+    @State private var selectedEntryIDs: Set<UUID> = []
+    @State private var showingBulkDeleteConfirmation = false
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme)
+    }
+
+    private var filteredEntryIDs: [UUID] {
+        filteredEntries.map(\.id)
+    }
+
+    private var selectedEntries: [MemoryEntry] {
+        entries.filter { selectedEntryIDs.contains($0.id) }
+    }
+
+    private var timelineGridColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 168, maximum: 240), spacing: 14, alignment: .top)]
     }
 
     private var filteredEntries: [MemoryEntry] {
@@ -218,6 +251,24 @@ struct LibraryView: View {
         }
         .navigationTitle("ライブラリ")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if selectedMode == .timeline, (!filteredEntries.isEmpty || isSelectionModeEnabled) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button(isSelectionModeEnabled ? "完了" : "選択") {
+                        toggleSelectionMode()
+                    }
+
+                    if isSelectionModeEnabled {
+                        Button(role: .destructive) {
+                            showingBulkDeleteConfirmation = true
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .disabled(selectedEntries.isEmpty)
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showingFilterSheet) {
             AdvancedLibraryFilterSheet(
                 selectedMood: $selectedMood,
@@ -237,10 +288,24 @@ struct LibraryView: View {
         .onChange(of: favoritesOnly) { _, _ in refreshLibraryState() }
         .onChange(of: hasAudioOnly) { _, _ in refreshLibraryState() }
         .onChange(of: sortOption) { _, _ in refreshLibraryState() }
+        .onChange(of: filteredEntryIDs) { _, _ in pruneSelectionToVisibleEntries() }
+        .onChange(of: selectedMode) { _, newMode in
+            if newMode != .timeline {
+                endSelectionMode()
+            }
+        }
         .onChange(of: mapRegion.center.latitude) { _, _ in syncVisibleMapSelection() }
         .onChange(of: mapRegion.center.longitude) { _, _ in syncVisibleMapSelection() }
         .onChange(of: mapRegion.span.latitudeDelta) { _, _ in syncVisibleMapSelection() }
         .onChange(of: mapRegion.span.longitudeDelta) { _, _ in syncVisibleMapSelection() }
+        .alert("選択した記録を削除しますか？", isPresented: $showingBulkDeleteConfirmation) {
+            Button("削除", role: .destructive) {
+                deleteSelectedEntries()
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("\(selectedEntries.count)件の写真、音声、メモ情報がこの端末から削除されます。")
+        }
     }
 
     private var timelineExperience: some View {
@@ -248,6 +313,7 @@ struct LibraryView: View {
             VStack(spacing: 18) {
                 summaryCard
                 modePicker
+                layoutPicker
                 filterBar
 
                 if entries.isEmpty {
@@ -391,25 +457,72 @@ struct LibraryView: View {
         }
     }
 
+    private var layoutPicker: some View {
+        Picker("一覧レイアウト", selection: $timelineLayout) {
+            ForEach(LibraryTimelineLayout.allCases) { layout in
+                Text(layout.label).tag(layout)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+
     private var timelineSection: some View {
         VStack(spacing: 16) {
+            if isSelectionModeEnabled {
+                selectionBar
+            }
+
             ForEach(groupedEntries, id: \.title) { section in
                 VStack(alignment: .leading, spacing: 12) {
                     Text(section.title)
                         .font(.title3.bold())
                         .foregroundStyle(palette.primaryText)
 
-                    ForEach(section.entries) { entry in
-                        NavigationLink {
-                            MemoryDetailView(entry: entry)
-                        } label: {
-                            MemoryCardView(entry: entry)
+                    if timelineLayout == .list {
+                        VStack(spacing: 12) {
+                            ForEach(section.entries) { entry in
+                                timelineListEntry(for: entry)
+                            }
                         }
-                        .buttonStyle(.plain)
+                    } else {
+                        LazyVGrid(columns: timelineGridColumns, spacing: 14) {
+                            ForEach(section.entries) { entry in
+                                timelineGridEntry(for: entry)
+                            }
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+    }
+
+    private var selectionBar: some View {
+        HStack(spacing: 12) {
+            Label(
+                selectedEntries.isEmpty ? "削除したい記録を選択" : "\(selectedEntries.count)件を選択中",
+                systemImage: "checkmark.circle"
+            )
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(palette.primaryText)
+
+            Spacer()
+
+            if !selectedEntries.isEmpty {
+                Button(role: .destructive) {
+                    showingBulkDeleteConfirmation = true
+                } label: {
+                    Label("削除", systemImage: "trash")
+                        .font(.subheadline.weight(.semibold))
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(palette.surfacePrimary, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(palette.stroke)
         }
     }
 
@@ -623,9 +736,67 @@ struct LibraryView: View {
     }
 
     private func refreshLibraryState() {
+        pruneSelectionToVisibleEntries()
         syncMapSelection()
         Task {
             await backfillVisiblePhotoCaptionsIfNeeded()
+        }
+    }
+
+    private func pruneSelectionToVisibleEntries() {
+        let visibleIDs = Set(filteredEntries.map(\.id))
+        selectedEntryIDs.formIntersection(visibleIDs)
+        if isSelectionModeEnabled, visibleIDs.isEmpty {
+            endSelectionMode()
+        }
+    }
+
+    private func toggleSelectionMode() {
+        if isSelectionModeEnabled {
+            endSelectionMode()
+        } else {
+            isSelectionModeEnabled = true
+            pruneSelectionToVisibleEntries()
+        }
+    }
+
+    private func endSelectionMode() {
+        isSelectionModeEnabled = false
+        selectedEntryIDs.removeAll()
+    }
+
+    private func toggleSelection(for entry: MemoryEntry) {
+        if selectedEntryIDs.contains(entry.id) {
+            selectedEntryIDs.remove(entry.id)
+        } else {
+            selectedEntryIDs.insert(entry.id)
+        }
+    }
+
+    private func deleteSelectedEntries() {
+        let entriesToDelete = selectedEntries
+        guard !entriesToDelete.isEmpty else {
+            endSelectionMode()
+            return
+        }
+
+        AudioPlaybackDiagnostics.shared.record("bulk delete requested count=\(entriesToDelete.count)", category: "storage")
+
+        for entry in entriesToDelete {
+            MediaStore.deleteAssets(for: entry)
+            modelContext.delete(entry)
+        }
+
+        do {
+            try modelContext.save()
+            AudioPlaybackDiagnostics.shared.record("bulk delete completed count=\(entriesToDelete.count)", category: "storage")
+            endSelectionMode()
+            refreshLibraryState()
+        } catch {
+            AudioPlaybackDiagnostics.shared.record(
+                "bulk delete save failed count=\(entriesToDelete.count) error=\(error.localizedDescription)",
+                category: "storage"
+            )
         }
     }
 
@@ -730,6 +901,48 @@ struct LibraryView: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .accessibilityHidden(visibleMapEntries.count <= 1)
+    }
+
+    @ViewBuilder
+    private func timelineListEntry(for entry: MemoryEntry) -> some View {
+        if isSelectionModeEnabled {
+            Button {
+                toggleSelection(for: entry)
+            } label: {
+                LibrarySelectableCard(isSelected: selectedEntryIDs.contains(entry.id), palette: palette) {
+                    MemoryCardView(entry: entry)
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink {
+                MemoryDetailView(entry: entry)
+            } label: {
+                MemoryCardView(entry: entry)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private func timelineGridEntry(for entry: MemoryEntry) -> some View {
+        if isSelectionModeEnabled {
+            Button {
+                toggleSelection(for: entry)
+            } label: {
+                LibrarySelectableCard(isSelected: selectedEntryIDs.contains(entry.id), palette: palette) {
+                    MemoryGridCardView(entry: entry)
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            NavigationLink {
+                MemoryDetailView(entry: entry)
+            } label: {
+                MemoryGridCardView(entry: entry)
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
 
@@ -874,6 +1087,41 @@ private struct ClusteredMapPinView: View {
     }
 }
 
+private struct LibrarySelectableCard<Content: View>: View {
+    let isSelected: Bool
+    let palette: ResonancePalette
+    let content: Content
+
+    init(isSelected: Bool, palette: ResonancePalette, @ViewBuilder content: () -> Content) {
+        self.isSelected = isSelected
+        self.palette = palette
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .overlay(alignment: .topTrailing) {
+                ZStack {
+                    Circle()
+                        .fill(isSelected ? palette.accent : palette.surfacePrimary.opacity(0.92))
+                    Circle()
+                        .strokeBorder(isSelected ? Color.white.opacity(0.94) : palette.stroke, lineWidth: isSelected ? 1.5 : 1)
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.caption.bold())
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: 28, height: 28)
+                .padding(12)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .strokeBorder(isSelected ? palette.accent : palette.stroke.opacity(0.55), lineWidth: isSelected ? 2.5 : 1)
+            }
+        }
+}
+
 struct MemoryCardView: View {
     @Environment(\.colorScheme) private var colorScheme
     let entry: MemoryEntry
@@ -952,9 +1200,83 @@ struct MemoryCardView: View {
     }
 }
 
+private struct MemoryGridCardView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let entry: MemoryEntry
+
+    var body: some View {
+        let palette = ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
+
+        ResonanceCard(atmosphere: entry.atmosphereStyle) {
+            VStack(alignment: .leading, spacing: 12) {
+                ZStack(alignment: .topTrailing) {
+                    MemoryThumbnail(entry: entry, width: nil, height: 152)
+
+                    if entry.isFavorite {
+                        Image(systemName: "heart.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(8)
+                            .background(.black.opacity(0.32), in: Circle())
+                            .padding(10)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(entry.displayTitle)
+                        .font(.headline)
+                        .foregroundStyle(palette.primaryText)
+                        .lineLimit(2)
+
+                    Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption)
+                        .foregroundStyle(palette.secondaryText)
+
+                    if let placeLabel = entry.placeLabel, !placeLabel.isEmpty {
+                        Text(placeLabel)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(palette.secondaryText)
+                            .lineLimit(1)
+                    }
+
+                    Text(entry.notePreview)
+                        .font(.caption)
+                        .foregroundStyle(palette.secondaryText)
+                        .lineLimit(2)
+
+                    AudioWaveformView(
+                        samples: entry.waveformFingerprint,
+                        progress: 1,
+                        activeColor: palette.accent,
+                        inactiveColor: palette.accent.opacity(0.18),
+                        minimumBarHeight: 8
+                    )
+                    .frame(height: 22)
+
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", atmosphere: entry.atmosphereStyle)
+                            if entry.hasAudio {
+                                ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform", atmosphere: entry.atmosphereStyle)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", atmosphere: entry.atmosphereStyle)
+                            if entry.hasAudio {
+                                ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform", atmosphere: entry.atmosphereStyle)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct MemoryThumbnail: View {
     let entry: MemoryEntry
-    var width: CGFloat = 76
+    var width: CGFloat? = 76
     var height: CGFloat = 76
 
     var body: some View {
@@ -970,9 +1292,10 @@ struct MemoryThumbnail: View {
                         Image(systemName: "photo")
                             .foregroundStyle(.secondary)
                     }
-            }
+                }
         }
         .frame(width: width, height: height)
+        .frame(maxWidth: width == nil ? .infinity : nil)
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 }
