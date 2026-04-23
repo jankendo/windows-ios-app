@@ -232,6 +232,8 @@ struct MemorySceneReviewView: View {
 
                     captionComposerCard
 
+                    AudioDiagnosticsPanel(palette: palette)
+
                     if showingNotesField {
                         TextField("", text: $notes, prompt: Text("その場の空気、温度、気持ち、聞こえたもの。").foregroundStyle(palette.tertiaryText), axis: .vertical)
                             .focused($focusedField, equals: .notes)

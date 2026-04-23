@@ -317,6 +317,8 @@ struct MemoryDetailView: View {
                                     .foregroundStyle(palette.secondaryText)
                             }
 
+                            AudioDiagnosticsPanel(palette: palette)
+
                             Button {
                                 showingImmersivePreview = true
                             } label: {

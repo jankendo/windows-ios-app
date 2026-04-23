@@ -81,6 +81,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     private var recordingFinishWorkItem: DispatchWorkItem?
     private var minimumCapturedDecibels: Float?
     private var maximumCapturedDecibels: Float?
+    private let audioDiagnostics = AudioPlaybackDiagnostics.shared
 
     var isReadyToCapture: Bool {
         permissionState == .ready && isSessionRunning && !isCapturing
@@ -302,24 +303,34 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
     }
 
     private func startAudioRecorder() throws {
-        try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
-        try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP, .allowAirPlay])
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
 
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("caf")
+            .appendingPathExtension("m4a")
         let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 48_000,
             AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
-            AVLinearPCMIsBigEndianKey: false
+            AVEncoderBitRateKey: 192_000,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
         ]
 
         audioRecorder = try AVAudioRecorder(url: fileURL, settings: settings)
         audioRecorder?.isMeteringEnabled = true
-        audioRecorder?.record()
+        audioRecorder?.prepareToRecord()
+        guard audioRecorder?.record() == true else {
+            audioDiagnostics.record("recorder failed to start: file=\(fileURL.lastPathComponent)")
+            throw CaptureError.audioRecordingFailed
+        }
+        let routeDescription = session.currentRoute.outputs
+            .map { "\($0.portType.rawValue):\($0.portName)" }
+            .joined(separator: ", ")
+        audioDiagnostics.record(
+            "recorder started: file=\(fileURL.lastPathComponent) category=\(session.category.rawValue) route=\(routeDescription) settings=\(settings)"
+        )
         minimumCapturedDecibels = nil
         maximumCapturedDecibels = nil
     }
@@ -391,6 +402,9 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         cancelScheduledCaptureWork()
         pendingCapture?.audioFinished = true
         audioRecorder?.stop()
+        if let audioURL = pendingCapture?.audioURL {
+            audioDiagnostics.record("recorder stopped: file=\(audioURL.lastPathComponent)")
+        }
         audioRecorder = nil
         isWaitingForRecordingStart = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -412,8 +426,10 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         if let audioURL {
             let asset = AVURLAsset(url: audioURL)
             audioDuration = asset.duration.seconds.isFinite ? asset.duration.seconds : 0
+            audioDiagnostics.record("capture completed: file=\(audioURL.lastPathComponent) duration=\(String(format: "%.2fs", audioDuration))")
         } else {
             audioDuration = 0
+            audioDiagnostics.record("capture completed without audio file")
         }
 
         self.pendingCapture = nil
@@ -456,6 +472,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         minimumCapturedDecibels = nil
         maximumCapturedDecibels = nil
         statusText = error.localizedDescription
+        audioDiagnostics.record("capture failed: \(error.localizedDescription)")
         completion?(.failure(error))
     }
 
