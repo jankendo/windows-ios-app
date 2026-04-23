@@ -62,6 +62,11 @@ final class AudioPlayerController: NSObject, ObservableObject {
         reactiveLevel = Double(samples.first ?? 0.18)
     }
 
+    func setVolume(_ volume: Float) {
+        self.volume = volume
+        player?.volume = volume
+    }
+
     func stop() {
         diagnostics.record("stop requested")
         tearDownPlayer(deactivateSession: true)

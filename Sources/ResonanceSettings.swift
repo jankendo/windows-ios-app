@@ -66,6 +66,9 @@ enum ResonancePreferenceKey {
     static let nearbyMemoriesRadius = "nearbyMemoriesRadius"
     static let immersiveParticlesEnabled = "immersiveParticlesEnabled"
     static let immersiveAudioReactiveLightEnabled = "immersiveAudioReactiveLightEnabled"
+    static let immersiveSlideshowAutoAdvanceEnabled = "immersiveSlideshowAutoAdvanceEnabled"
+    static let immersiveSlideshowIntervalSeconds = "immersiveSlideshowIntervalSeconds"
+    static let immersivePreviewVolume = "immersivePreviewVolume"
     static let defaultCaptionStyle = "defaultCaptionStyle"
     static let intervalCaptureSpacingSeconds = "intervalCaptureSpacingSeconds"
     static let intervalCapturePlannedCount = "intervalCapturePlannedCount"
@@ -95,6 +98,26 @@ enum ResonancePreferences {
         value(for: ResonancePreferenceKey.immersiveAudioReactiveLightEnabled, default: true)
     }
 
+    static var immersiveSlideshowAutoAdvanceEnabled: Bool {
+        value(for: ResonancePreferenceKey.immersiveSlideshowAutoAdvanceEnabled, default: true)
+    }
+
+    static var immersiveSlideshowIntervalSeconds: Double {
+        guard UserDefaults.standard.object(forKey: ResonancePreferenceKey.immersiveSlideshowIntervalSeconds) != nil else {
+            return 8
+        }
+        let value = UserDefaults.standard.double(forKey: ResonancePreferenceKey.immersiveSlideshowIntervalSeconds)
+        return value
+    }
+
+    static var immersivePreviewVolume: Double {
+        guard UserDefaults.standard.object(forKey: ResonancePreferenceKey.immersivePreviewVolume) != nil else {
+            return 0.78
+        }
+        let value = UserDefaults.standard.double(forKey: ResonancePreferenceKey.immersivePreviewVolume)
+        return value
+    }
+
     static var defaultCaptionStyle: PhotoCaptionStyle {
         guard let rawValue = UserDefaults.standard.string(forKey: ResonancePreferenceKey.defaultCaptionStyle) else {
             return .poetic
@@ -117,6 +140,9 @@ struct SettingsView: View {
     @AppStorage(ResonancePreferenceKey.nearbyMemoriesRadius) private var nearbyMemoriesRadius = NearbyMemoriesRadius.meters500.rawValue
     @AppStorage(ResonancePreferenceKey.immersiveParticlesEnabled) private var immersiveParticlesEnabled = true
     @AppStorage(ResonancePreferenceKey.immersiveAudioReactiveLightEnabled) private var immersiveAudioReactiveLightEnabled = true
+    @AppStorage(ResonancePreferenceKey.immersiveSlideshowAutoAdvanceEnabled) private var immersiveSlideshowAutoAdvanceEnabled = true
+    @AppStorage(ResonancePreferenceKey.immersiveSlideshowIntervalSeconds) private var immersiveSlideshowIntervalSeconds = 8.0
+    @AppStorage(ResonancePreferenceKey.immersivePreviewVolume) private var immersivePreviewVolume = 0.78
     @AppStorage(ResonancePreferenceKey.defaultCaptionStyle) private var defaultCaptionStyle = PhotoCaptionStyle.poetic.rawValue
     @AppStorage(ResonancePreferenceKey.intervalCaptureSpacingSeconds) private var intervalCaptureSpacingSeconds = 30.0
     @AppStorage(ResonancePreferenceKey.intervalCapturePlannedCount) private var intervalCapturePlannedCount = 3
@@ -146,6 +172,28 @@ struct SettingsView: View {
                 Section("没入プレビュー") {
                     Toggle("環境粒子を有効化", isOn: $immersiveParticlesEnabled)
                     Toggle("音量連動の光を有効化", isOn: $immersiveAudioReactiveLightEnabled)
+
+                    Toggle("スライドショーを自動再生", isOn: $immersiveSlideshowAutoAdvanceEnabled)
+
+                    HStack {
+                        Text("切替間隔")
+                        Spacer()
+                        Text("\(Int(immersiveSlideshowIntervalSeconds.rounded()))秒")
+                            .foregroundStyle(palette.secondaryText)
+                    }
+
+                    Slider(value: $immersiveSlideshowIntervalSeconds, in: 4...20, step: 1)
+                        .tint(palette.accent)
+
+                    HStack {
+                        Text("既定の音量")
+                        Spacer()
+                        Text("\(Int((immersivePreviewVolume * 100).rounded()))%")
+                            .foregroundStyle(palette.secondaryText)
+                    }
+
+                    Slider(value: $immersivePreviewVolume, in: 0...1, step: 0.05)
+                        .tint(palette.accent)
 
                     Text("Reduce Motion が有効な場合は動きの強い演出を自動的に抑えます。")
                         .font(.footnote)

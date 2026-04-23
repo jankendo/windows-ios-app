@@ -170,13 +170,15 @@ struct ResonanceCard<Content: View>: View {
 
     var body: some View {
         let palette = ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
+        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
 
         content
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(palette.surfacePrimary, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .background(palette.surfacePrimary, in: shape)
+            .clipShape(shape)
             .overlay {
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                shape
                     .strokeBorder(palette.stroke)
             }
             .shadow(color: palette.shadow, radius: 24, y: 12)

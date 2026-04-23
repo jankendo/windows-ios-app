@@ -199,7 +199,7 @@ final class CaptureFlowModel: ObservableObject {
         }
 
         scene.endedAt = .now
-        if scene.entryIDs.isEmpty {
+        if scene.entryIDs.isEmpty && session.completedCount == 0 {
             modelContext.delete(scene)
         }
         try? modelContext.save()
@@ -303,35 +303,33 @@ final class CaptureFlowModel: ObservableObject {
     }
 
     private func prepareDraft(duration: TimeInterval, delayRecordingUntilAfterShutter: Bool) async throws -> CapturedMemoryDraft {
-        try await withCheckedThrowingContinuation { continuation in
-            camera.captureMemory(duration: duration, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter) { [weak self] result in
-                guard let self else {
-                    continuation.resume(throwing: CaptureError.sessionNotReady)
-                    return
-                }
+        let rawDraft = try await captureRawDraft(duration: duration, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter)
+        return await enrichDraft(rawDraft)
+    }
 
-                Task { @MainActor in
-                    do {
-                        var draft = try result.get()
-                        let photoData = draft.photoData
-                        async let placeLabel = self.locationService.currentPlaceLabel(forceRefresh: true)
-                        async let photoCaption = MemoryAnalysisService.captionGeneration(from: photoData, style: self.captionStyle)
-                        async let sensorSnapshot = self.locationService.currentEnvironmentSnapshot(forceRefresh: true)
-                        async let resolvedLocation = self.locationService.currentLocation(forceRefresh: true)
-                        let captionGeneration = await photoCaption
-                        draft.placeLabel = await placeLabel
-                        draft.photoCaption = captionGeneration?.text
-                        draft.photoCaptionSource = captionGeneration?.source
-                        draft.photoCaptionStyle = captionGeneration?.style ?? self.captionStyle
-                        draft.sensorSnapshot = await sensorSnapshot
-                        _ = await resolvedLocation
-                        continuation.resume(returning: draft)
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                }
+    private func captureRawDraft(duration: TimeInterval, delayRecordingUntilAfterShutter: Bool) async throws -> CapturedMemoryDraft {
+        try await withCheckedThrowingContinuation { continuation in
+            camera.captureMemory(duration: duration, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter) { result in
+                continuation.resume(with: result)
             }
         }
+    }
+
+    private func enrichDraft(_ draft: CapturedMemoryDraft) async -> CapturedMemoryDraft {
+        var enrichedDraft = draft
+        let photoData = draft.photoData
+        async let placeLabel = locationService.currentPlaceLabel(forceRefresh: true)
+        async let photoCaption = MemoryAnalysisService.captionGeneration(from: photoData, style: captionStyle)
+        async let sensorSnapshot = locationService.currentEnvironmentSnapshot(forceRefresh: true)
+        async let resolvedLocation = locationService.currentLocation(forceRefresh: true)
+        let captionGeneration = await photoCaption
+        enrichedDraft.placeLabel = await placeLabel
+        enrichedDraft.photoCaption = captionGeneration?.text
+        enrichedDraft.photoCaptionSource = captionGeneration?.source
+        enrichedDraft.photoCaptionStyle = captionGeneration?.style ?? captionStyle
+        enrichedDraft.sensorSnapshot = await sensorSnapshot
+        _ = await resolvedLocation
+        return enrichedDraft
     }
 
     private func persistDraft(
@@ -404,13 +402,13 @@ final class CaptureFlowModel: ObservableObject {
         intervalTask?.cancel()
         intervalTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            var pendingSaveTasks: [Task<Void, Never>] = []
 
             while let session = self.intervalSession,
                   session.phase == .running,
                   session.completedCount < session.plannedCount {
-                if session.completedCount > 0 {
-                    let nextCaptureAt = Date.now.addingTimeInterval(Double(session.intervalSeconds))
-                    self.intervalSession?.nextCaptureAt = nextCaptureAt
+                if session.completedCount > 0,
+                   let nextCaptureAt = session.nextCaptureAt {
                     while Date.now < nextCaptureAt {
                         try? await Task.sleep(nanoseconds: 200_000_000)
                         guard !Task.isCancelled else { return }
@@ -419,19 +417,39 @@ final class CaptureFlowModel: ObservableObject {
                 }
 
                 do {
-                    let draft = try await self.prepareDraft(
+                    let rawDraft = try await self.captureRawDraft(
                         duration: session.clipDuration,
                         delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter
                     )
-                    let title = "\(session.title) \(session.completedCount + 1)"
-                    let entry = try await self.persistDraft(draft, title: title, notes: "", modelContext: modelContext)
-                    scene.appendEntry(entry.id)
-                    scene.endedAt = nil
-                    try? modelContext.save()
-                    self.lastSavedEntry = entry
-                    self.intervalSession?.completedCount += 1
-                    self.intervalSession?.nextCaptureAt = nil
-                    self.saveMessage = "\(self.intervalSession?.completedCount ?? 0)/\(session.plannedCount) 枚を保存しました。"
+                    let captureNumber = session.completedCount + 1
+                    let hasRemainingCapture = captureNumber < session.plannedCount
+                    self.intervalSession?.completedCount = captureNumber
+                    self.intervalSession?.nextCaptureAt = hasRemainingCapture
+                        ? Date.now.addingTimeInterval(Double(session.intervalSeconds))
+                        : nil
+                    self.saveMessage = "\(captureNumber)/\(session.plannedCount) 枚を撮影しました。"
+
+                    let title = "\(session.title) \(captureNumber)"
+                    let saveTask = Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        do {
+                            let draft = await self.enrichDraft(rawDraft)
+                            let entry = try await self.persistDraft(draft, title: title, notes: "", modelContext: modelContext)
+                            scene.appendEntry(entry.id)
+                            scene.endedAt = nil
+                            try? modelContext.save()
+                            self.lastSavedEntry = entry
+                            if self.intervalSession?.phase != .paused {
+                                self.saveMessage = "\(captureNumber)/\(session.plannedCount) 枚を保存しました。"
+                            }
+                        } catch {
+                            self.errorMessage = error.localizedDescription
+                            self.intervalSession?.phase = .paused
+                            self.intervalSession?.nextCaptureAt = nil
+                            self.diagnostics.record("interval capture paused: \(error.localizedDescription)", category: "capture")
+                        }
+                    }
+                    pendingSaveTasks.append(saveTask)
                 } catch {
                     self.errorMessage = error.localizedDescription
                     self.intervalSession?.phase = .paused
@@ -441,7 +459,12 @@ final class CaptureFlowModel: ObservableObject {
                 }
             }
 
+            for task in pendingSaveTasks {
+                await task.value
+            }
+
             guard let finalSession = self.intervalSession else { return }
+            guard finalSession.phase == .running || finalSession.phase == .finished else { return }
             scene.endedAt = .now
             try? modelContext.save()
             self.intervalSession?.phase = .finished
