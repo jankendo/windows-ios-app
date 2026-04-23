@@ -78,6 +78,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
         attachObservers(to: player, item: item, url: url)
 
         diagnostics.record("player created: duration=\(Self.timeString(duration)) loop=\(loop) volume=\(String(format: "%.2f", volume))")
+        diagnostics.record("spatial audio playback check: false (mono asset + AVPlayer stereo playback, no spatial renderer)")
 
         if autoPlay {
             play()

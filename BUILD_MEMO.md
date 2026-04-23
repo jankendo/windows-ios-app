@@ -69,6 +69,7 @@ pwsh -File .\scripts\publish-github-secrets.ps1 `
 4. 署名素材があれば archive/export を試行
 5. 失敗時は unsigned IPA をフォールバック生成
 6. `Resonance.ipa` を Artifact として保存
+7. GitHub Actions の **run number** を使って `CURRENT_PROJECT_VERSION` を自動加算し、`MARKETING_VERSION` も `1.0.<run number>` で毎回更新
 
 ## 実機導入
 

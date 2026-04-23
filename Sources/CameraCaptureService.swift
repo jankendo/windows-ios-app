@@ -331,6 +331,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
         audioDiagnostics.record(
             "recorder started: file=\(fileURL.lastPathComponent) category=\(session.category.rawValue) route=\(routeDescription) settings=\(settings)"
         )
+        audioDiagnostics.record("spatial audio capture check: false (AAC m4a / 1 channel recording)")
         minimumCapturedDecibels = nil
         maximumCapturedDecibels = nil
     }
