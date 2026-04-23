@@ -278,6 +278,74 @@ struct LibraryView: View {
 
     var body: some View {
         let _ = captionRefreshToken
+        return libraryScaffold
+    }
+
+    private var libraryScaffold: some View {
+        libraryChrome
+            .sheet(isPresented: $showingFilterSheet) {
+                AdvancedLibraryFilterSheet(
+                    selectedMood: $selectedMood,
+                    selectedAtmosphere: $selectedAtmosphere,
+                    favoritesOnly: $favoritesOnly,
+                    hasAudioOnly: $hasAudioOnly
+                )
+                .presentationDetents([.medium])
+            }
+            .sheet(isPresented: $showingCollectionPicker) {
+                CollectionPickerSheet(
+                    collections: manualCollections,
+                    onSelect: { collection in
+                        addEntries(collectionDraftEntryIDs, to: collection)
+                    },
+                    onCreateNew: {
+                        editingCollection = nil
+                        showingCollectionEditor = true
+                    }
+                )
+            }
+            .sheet(isPresented: $showingCollectionEditor) {
+                MemoryCollectionEditorView(
+                    collection: editingCollection,
+                    initialEntryIDs: collectionDraftEntryIDs
+                )
+            }
+            .onAppear {
+                refreshLibraryState()
+                Task { await refreshCurrentLocation() }
+            }
+            .onChange(of: entries.count) { _, _ in refreshLibraryState() }
+            .onChange(of: collections.count) { _, _ in refreshLibraryState() }
+            .onChange(of: scenes.count) { _, _ in refreshLibraryState() }
+            .onChange(of: selectedDateFilter) { _, _ in refreshLibraryState() }
+            .onChange(of: selectedMood) { _, _ in refreshLibraryState() }
+            .onChange(of: selectedAtmosphere) { _, _ in refreshLibraryState() }
+            .onChange(of: favoritesOnly) { _, _ in refreshLibraryState() }
+            .onChange(of: hasAudioOnly) { _, _ in refreshLibraryState() }
+            .onChange(of: sortOption) { _, _ in refreshLibraryState() }
+            .onChange(of: nearbyMemoriesEnabled) { _, _ in refreshLibraryState() }
+            .onChange(of: nearbyMemoriesRadius) { _, _ in refreshLibraryState() }
+            .onChange(of: filteredEntryIDs) { _, _ in pruneSelectionToVisibleEntries() }
+            .onChange(of: selectedMode) { _, newMode in
+                if newMode != .timeline {
+                    endSelectionMode()
+                }
+            }
+            .onChange(of: mapRegion.center.latitude) { _, _ in syncVisibleMapSelection() }
+            .onChange(of: mapRegion.center.longitude) { _, _ in syncVisibleMapSelection() }
+            .onChange(of: mapRegion.span.latitudeDelta) { _, _ in syncVisibleMapSelection() }
+            .onChange(of: mapRegion.span.longitudeDelta) { _, _ in syncVisibleMapSelection() }
+            .alert("選択した記録を削除しますか？", isPresented: $showingBulkDeleteConfirmation) {
+                Button("削除", role: .destructive) {
+                    deleteSelectedEntries()
+                }
+                Button("キャンセル", role: .cancel) {}
+            } message: {
+                Text("\(selectedEntries.count)件の写真、音声、メモ情報がこの端末から削除されます。")
+            }
+    }
+
+    private var libraryChrome: some View {
         ZStack {
             ResonanceGradientBackground()
 
@@ -290,90 +358,35 @@ struct LibraryView: View {
         .navigationTitle("ライブラリ")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if selectedMode == .timeline, (!filteredEntries.isEmpty || isSelectionModeEnabled) {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button(isSelectionModeEnabled ? "完了" : "選択") {
-                        toggleSelectionMode()
-                    }
+            timelineToolbar
+        }
+    }
 
-                    if isSelectionModeEnabled {
-                        Button {
-                            collectionDraftEntryIDs = selectedEntries.map(\.id)
-                            showingCollectionPicker = true
-                        } label: {
-                            Image(systemName: "folder.badge.plus")
-                        }
-                        .disabled(selectedEntries.isEmpty)
+    @ToolbarContentBuilder
+    private var timelineToolbar: some ToolbarContent {
+        if selectedMode == .timeline, (!filteredEntries.isEmpty || isSelectionModeEnabled) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button(isSelectionModeEnabled ? "完了" : "選択") {
+                    toggleSelectionMode()
+                }
 
-                        Button(role: .destructive) {
-                            showingBulkDeleteConfirmation = true
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .disabled(selectedEntries.isEmpty)
+                if isSelectionModeEnabled {
+                    Button {
+                        collectionDraftEntryIDs = selectedEntries.map(\.id)
+                        showingCollectionPicker = true
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
                     }
+                    .disabled(selectedEntries.isEmpty)
+
+                    Button(role: .destructive) {
+                        showingBulkDeleteConfirmation = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .disabled(selectedEntries.isEmpty)
                 }
             }
-        }
-        .sheet(isPresented: $showingFilterSheet) {
-            AdvancedLibraryFilterSheet(
-                selectedMood: $selectedMood,
-                selectedAtmosphere: $selectedAtmosphere,
-                favoritesOnly: $favoritesOnly,
-                hasAudioOnly: $hasAudioOnly
-            )
-            .presentationDetents([.medium])
-        }
-        .sheet(isPresented: $showingCollectionPicker) {
-            CollectionPickerSheet(
-                collections: manualCollections,
-                onSelect: { collection in
-                    addEntries(collectionDraftEntryIDs, to: collection)
-                },
-                onCreateNew: {
-                    editingCollection = nil
-                    showingCollectionEditor = true
-                }
-            )
-        }
-        .sheet(isPresented: $showingCollectionEditor) {
-            MemoryCollectionEditorView(
-                collection: editingCollection,
-                initialEntryIDs: collectionDraftEntryIDs
-            )
-        }
-        .onAppear {
-            refreshLibraryState()
-            Task { await refreshCurrentLocation() }
-        }
-        .onChange(of: entries.count) { _, _ in refreshLibraryState() }
-        .onChange(of: collections.count) { _, _ in refreshLibraryState() }
-        .onChange(of: scenes.count) { _, _ in refreshLibraryState() }
-        .onChange(of: selectedDateFilter) { _, _ in refreshLibraryState() }
-        .onChange(of: selectedMood) { _, _ in refreshLibraryState() }
-        .onChange(of: selectedAtmosphere) { _, _ in refreshLibraryState() }
-        .onChange(of: favoritesOnly) { _, _ in refreshLibraryState() }
-        .onChange(of: hasAudioOnly) { _, _ in refreshLibraryState() }
-        .onChange(of: sortOption) { _, _ in refreshLibraryState() }
-        .onChange(of: nearbyMemoriesEnabled) { _, _ in refreshLibraryState() }
-        .onChange(of: nearbyMemoriesRadius) { _, _ in refreshLibraryState() }
-        .onChange(of: filteredEntryIDs) { _, _ in pruneSelectionToVisibleEntries() }
-        .onChange(of: selectedMode) { _, newMode in
-            if newMode != .timeline {
-                endSelectionMode()
-            }
-        }
-        .onChange(of: mapRegion.center.latitude) { _, _ in syncVisibleMapSelection() }
-        .onChange(of: mapRegion.center.longitude) { _, _ in syncVisibleMapSelection() }
-        .onChange(of: mapRegion.span.latitudeDelta) { _, _ in syncVisibleMapSelection() }
-        .onChange(of: mapRegion.span.longitudeDelta) { _, _ in syncVisibleMapSelection() }
-        .alert("選択した記録を削除しますか？", isPresented: $showingBulkDeleteConfirmation) {
-            Button("削除", role: .destructive) {
-                deleteSelectedEntries()
-            }
-            Button("キャンセル", role: .cancel) {}
-        } message: {
-            Text("\(selectedEntries.count)件の写真、音声、メモ情報がこの端末から削除されます。")
         }
     }
 
