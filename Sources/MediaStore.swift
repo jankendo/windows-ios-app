@@ -286,7 +286,7 @@ enum MediaStore {
 
     static func loadStoredSpatialScan(bundleFolderName: String, manifestFileName: String) -> StoredSpatialScan? {
         try? ensureDirectories()
-        try? validatedStoredSpatialScan(
+        return try? validatedStoredSpatialScan(
             bundleFolderName: bundleFolderName,
             manifestFileName: manifestFileName
         )
