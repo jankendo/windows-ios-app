@@ -164,7 +164,8 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
     private func startSpatialSensors() {
         if motionManager.isDeviceMotionAvailable, !motionManager.isDeviceMotionActive {
             motionManager.deviceMotionUpdateInterval = 1.0 / 120.0
-            motionManager.startDeviceMotionUpdates(to: motionQueue) { [weak self] motion, _ in
+            let referenceFrame = ImmersiveDirectionSpace.preferredMotionReferenceFrame()
+            let updateHandler: CMDeviceMotionHandler = { [weak self] motion, _ in
                 guard let self, let motion else { return }
                 let horizontalTilt = max(-1.0, min(1.0, motion.gravity.x / 0.42))
                 let verticalTilt = max(-1.0, min(1.0, (-motion.gravity.z) / 0.56))
@@ -172,7 +173,10 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
                 let targetVerticalShift = CGFloat(verticalTilt * 14)
                 let pitchDegrees = motion.attitude.pitch * 180 / .pi
                 let rollDegrees = motion.attitude.roll * 180 / .pi
-                let yawDegrees = motion.attitude.yaw * 180 / .pi
+                let resolvedYawDegrees = referenceFrame.flatMap { frame in
+                    guard ImmersiveDirectionSpace.isCompassReferenced(frame) else { return nil }
+                    return ImmersiveDirectionSpace.headingDegrees(fromYawRadians: motion.attitude.yaw)
+                }
 
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -182,11 +186,17 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
                     self.previewParallax = CGSize(width: smoothedHorizontalShift, height: smoothedVerticalShift)
                     self.latestPitchDegrees = pitchDegrees
                     self.latestRollDegrees = rollDegrees
-                    self.latestYawDegrees = yawDegrees
+                    self.latestYawDegrees = resolvedYawDegrees
                     if !self.isMotionReady {
                         self.isMotionReady = true
                     }
                 }
+            }
+
+            if let referenceFrame {
+                motionManager.startDeviceMotionUpdates(using: referenceFrame, to: motionQueue, withHandler: updateHandler)
+            } else {
+                motionManager.startDeviceMotionUpdates(to: motionQueue, withHandler: updateHandler)
             }
         }
 

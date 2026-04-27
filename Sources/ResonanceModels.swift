@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreLocation
+import CoreMotion
 import Foundation
 import SwiftData
 
@@ -141,6 +142,86 @@ enum PartialCaptureRecoveryState: Equatable, Codable {
     case failed(reason: InterruptionReason)
 }
 
+struct SpatialScanStorageMetadata: Codable, Hashable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var bundleFolderName: String
+    var manifestFileName: String
+    var previewImageFileName: String
+    var worldMapFileName: String?
+    var frameCount: Int
+    var captureDuration: Double
+    var reconstructionStateRaw: String?
+
+    init(schemaVersion: Int = Self.currentSchemaVersion, storedSpatialScan: StoredSpatialScan) {
+        self.schemaVersion = schemaVersion
+        self.bundleFolderName = storedSpatialScan.bundleFolderName
+        self.manifestFileName = storedSpatialScan.manifestFileName
+        self.previewImageFileName = storedSpatialScan.previewImageFileName
+        self.worldMapFileName = storedSpatialScan.worldMapFileName
+        self.frameCount = storedSpatialScan.frameCount
+        self.captureDuration = storedSpatialScan.captureDuration
+        self.reconstructionStateRaw = storedSpatialScan.reconstructionState.rawValue
+    }
+
+    var reconstructionState: SpatialScanReconstructionState? {
+        guard let reconstructionStateRaw else { return nil }
+        return SpatialScanReconstructionState(rawValue: reconstructionStateRaw)
+    }
+
+    var storedSpatialScan: StoredSpatialScan? {
+        StoredSpatialScan.legacyReference(
+            bundleFolderName: bundleFolderName,
+            manifestFileName: manifestFileName,
+            previewImageFileName: previewImageFileName,
+            worldMapFileName: worldMapFileName,
+            frameCount: frameCount,
+            captureDuration: captureDuration,
+            reconstructionStateRaw: reconstructionStateRaw
+        )
+    }
+}
+
+struct SpatialScanSyncMetadata: Codable, Hashable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var bundleFolderName: String
+    var manifestFileName: String
+    var derivedAssetsFolderName: String
+    var assets: [SpatialScanSyncAsset]
+    var syncDispositionRaw: String
+
+    init(
+        schemaVersion: Int = Self.currentSchemaVersion,
+        bundleFolderName: String,
+        manifestFileName: String,
+        derivedAssetsFolderName: String,
+        assets: [SpatialScanSyncAsset],
+        syncDisposition: SpatialScanSyncDisposition = .syncable
+    ) {
+        self.schemaVersion = schemaVersion
+        self.bundleFolderName = bundleFolderName
+        self.manifestFileName = manifestFileName
+        self.derivedAssetsFolderName = derivedAssetsFolderName
+        self.assets = assets
+        self.syncDispositionRaw = syncDisposition.rawValue
+    }
+
+    var syncDisposition: SpatialScanSyncDisposition {
+        SpatialScanSyncDisposition(rawValue: syncDispositionRaw) ?? .syncable
+    }
+
+    var syncableAssets: [SpatialScanSyncAsset] {
+        assets.filter { $0.disposition == .syncable }
+    }
+
+    var localOnlyAssets: [SpatialScanSyncAsset] {
+        assets.filter { $0.disposition == .localOnly }
+    }
+}
+
 struct MemoryAtmosphereMetadata: Codable {
     static let currentPhotoCaptionVersion = 3
 
@@ -161,6 +242,8 @@ struct MemoryAtmosphereMetadata: Codable {
     var seamlessLoopEndPoint: Double?
     var directionalHotspots: [DirectionalAudioHotspot]
     var capturedSpatialAudio: Bool?
+    var spatialScan: SpatialScanStorageMetadata?
+    var spatialScanSync: SpatialScanSyncMetadata?
     var spatialScanBundleFolderName: String?
     var spatialScanManifestFileName: String?
     var spatialScanPreviewFileName: String?
@@ -184,6 +267,8 @@ struct MemoryAtmosphereMetadata: Codable {
         seamlessLoopEndPoint: Double? = nil,
         directionalHotspots: [DirectionalAudioHotspot] = [],
         capturedSpatialAudio: Bool? = nil,
+        spatialScan: StoredSpatialScan? = nil,
+        spatialScanSync: SpatialScanSyncMetadata? = nil,
         spatialScanBundleFolderName: String? = nil,
         spatialScanManifestFileName: String? = nil,
         spatialScanPreviewFileName: String? = nil,
@@ -212,13 +297,25 @@ struct MemoryAtmosphereMetadata: Codable {
         self.seamlessLoopEndPoint = seamlessLoopEndPoint
         self.directionalHotspots = directionalHotspots
         self.capturedSpatialAudio = capturedSpatialAudio
-        self.spatialScanBundleFolderName = spatialScanBundleFolderName
-        self.spatialScanManifestFileName = spatialScanManifestFileName
-        self.spatialScanPreviewFileName = spatialScanPreviewFileName
-        self.spatialScanWorldMapFileName = spatialScanWorldMapFileName
-        self.spatialScanFrameCount = spatialScanFrameCount
-        self.spatialScanCaptureDuration = spatialScanCaptureDuration
-        self.spatialScanReconstructionStateRaw = spatialScanReconstructionState?.rawValue
+        let resolvedSpatialScan = spatialScan ?? StoredSpatialScan.legacyReference(
+            bundleFolderName: spatialScanBundleFolderName,
+            manifestFileName: spatialScanManifestFileName,
+            previewImageFileName: spatialScanPreviewFileName,
+            worldMapFileName: spatialScanWorldMapFileName,
+            frameCount: spatialScanFrameCount,
+            captureDuration: spatialScanCaptureDuration,
+            reconstructionStateRaw: spatialScanReconstructionState?.rawValue
+        )
+        self.spatialScan = nil
+        self.spatialScanSync = spatialScanSync
+        self.spatialScanBundleFolderName = nil
+        self.spatialScanManifestFileName = nil
+        self.spatialScanPreviewFileName = nil
+        self.spatialScanWorldMapFileName = nil
+        self.spatialScanFrameCount = nil
+        self.spatialScanCaptureDuration = nil
+        self.spatialScanReconstructionStateRaw = nil
+        applyStoredSpatialScan(resolvedSpatialScan, syncMetadata: spatialScanSync)
     }
 
     var atmosphereStyle: AtmosphereStyle {
@@ -240,13 +337,44 @@ struct MemoryAtmosphereMetadata: Codable {
         return PhotoCaptionStyle(rawValue: photoCaptionStyleRaw) ?? .poetic
     }
 
+    var storedSpatialScan: StoredSpatialScan? {
+        spatialScan?.storedSpatialScan
+            ?? StoredSpatialScan.legacyReference(
+                bundleFolderName: spatialScanBundleFolderName,
+                manifestFileName: spatialScanManifestFileName,
+                previewImageFileName: spatialScanPreviewFileName,
+                worldMapFileName: spatialScanWorldMapFileName,
+                frameCount: spatialScanFrameCount,
+                captureDuration: spatialScanCaptureDuration,
+                reconstructionStateRaw: spatialScanReconstructionStateRaw
+            )
+    }
+
     var spatialScanReconstructionState: SpatialScanReconstructionState? {
-        guard let spatialScanReconstructionStateRaw else { return nil }
-        return SpatialScanReconstructionState(rawValue: spatialScanReconstructionStateRaw)
+        storedSpatialScan?.reconstructionState
+    }
+
+    var hasSpatialScanReference: Bool {
+        storedSpatialScan != nil
+            || !(spatialScanBundleFolderName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            || !(spatialScanManifestFileName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            || !(spatialScanPreviewFileName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
 
     var hasImmersiveAudioProfile: Bool {
         seamlessLoopStartPoint != nil || seamlessLoopEndPoint != nil || !(audioFeatureVector?.isEmpty ?? true)
+    }
+
+    mutating func applyStoredSpatialScan(_ storedSpatialScan: StoredSpatialScan?, syncMetadata: SpatialScanSyncMetadata? = nil) {
+        self.spatialScan = storedSpatialScan.map(SpatialScanStorageMetadata.init(storedSpatialScan:))
+        self.spatialScanBundleFolderName = storedSpatialScan?.bundleFolderName
+        self.spatialScanManifestFileName = storedSpatialScan?.manifestFileName
+        self.spatialScanPreviewFileName = storedSpatialScan?.previewImageFileName
+        self.spatialScanWorldMapFileName = storedSpatialScan?.worldMapFileName
+        self.spatialScanFrameCount = storedSpatialScan?.frameCount
+        self.spatialScanCaptureDuration = storedSpatialScan?.captureDuration
+        self.spatialScanReconstructionStateRaw = storedSpatialScan?.reconstructionState.rawValue
+        self.spatialScanSync = syncMetadata
     }
 }
 
@@ -288,6 +416,66 @@ struct CaptureEnvironmentSnapshot: Codable {
         default:
             return nil
         }
+    }
+}
+
+enum ImmersiveDirectionSpace {
+    static func normalizedDegrees(_ degrees: Double) -> Double {
+        guard degrees.isFinite else { return 0 }
+        let normalized = degrees.truncatingRemainder(dividingBy: 360)
+        return normalized >= 0 ? normalized : normalized + 360
+    }
+
+    static func preferredMotionReferenceFrame() -> CMAttitudeReferenceFrame? {
+        let availableFrames = CMMotionManager.availableAttitudeReferenceFrames()
+        if availableFrames.contains(.xTrueNorthZVertical) {
+            return .xTrueNorthZVertical
+        }
+        if availableFrames.contains(.xMagneticNorthZVertical) {
+            return .xMagneticNorthZVertical
+        }
+        if availableFrames.contains(.xArbitraryCorrectedZVertical) {
+            return .xArbitraryCorrectedZVertical
+        }
+        if availableFrames.contains(.xArbitraryZVertical) {
+            return .xArbitraryZVertical
+        }
+        return nil
+    }
+
+    static func isCompassReferenced(_ frame: CMAttitudeReferenceFrame) -> Bool {
+        frame == .xTrueNorthZVertical || frame == .xMagneticNorthZVertical
+    }
+
+    static func headingDegrees(fromYawRadians yawRadians: Double) -> Double {
+        normalizedDegrees((-yawRadians * 180.0) / .pi)
+    }
+
+    static func canvasAngleRadians(worldHeadingDegrees: Double, viewerHeadingDegrees: Double) -> Double {
+        let relativeHeading = normalizedDegrees(worldHeadingDegrees - viewerHeadingDegrees)
+        return (relativeHeading * .pi / 180.0) - (.pi / 2.0)
+    }
+}
+
+extension CaptureEnvironmentSnapshot {
+    var resolvedAnchorHeadingDegrees: Double? {
+        if let heading, heading.isFinite {
+            return ImmersiveDirectionSpace.normalizedDegrees(heading)
+        }
+        if let yawDegrees, yawDegrees.isFinite {
+            return ImmersiveDirectionSpace.normalizedDegrees(yawDegrees)
+        }
+        return nil
+    }
+}
+
+extension DirectionalAudioHotspot {
+    func worldHeadingDegrees(snapshot: CaptureEnvironmentSnapshot?) -> Double? {
+        guard let anchorHeading = anchorHeadingDegrees ?? snapshot?.resolvedAnchorHeadingDegrees else {
+            return nil
+        }
+        let relativeHeadingDegrees = (angleRadians * 180.0) / .pi
+        return ImmersiveDirectionSpace.normalizedDegrees(anchorHeading + relativeHeadingDegrees)
     }
 }
 
@@ -455,19 +643,101 @@ final class MemoryEntry: Identifiable {
     }
 
     var hasSpatialScan: Bool {
-        atmosphereMetadata?.spatialScanBundleFolderName?.isEmpty == false
+        storedSpatialScan != nil
+    }
+
+    var spatialScanSyncMetadata: SpatialScanSyncMetadata? {
+        atmosphereMetadata?.spatialScanSync
+    }
+
+    var spatialScanDisplayLabel: String {
+        switch spatialScanReconstructionState {
+        case .proxyReady:
+            return "Preview対応"
+        case .queuedForHighQuality:
+            return "HQ準備"
+        case .ready:
+            return "再生対応"
+        case .failed:
+            return "再処理待ち"
+        case .captured, nil:
+            return "3D Scan"
+        }
+    }
+
+    var storedSpatialScan: StoredSpatialScan? {
+        guard let scanReference = atmosphereMetadata?.storedSpatialScan else {
+            return nil
+        }
+        return MediaStore.loadStoredSpatialScan(
+            bundleFolderName: scanReference.bundleFolderName,
+            manifestFileName: scanReference.manifestFileName
+        )
+    }
+
+    var spatialScanBundleURL: URL? {
+        guard let storedSpatialScan else { return nil }
+        return MediaStore.spatialScanBundleURL(for: storedSpatialScan.bundleFolderName)
+    }
+
+    var spatialScanManifestURL: URL? {
+        guard let storedSpatialScan else { return nil }
+        return MediaStore.spatialScanManifestURL(for: storedSpatialScan)
+    }
+
+    var spatialScanPreviewURL: URL? {
+        guard let storedSpatialScan else { return nil }
+        return MediaStore.spatialScanPreviewURL(for: storedSpatialScan)
+    }
+
+    var spatialScanWorldMapURL: URL? {
+        guard let storedSpatialScan else { return nil }
+        return MediaStore.spatialScanWorldMapURL(for: storedSpatialScan)
+    }
+
+    var spatialScanManifest: SpatialScanManifest? {
+        guard let storedSpatialScan else { return nil }
+        return MediaStore.loadSpatialScanManifest(for: storedSpatialScan)
+    }
+
+    var spatialScanReconstructionJob: SpatialScanReconstructionJob? {
+        spatialScanManifest?.reconstructionJob
+    }
+
+    var spatialScanPreparationSummary: SpatialScanPreparationSummary? {
+        spatialScanManifest?.preparationSummary
+    }
+
+    var spatialScanLastProcessedAt: Date? {
+        spatialScanReconstructionJob?.lastProcessedAt
+    }
+
+    var spatialScanFinalReadyAt: Date? {
+        spatialScanReconstructionJob?.finalReadyAt
+    }
+
+    var spatialScanProxyRequestFileName: String? {
+        spatialScanReconstructionJob?.proxyRequestFileName
+    }
+
+    var spatialScanHighQualityRequestFileName: String? {
+        spatialScanReconstructionJob?.highQualityRequestFileName
+    }
+
+    var spatialScanDerivedAssets: [SpatialScanSyncAsset] {
+        spatialScanSyncMetadata?.assets.filter { $0.kind == .derived } ?? []
     }
 
     var spatialScanFrameCount: Int {
-        atmosphereMetadata?.spatialScanFrameCount ?? 0
+        storedSpatialScan?.frameCount ?? atmosphereMetadata?.storedSpatialScan?.frameCount ?? 0
     }
 
     var spatialScanCaptureDuration: Double? {
-        atmosphereMetadata?.spatialScanCaptureDuration
+        storedSpatialScan?.captureDuration ?? atmosphereMetadata?.storedSpatialScan?.captureDuration
     }
 
     var spatialScanReconstructionState: SpatialScanReconstructionState? {
-        atmosphereMetadata?.spatialScanReconstructionState
+        storedSpatialScan?.reconstructionState ?? atmosphereMetadata?.storedSpatialScan?.reconstructionState
     }
 
     var minimumDecibels: Double? {

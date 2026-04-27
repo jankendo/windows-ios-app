@@ -15,6 +15,7 @@ struct MemoryDetailView: View {
     @State private var showingShareSheet = false
     @State private var showingAutoTags = false
     @State private var showingImmersivePreview = false
+    @State private var showingSpatialScanViewer = false
     @State private var resolvedPhotoCaption: String?
     @State private var selectedCaptionStyle: PhotoCaptionStyle = .poetic
     @State private var captionGenerationMessage: String?
@@ -111,7 +112,58 @@ struct MemoryDetailView: View {
                                 if let duration = entry.spatialScanCaptureDuration {
                                     SensorDetailRow(title: "収集時間", value: String(format: "%.1f 秒", duration))
                                 }
+                                if entry.spatialScanWorldMapURL != nil {
+                                    SensorDetailRow(title: "空間アンカー", value: "World Map 保存済み")
+                                }
+                                if let syncMetadata = entry.spatialScanSyncMetadata {
+                                    SensorDetailRow(title: "同期引き継ぎ", value: "\(syncMetadata.syncableAssets.count) assets 準備済み")
+                                    if !syncMetadata.localOnlyAssets.isEmpty {
+                                        SensorDetailRow(title: "端末限定", value: "\(syncMetadata.localOnlyAssets.count) assets はローカル保持")
+                                    }
+                                }
                                 SensorDetailRow(title: "方式", value: "オンデバイス優先の空間記録 bundle")
+                                SensorDetailRow(title: "実行戦略", value: spatialScanExecutionLabel)
+                                SensorDetailRow(title: "フォールバック", value: spatialScanFallbackLabel)
+                                if let processedAt = entry.spatialScanLastProcessedAt {
+                                    SensorDetailRow(title: "最終処理", value: processedAt.formatted(date: .abbreviated, time: .shortened))
+                                }
+                                if let finalReadyAt = entry.spatialScanFinalReadyAt {
+                                    SensorDetailRow(title: "最終 ready", value: finalReadyAt.formatted(date: .abbreviated, time: .shortened))
+                                }
+                                if let summary = entry.spatialScanPreparationSummary {
+                                    SensorDetailRow(title: "準備品質", value: spatialScanQualityLabel(for: summary.qualityTier))
+                                    SensorDetailRow(title: "Coverage", value: "\(Int((summary.coverageScore * 100).rounded()))%")
+                                    SensorDetailRow(title: "Proxy keyframes", value: "\(summary.selectedProxyFrameCount) 枚")
+                                    SensorDetailRow(title: "移動量", value: String(format: "%.2f m", summary.translationExtentMeters))
+                                }
+                                if entry.spatialScanProxyRequestFileName != nil {
+                                    SensorDetailRow(title: "Proxy job", value: "request 保存済み")
+                                }
+                                if entry.spatialScanHighQualityRequestFileName != nil {
+                                    SensorDetailRow(title: "高品質 handoff", value: "hybrid request 準備済み")
+                                }
+                                if let statusMessage = entry.spatialScanReconstructionJob?.lastStatusMessage {
+                                    Text(statusMessage)
+                                        .font(.caption)
+                                        .foregroundStyle(palette.secondaryText)
+                                }
+                                if let failure = entry.spatialScanReconstructionJob?.lastFailure {
+                                    Text(failure.message)
+                                        .font(.caption)
+                                        .foregroundStyle(.red.opacity(0.82))
+                                }
+
+                                Button {
+                                    player.stop()
+                                    showingSpatialScanViewer = true
+                                } label: {
+                                    Label("スキャンプレビューを開く", systemImage: "cube")
+                                        .font(.subheadline.weight(.semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(palette.accent)
                             }
                         }
                     }
@@ -201,13 +253,20 @@ struct MemoryDetailView: View {
         .fullScreenCover(isPresented: $showingImmersivePreview) {
             SavedMemoryImmersivePreviewView(entry: entry)
         }
+        .navigationDestination(isPresented: $showingSpatialScanViewer) {
+            SpatialScanPlaybackView(entry: entry)
+        }
         .alert("この記録を削除しますか？", isPresented: $showingDeleteConfirmation) {
             Button("削除", role: .destructive) {
                 deleteEntry()
             }
             Button("キャンセル", role: .cancel) {}
         } message: {
-            Text("写真、音声、メモ情報がこの端末から削除されます。")
+            Text(
+                entry.hasSpatialScan
+                    ? "写真、音声、3D Scan bundle、関連メタデータがこの端末から削除されます。"
+                    : "写真、音声、メモ情報がこの端末から削除されます。"
+            )
         }
         .onAppear {
             waveformSamples = entry.waveformFingerprint
@@ -254,6 +313,33 @@ struct MemoryDetailView: View {
             return "再処理が必要"
         case nil:
             return "bundle 保存済み"
+        }
+    }
+
+    private var spatialScanExecutionLabel: String {
+        switch entry.spatialScanReconstructionJob?.preferredExecution {
+        case .onDeviceFirst, nil:
+            return "オンデバイス優先"
+        }
+    }
+
+    private var spatialScanFallbackLabel: String {
+        switch entry.spatialScanReconstructionJob?.fallbackPolicy {
+        case .stayOnDevice:
+            return "ローカルのみ"
+        case .allowHybridProcessing, nil:
+            return "必要時に hybrid"
+        }
+    }
+
+    private func spatialScanQualityLabel(for qualityTier: SpatialScanPreparationQualityTier) -> String {
+        switch qualityTier {
+        case .insufficient:
+            return "再処理待ち"
+        case .previewOnly:
+            return "proxy 優先"
+        case .readyForHighQuality:
+            return "高品質 handoff 対応"
         }
     }
 
@@ -305,6 +391,9 @@ struct MemoryDetailView: View {
                         ResonanceBadge(title: entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName, tint: .white, atmosphere: entry.atmosphereStyle)
                         if let placeLabel = entry.placeLabel {
                             ResonanceBadge(title: placeLabel, systemImage: "location.fill", tint: .white, atmosphere: entry.atmosphereStyle)
+                        }
+                        if entry.hasSpatialScan {
+                            ResonanceBadge(title: entry.spatialScanDisplayLabel, systemImage: "cube", tint: .white, atmosphere: entry.atmosphereStyle)
                         }
                         if entry.hasAudio {
                             ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform", tint: .white, atmosphere: entry.atmosphereStyle)

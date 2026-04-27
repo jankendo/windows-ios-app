@@ -7,7 +7,7 @@ struct CapturedMemoryDraft: Identifiable {
     let photoData: Data
     let audioTempURL: URL?
     let analysisAudioTempURL: URL?
-    let spatialScanPayload: SpatialScanCapturePayload?
+    var spatialScanPayload: SpatialScanCapturePayload?
     let capturedAt: Date
     let audioDuration: TimeInterval
     let isSpatialAudio: Bool
@@ -32,6 +32,7 @@ struct CapturedMemoryDraft: Identifiable {
 enum CaptureError: LocalizedError {
     case permissionsDenied
     case configurationFailed
+    case spatialScanUnavailable
     case sessionNotReady
     case busy
     case invalidDuration
@@ -46,6 +47,8 @@ enum CaptureError: LocalizedError {
             return "カメラまたはマイクの権限が不足しています。"
         case .configurationFailed:
             return "カメラセッションの初期化に失敗しました。"
+        case .spatialScanUnavailable:
+            return "このデバイスでは3D Scanを利用できません。"
         case .sessionNotReady:
             return "カメラの準備が整ってから再度お試しください。"
         case .busy:

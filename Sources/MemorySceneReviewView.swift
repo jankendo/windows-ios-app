@@ -38,6 +38,14 @@ struct MemorySceneReviewView: View {
         draft.analysisAudioURL ?? draft.audioTempURL
     }
 
+    private var spatialScanManifest: SpatialScanManifest? {
+        draft.spatialScanPayload?.manifest
+    }
+
+    private var isSpatialScanDraft: Bool {
+        spatialScanManifest != nil
+    }
+
     private var previewDisplayTitle: String {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedTitle.isEmpty ? "深呼吸して、この空気にとどまる" : trimmedTitle
@@ -113,6 +121,14 @@ struct MemorySceneReviewView: View {
                     tint: .white,
                     atmosphere: atmosphere
                 )
+                if isSpatialScanDraft {
+                    ResonanceBadge(
+                        title: "3D Scan",
+                        systemImage: "cube",
+                        tint: .white,
+                        atmosphere: atmosphere
+                    )
+                }
 
                 Text(draft.capturedAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.caption.weight(.medium))
@@ -151,6 +167,14 @@ struct MemorySceneReviewView: View {
                             tint: .white,
                             atmosphere: atmosphere
                         )
+                        if let spatialScanManifest {
+                            ResonanceBadge(
+                                title: "\(spatialScanManifest.frameCount) frames",
+                                systemImage: "cube.transparent",
+                                tint: .white,
+                                atmosphere: atmosphere
+                            )
+                        }
                         if draft.isSpatialAudio {
                             ResonanceBadge(
                                 title: "Spatial Audio",
@@ -247,6 +271,10 @@ struct MemorySceneReviewView: View {
                         recoveryBanner
                     }
 
+                    if let spatialScanManifest {
+                        spatialScanSummaryCard(manifest: spatialScanManifest)
+                    }
+
                     captionComposerCard
 
                     AudioDiagnosticsPanel(palette: palette)
@@ -306,7 +334,10 @@ struct MemorySceneReviewView: View {
                 Button {
                     onSave()
                 } label: {
-                    Label(isSaving ? "保存中…" : "この空気を保存", systemImage: "sparkles.rectangle.stack.fill")
+                    Label(
+                        isSaving ? "保存中…" : (isSpatialScanDraft ? "3D Scanを保存" : "この空気を保存"),
+                        systemImage: isSpatialScanDraft ? "cube.fill" : "sparkles.rectangle.stack.fill"
+                    )
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
@@ -334,9 +365,36 @@ struct MemorySceneReviewView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(palette.secondaryText)
 
-            Text("記憶に名前を与える")
+            Text(isSpatialScanDraft ? "3D Scanに名前を与える" : "記憶に名前を与える")
                 .font(.title3.bold())
                 .foregroundStyle(palette.primaryText)
+        }
+    }
+
+    private func spatialScanSummaryCard(manifest: SpatialScanManifest) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("3D Scan bundle", systemImage: "cube")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(palette.primaryText)
+                Spacer()
+                Text("\(manifest.frameCount) frames")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(palette.secondaryText)
+            }
+
+            Text("preview image と frame sequence をこのまま保存し、あとから詳細画面で見返せます。")
+                .font(.caption)
+                .foregroundStyle(palette.secondaryText)
+
+            detailLine(title: "収集時間", value: String(format: "%.1f 秒", manifest.normalizedCaptureDuration))
+            detailLine(title: "空間アンカー", value: manifest.worldMapFileName == nil ? "未保存" : "World Map 保存予定")
+        }
+        .padding(16)
+        .background(palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(palette.stroke)
         }
     }
 

@@ -1579,6 +1579,9 @@ struct MemoryCardView: View {
                         HStack(spacing: 8) {
                             ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", atmosphere: entry.atmosphereStyle)
                             ResonanceBadge(title: entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName, atmosphere: entry.atmosphereStyle)
+                            if entry.hasSpatialScan {
+                                ResonanceBadge(title: entry.spatialScanDisplayLabel, systemImage: "cube", tint: .cyan, atmosphere: entry.atmosphereStyle)
+                            }
                             if entry.hasAudio {
                                 ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform", atmosphere: entry.atmosphereStyle)
                             }
@@ -1655,6 +1658,9 @@ private struct MemoryGridCardView: View {
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 8) {
                             ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", atmosphere: entry.atmosphereStyle)
+                            if entry.hasSpatialScan {
+                                ResonanceBadge(title: entry.spatialScanDisplayLabel, systemImage: "cube", tint: .cyan, atmosphere: entry.atmosphereStyle)
+                            }
                             if entry.hasAudio {
                                 ResonanceBadge(title: "\(Int(entry.audioDuration.rounded()))秒", systemImage: "waveform", atmosphere: entry.atmosphereStyle)
                             }

@@ -13,7 +13,7 @@ final class ImmersivePlaybackViewModel: ObservableObject {
     private var preferredPlaybackURL: URL?
     private var baseSpatialOffset: CGSize = .zero
     private var dragTranslation: CGSize = .zero
-    private var smoothedYawDegrees = 0.0
+    private var smoothedHeadingVector: (x: Double, y: Double)?
 
     init() {
         playerChangeCancellable = player.objectWillChange.sink { [weak self] _ in
@@ -28,7 +28,7 @@ final class ImmersivePlaybackViewModel: ObservableObject {
         loopRange: ClosedRange<Double>?,
         volume: Float
     ) {
-        preferredPlaybackURL = analysisURL ?? playbackURL
+        preferredPlaybackURL = playbackURL ?? analysisURL
         player.setPlaybackEnvelope(waveform)
         player.setVolume(volume)
         guard let preferredPlaybackURL else {
@@ -69,16 +69,26 @@ final class ImmersivePlaybackViewModel: ObservableObject {
                 : UserDefaults.standard.bool(forKey: ResonancePreferenceKey.immersiveGazeLinkedAudioEnabled) else {
             player.setListenerYaw(0)
             hotspotHeadingDegrees = 0
+            smoothedHeadingVector = nil
             return
         }
         guard motionManager.isDeviceMotionAvailable, !motionManager.isDeviceMotionActive else { return }
+        guard
+            let referenceFrame = ImmersiveDirectionSpace.preferredMotionReferenceFrame(),
+            ImmersiveDirectionSpace.isCompassReferenced(referenceFrame)
+        else {
+            player.setListenerYaw(0)
+            hotspotHeadingDegrees = 0
+            smoothedHeadingVector = nil
+            return
+        }
         motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
-        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
+        motionManager.startDeviceMotionUpdates(using: referenceFrame, to: .main) { [weak self] motion, _ in
             guard let self, let motion else { return }
-            let yawDegrees = motion.attitude.yaw * 180.0 / .pi
-            self.smoothedYawDegrees = (self.smoothedYawDegrees * 0.88) + (yawDegrees * 0.12)
-            self.hotspotHeadingDegrees = -self.smoothedYawDegrees
-            self.player.setListenerYaw(-self.smoothedYawDegrees)
+            let headingDegrees = ImmersiveDirectionSpace.headingDegrees(fromYawRadians: motion.attitude.yaw)
+            let smoothedHeadingDegrees = self.smoothedHeading(from: headingDegrees)
+            self.hotspotHeadingDegrees = smoothedHeadingDegrees
+            self.player.setListenerYaw(smoothedHeadingDegrees)
         }
     }
 
@@ -87,7 +97,7 @@ final class ImmersivePlaybackViewModel: ObservableObject {
             motionManager.stopDeviceMotionUpdates()
         }
         hotspotHeadingDegrees = 0
-        smoothedYawDegrees = 0
+        smoothedHeadingVector = nil
         player.stop()
     }
 
@@ -98,5 +108,28 @@ final class ImmersivePlaybackViewModel: ObservableObject {
         )
         player.setPan(Float(dragTranslation.width / 180.0))
         player.setSpatialOffset(combinedOffset)
+    }
+
+    private func smoothedHeading(from headingDegrees: Double) -> Double {
+        let headingRadians = headingDegrees * .pi / 180.0
+        let targetVector = (x: sin(headingRadians), y: cos(headingRadians))
+        let blendedVector: (x: Double, y: Double)
+
+        if let smoothedHeadingVector {
+            blendedVector = (
+                x: (smoothedHeadingVector.x * 0.88) + (targetVector.x * 0.12),
+                y: (smoothedHeadingVector.y * 0.88) + (targetVector.y * 0.12)
+            )
+        } else {
+            blendedVector = targetVector
+        }
+
+        let magnitude = max(hypot(blendedVector.x, blendedVector.y), 0.0001)
+        let normalizedVector = (
+            x: blendedVector.x / magnitude,
+            y: blendedVector.y / magnitude
+        )
+        smoothedHeadingVector = normalizedVector
+        return ImmersiveDirectionSpace.normalizedDegrees(atan2(normalizedVector.x, normalizedVector.y) * 180.0 / .pi)
     }
 }

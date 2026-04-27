@@ -75,7 +75,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
     }
 
     func setListenerYaw(_ yawDegrees: Double) {
-        listenerYawDegrees = yawDegrees
+        listenerYawDegrees = ImmersiveDirectionSpace.normalizedDegrees(yawDegrees)
         refreshSpatialPlacement()
     }
 
@@ -372,16 +372,17 @@ final class AudioPlayerController: NSObject, ObservableObject {
 
     private func refreshSpatialPlacement() {
         guard let enginePlayerNode else { return }
+        let normalizedListenerYawDegrees = listenerYawDegrees > 180 ? listenerYawDegrees - 360 : listenerYawDegrees
 
         if let environmentNode {
             environmentNode.listenerAngularOrientation = AVAudioMake3DAngularOrientation(
-                Float(listenerYawDegrees),
+                Float(normalizedListenerYawDegrees),
                 0,
                 0
             )
         }
 
-        let yawRadians = listenerYawDegrees * .pi / 180.0
+        let yawRadians = normalizedListenerYawDegrees * .pi / 180.0
         let lateralBase = Double(spatialPan) * 1.35 + Double(spatialOffset.width / 34.0)
         let verticalBase = max(-0.45, min(0.45, Double(-spatialOffset.height / 82.0)))
         let orientationLinkedOffset = usesWorldLockedSoundfieldRotation ? 0 : (sin(yawRadians) * 0.95)

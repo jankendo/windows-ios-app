@@ -233,7 +233,7 @@ private extension ImmersiveAudioIntelligence {
         guard mono.count > 2_048 else { return [] }
 
         let channelCount = signal.channels.count
-        let anchorHeadingDegrees = snapshot?.heading ?? snapshot?.yawDegrees
+        let anchorHeadingDegrees = snapshot?.resolvedAnchorHeadingDegrees
         let estimatedDuration = Double(mono.count) / max(signal.sampleRate, 1)
         let bucketCount = min(max(Int((estimatedDuration * 3.2).rounded()), 12), 24)
         let bucketSize = max(mono.count / bucketCount, 1)
@@ -263,12 +263,17 @@ private extension ImmersiveAudioIntelligence {
                 let rightSegment = Array(signal.channels[1][start..<end])
                 let leftEnergy = Double(vDSP.rootMeanSquare(leftSegment))
                 let rightEnergy = Double(vDSP.rootMeanSquare(rightSegment))
-                let balance = max(-1.0, min(1.0, rightEnergy - leftEnergy))
+                let balance = max(-1.0, min(1.0, (rightEnergy - leftEnergy) / max(leftEnergy + rightEnergy, 0.0001)))
+                let stereoWidth = stereoWidth(left: leftSegment, right: rightSegment)
                 angle = balance * (.pi / 2.0)
-                confidence = min(max(abs(balance) * 1.8, 0.1), 0.82)
+                confidence = min(max((abs(balance) * 0.72) + (stereoWidth * 0.58), 0.08), 0.9)
             } else {
                 angle = 0
                 confidence = 0.16
+            }
+
+            if channelCount >= 2, confidence < 0.14 {
+                continue
             }
 
             let spreadRadians = max(0.18, (Double.pi * 0.42) - (confidence * 0.58))
@@ -298,8 +303,8 @@ private extension ImmersiveAudioIntelligence {
                 )
             }
             .sorted {
-                let lhsScore = ($0.intensity * 0.72) + ($0.confidence * 0.28)
-                let rhsScore = ($1.intensity * 0.72) + ($1.confidence * 0.28)
+                let lhsScore = ($0.intensity * 0.52) + ($0.confidence * 0.48)
+                let rhsScore = ($1.intensity * 0.52) + ($1.confidence * 0.48)
                 return lhsScore > rhsScore
             }
 
@@ -348,6 +353,22 @@ private extension ImmersiveAudioIntelligence {
         return samples.reduce(Float.zero) { partial, sample in
             partial + (sample * abs(sample))
         } / Float(samples.count)
+    }
+
+    static func stereoWidth(left: [Float], right: [Float]) -> Double {
+        guard !left.isEmpty, left.count == right.count else { return 0 }
+
+        var mid = Array(repeating: Float.zero, count: left.count)
+        var side = Array(repeating: Float.zero, count: left.count)
+
+        for index in left.indices {
+            mid[index] = (left[index] + right[index]) * 0.5
+            side[index] = (right[index] - left[index]) * 0.5
+        }
+
+        let midEnergy = Double(vDSP.rootMeanSquare(mid))
+        let sideEnergy = Double(vDSP.rootMeanSquare(side))
+        return min(max(sideEnergy / max(midEnergy + sideEnergy, 0.0001), 0), 1)
     }
 
     static func angularDistance(between lhs: Double, and rhs: Double) -> Double {

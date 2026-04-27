@@ -7,6 +7,19 @@ import UIKit
 
 @MainActor
 final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency ARSessionDelegate {
+    private enum CaptureConstants {
+        static let frameSamplingInterval: TimeInterval = 0.35
+        static let minimumTranslationMeters: Float = 0.045
+        static let minimumRotationRadians: Float = 0.09
+        static let minimumPreferredFrameCount = 4
+        static let minimumDuration: TimeInterval = 3
+        static let maximumDuration: TimeInterval = 15
+        static let maximumAutoExtension: TimeInterval = 2
+        static let sessionBindingPollCount = 20
+        static let sessionBindingPollNanoseconds: UInt64 = 50_000_000
+        static let sessionReadyTimeout: TimeInterval = 2.5
+    }
+
     @Published private(set) var isScanning = false
     @Published private(set) var progress: Double = 0
     @Published private(set) var remainingSeconds = 0
@@ -23,6 +36,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     private var captureTimerTask: Task<Void, Never>?
     private var startedAt: Date?
     private var targetDuration: TimeInterval = 8
+    private var maximumDuration: TimeInterval = 10
     private var bundleURL: URL?
     private var frameSamples: [SpatialScanFrameSample] = []
     private var firstFrameTimestamp: TimeInterval?
@@ -31,20 +45,40 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     private var previewImageData: Data?
     private var previewImageFileName = "preview.jpg"
     private var worldMapFileName: String?
+    private var captureResolved = false
+
+    deinit {
+        if arSession?.delegate === self {
+            arSession?.delegate = nil
+        }
+    }
 
     func bind(session: ARSession) {
+        if let currentSession = arSession,
+           currentSession !== session,
+           currentSession.delegate === self {
+            currentSession.delegate = nil
+        }
         guard arSession !== session else { return }
         arSession = session
         session.delegate = self
     }
 
+    func unbind() {
+        if arSession?.delegate === self {
+            arSession?.delegate = nil
+        }
+        arSession = nil
+    }
+
     func captureScan(duration: TimeInterval) async throws -> CapturedMemoryDraft {
         guard ARWorldTrackingConfiguration.isSupported else {
-            throw CaptureError.configurationFailed
+            throw CaptureError.spatialScanUnavailable
         }
         if arSession == nil {
-            for _ in 0..<20 {
-                try? await Task.sleep(nanoseconds: 50_000_000)
+            for _ in 0..<CaptureConstants.sessionBindingPollCount {
+                try Task.checkCancellation()
+                try await Task.sleep(nanoseconds: CaptureConstants.sessionBindingPollNanoseconds)
                 if arSession != nil {
                     break
                 }
@@ -53,35 +87,41 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         guard let arSession else {
             throw CaptureError.sessionNotReady
         }
-        guard !isScanning else {
+        guard !isScanning, captureContinuation == nil else {
             throw CaptureError.busy
         }
 
-        targetDuration = max(3, min(duration, 15))
-        remainingSeconds = Int(targetDuration.rounded(.up))
-        progress = 0
-        guidanceText = "空間を滑らかになぞり、少しずつ向きを変えてください。"
-        sampledFrameCount = 0
-        frameSamples = []
-        firstFrameTimestamp = nil
-        lastFrameTimestamp = 0
-        lastCameraTransform = nil
-        previewImageData = nil
-        previewImageFileName = "preview.jpg"
-        worldMapFileName = nil
+        targetDuration = max(CaptureConstants.minimumDuration, min(duration, CaptureConstants.maximumDuration))
+        maximumDuration = min(
+            targetDuration + CaptureConstants.maximumAutoExtension,
+            CaptureConstants.maximumDuration + CaptureConstants.maximumAutoExtension
+        )
+        prepareForNewCapture()
         bundleURL = try createBundleFolder()
 
-        try configureAudioCapture()
-        let configuration = ARWorldTrackingConfiguration()
-        configuration.worldAlignment = .gravityAndHeading
-        configuration.environmentTexturing = .automatic
-        arSession.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+        do {
+            try configureAudioCapture()
+            let configuration = ARWorldTrackingConfiguration()
+            configuration.worldAlignment = .gravityAndHeading
+            configuration.environmentTexturing = .automatic
+            arSession.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+            try await waitForSessionReadiness()
+            _ = try ambientAudioCapture.startRecording()
+        } catch {
+            ambientAudioCapture.cancelRecording()
+            if let bundleURL {
+                try? FileManager.default.removeItem(at: bundleURL)
+            }
+            resetCaptureState()
+            throw error
+        }
 
-        _ = try ambientAudioCapture.startRecording()
         startedAt = .now
         isScanning = true
+        guidanceText = guidanceText(for: arSession.currentFrame?.camera.trackingState)
 
         return try await withCheckedThrowingContinuation { continuation in
+            self.captureResolved = false
             captureContinuation = continuation
 
             captureTimerTask = Task { [weak self] in
@@ -93,16 +133,14 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
                     await MainActor.run {
                         self.progress = min(elapsed / self.targetDuration, 1)
                         self.remainingSeconds = max(Int((self.targetDuration - elapsed).rounded(.up)), 0)
-                        if self.sampledFrameCount < 5 {
-                            self.guidanceText = "その場で半歩ぶんだけ視線を動かし、重なりを保ちながら集めています。"
-                        } else {
-                            self.guidanceText = "良好です。端を一度なぞるように見渡すと精度が安定します。"
-                        }
+                        self.guidanceText = self.guidanceText(for: self.arSession?.currentFrame?.camera.trackingState)
                     }
 
                     if elapsed >= self.targetDuration {
-                        await self.finishCapture()
-                        break
+                        await self.finishCaptureIfNeeded(elapsed: elapsed)
+                        if self.captureResolved {
+                            break
+                        }
                     }
                 }
             }
@@ -110,21 +148,12 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     }
 
     func cancelCapture() {
-        captureTimerTask?.cancel()
-        captureTimerTask = nil
-        arSession?.pause()
-        if audioSession.isRunning {
-            audioSession.stopRunning()
-        }
         ambientAudioCapture.cancelRecording()
-        if let bundleURL {
-            try? FileManager.default.removeItem(at: bundleURL)
+        let discardedBundleURL = bundleURL
+        resolveCapture(.failure(CancellationError()))
+        if let discardedBundleURL {
+            try? FileManager.default.removeItem(at: discardedBundleURL)
         }
-        bundleURL = nil
-        startedAt = nil
-        isScanning = false
-        captureContinuation?.resume(throwing: CancellationError())
-        captureContinuation = nil
     }
 
     nonisolated func session(_ session: ARSession, didUpdate frame: ARFrame) {
@@ -136,50 +165,16 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     private func handle(frame: ARFrame) {
         guard isScanning, let bundleURL else { return }
 
-        if firstFrameTimestamp == nil {
-            firstFrameTimestamp = frame.timestamp
-        }
-        let elapsed = frame.timestamp - (firstFrameTimestamp ?? frame.timestamp)
+        let elapsed = resolvedElapsed(for: frame)
+        guidanceText = guidanceText(for: frame.camera.trackingState)
         guard shouldSample(frame: frame, elapsed: elapsed) else { return }
 
-        let framesFolderURL = bundleURL.appendingPathComponent("frames", isDirectory: true)
-        try? FileManager.default.createDirectory(at: framesFolderURL, withIntermediateDirectories: true)
-
-        let frameIndex = frameSamples.count + 1
-        let imageFileName = String(format: "frame-%03d.jpg", frameIndex)
-        let imageURL = framesFolderURL.appendingPathComponent(imageFileName)
-
-        guard let jpegData = jpegData(from: frame.capturedImage) else { return }
-        do {
-            try jpegData.write(to: imageURL, options: .atomic)
-        } catch {
-            return
-        }
-
-        if previewImageData == nil {
-            previewImageData = jpegData
-            let previewURL = bundleURL.appendingPathComponent(previewImageFileName)
-            try? jpegData.write(to: previewURL, options: .atomic)
-        }
-
-        frameSamples.append(
-            SpatialScanFrameSample(
-                imageFileName: "frames/\(imageFileName)",
-                timeOffset: max(elapsed, 0),
-                cameraTransform: flattenedMatrix(frame.camera.transform),
-                cameraIntrinsics: flattenedMatrix(frame.camera.intrinsics),
-                imageWidth: CVPixelBufferGetWidth(frame.capturedImage),
-                imageHeight: CVPixelBufferGetHeight(frame.capturedImage)
-            )
-        )
-        sampledFrameCount = frameSamples.count
-        lastCameraTransform = frame.camera.transform
-        lastFrameTimestamp = elapsed
+        _ = appendFrameSample(from: frame, elapsed: elapsed, bundleURL: bundleURL)
     }
 
     private func shouldSample(frame: ARFrame, elapsed: TimeInterval) -> Bool {
         guard elapsed >= 0 else { return false }
-        guard elapsed - lastFrameTimestamp >= 0.35 else { return false }
+        guard elapsed - lastFrameTimestamp >= CaptureConstants.frameSamplingInterval else { return false }
 
         guard let lastCameraTransform else {
             return true
@@ -189,7 +184,22 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         let forward = simd_normalize(frame.camera.transform.columns.2.xyz)
         let previousForward = simd_normalize(lastCameraTransform.columns.2.xyz)
         let rotationDelta = acos(max(-1, min(1, simd_dot(forward, previousForward))))
-        return translation >= 0.045 || rotationDelta >= 0.09
+        return translation >= CaptureConstants.minimumTranslationMeters
+            || rotationDelta >= CaptureConstants.minimumRotationRadians
+    }
+
+    private func finishCaptureIfNeeded(elapsed: TimeInterval) async {
+        guard isScanning else { return }
+
+        if frameSamples.count < CaptureConstants.minimumPreferredFrameCount,
+           elapsed < maximumDuration {
+            targetDuration = min(max(targetDuration + 1, elapsed + 0.8), maximumDuration)
+            remainingSeconds = max(Int((targetDuration - elapsed).rounded(.up)), 0)
+            guidanceText = "あと少しだけ、ゆっくり端をなぞって重なりを増やしてください。"
+            return
+        }
+
+        await finishCapture()
     }
 
     private func finishCapture() async {
@@ -197,6 +207,13 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
         captureTimerTask?.cancel()
         captureTimerTask = nil
+
+        if previewImageData == nil || frameSamples.isEmpty,
+           let currentFrame = arSession?.currentFrame {
+            let elapsed = resolvedElapsed(for: currentFrame)
+            _ = appendFrameSample(from: currentFrame, elapsed: elapsed, bundleURL: bundleURL)
+        }
+
         arSession?.pause()
 
         let worldMap = await currentWorldMap()
@@ -216,17 +233,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     }
 
     private func completeCapture(with result: Result<AmbientAudioCaptureResult, Error>) {
-        defer {
-            startedAt = nil
-            isScanning = false
-            if audioSession.isRunning {
-                audioSession.stopRunning()
-            }
-        }
-
+        guard !captureResolved else { return }
         guard let bundleURL, let previewImageData else {
-            captureContinuation?.resume(throwing: CaptureError.photoCaptureFailed)
-            captureContinuation = nil
+            resolveCapture(.failure(CaptureError.photoCaptureFailed))
             return
         }
 
@@ -234,10 +243,10 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         case .success(let audioResult):
             let manifest = SpatialScanManifest(
                 capturedAt: startedAt ?? .now,
-                captureDuration: audioResult.duration,
+                captureDuration: max(audioResult.duration, lastFrameTimestamp),
                 frameCount: frameSamples.count,
                 fieldOfViewLimited: true,
-                anchorHeadingDegrees: nil,
+                anchorHeadingDegrees: captureHeadingDegrees(from: lastCameraTransform),
                 previewImageFileName: previewImageFileName,
                 worldMapFileName: worldMapFileName,
                 reconstructionState: .captured,
@@ -245,12 +254,10 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             )
 
             let manifestURL = bundleURL.appendingPathComponent("manifest.json")
-            if let data = try? JSONEncoder().encode(manifest) {
-                try? data.write(to: manifestURL, options: .atomic)
-            }
-
-            captureContinuation?.resume(
-                returning: CapturedMemoryDraft(
+            do {
+                let data = try JSONEncoder().encode(manifest)
+                try data.write(to: manifestURL, options: .atomic)
+                let draft = CapturedMemoryDraft(
                     photoData: previewImageData,
                     audioTempURL: audioResult.primaryURL,
                     analysisAudioTempURL: audioResult.analysisURL ?? audioResult.primaryURL,
@@ -267,13 +274,15 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
                     minimumDecibels: nil,
                     maximumDecibels: nil
                 )
-            )
+                resolveCapture(.success(draft))
+            } catch {
+                try? FileManager.default.removeItem(at: bundleURL)
+                resolveCapture(.failure(error))
+            }
         case .failure(let error):
             try? FileManager.default.removeItem(at: bundleURL)
-            captureContinuation?.resume(throwing: error)
+            resolveCapture(.failure(error))
         }
-
-        captureContinuation = nil
     }
 
     private func currentWorldMap() async -> ARWorldMap? {
@@ -287,10 +296,16 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
     private func configureAudioCapture() throws {
         if let audioInput {
+            audioSession.beginConfiguration()
             if !audioSession.inputs.contains(where: { $0 === audioInput }) {
+                guard audioSession.canAddInput(audioInput) else {
+                    audioSession.commitConfiguration()
+                    throw CaptureError.audioRecordingFailed
+                }
                 audioSession.addInput(audioInput)
             }
             _ = try ambientAudioCapture.configure(session: audioSession, audioInput: audioInput)
+            audioSession.commitConfiguration()
             if !audioSession.isRunning {
                 audioSession.startRunning()
             }
@@ -315,15 +330,202 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     }
 
     private func createBundleFolder() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let draftsFolderURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ResonanceCaptureDrafts", isDirectory: true)
+            .appendingPathComponent("SpatialScans", isDirectory: true)
+        try FileManager.default.createDirectory(at: draftsFolderURL, withIntermediateDirectories: true)
+        let url = draftsFolderURL.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private func prepareForNewCapture() {
+        if let bundleURL {
+            try? FileManager.default.removeItem(at: bundleURL)
+        }
+        captureTimerTask?.cancel()
+        captureTimerTask = nil
+        captureContinuation = nil
+        startedAt = nil
+        progress = 0
+        remainingSeconds = Int(targetDuration.rounded(.up))
+        guidanceText = "空間を滑らかになぞり、少しずつ向きを変えてください。"
+        sampledFrameCount = 0
+        frameSamples = []
+        firstFrameTimestamp = nil
+        lastFrameTimestamp = 0
+        lastCameraTransform = nil
+        previewImageData = nil
+        previewImageFileName = "preview.jpg"
+        worldMapFileName = nil
+        captureResolved = false
+        isScanning = false
+    }
+
+    private func resetCaptureState() {
+        captureTimerTask?.cancel()
+        captureTimerTask = nil
+        captureContinuation = nil
+        startedAt = nil
+        isScanning = false
+        progress = 0
+        remainingSeconds = 0
+        sampledFrameCount = 0
+        guidanceText = "空間をゆっくり見渡して、その場の輪郭を集めます。"
+        if audioSession.isRunning {
+            audioSession.stopRunning()
+        }
+        arSession?.pause()
+        bundleURL = nil
+        firstFrameTimestamp = nil
+        lastFrameTimestamp = 0
+        lastCameraTransform = nil
+        previewImageData = nil
+        previewImageFileName = "preview.jpg"
+        worldMapFileName = nil
+        frameSamples = []
+        captureResolved = true
+    }
+
+    private func resolveCapture(_ result: Result<CapturedMemoryDraft, Error>) {
+        guard !captureResolved else { return }
+        let continuation = captureContinuation
+        resetCaptureState()
+        continuation?.resume(with: result)
+    }
+
+    private func waitForSessionReadiness() async throws {
+        guard let arSession else {
+            throw CaptureError.sessionNotReady
+        }
+
+        let deadline = Date().addingTimeInterval(CaptureConstants.sessionReadyTimeout)
+        while Date() < deadline {
+            try Task.checkCancellation()
+            if let currentFrame = arSession.currentFrame {
+                switch currentFrame.camera.trackingState {
+                case .notAvailable:
+                    break
+                default:
+                    guidanceText = guidanceText(for: currentFrame.camera.trackingState)
+                    return
+                }
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        throw CaptureError.sessionNotReady
+    }
+
+    private func resolvedElapsed(for frame: ARFrame) -> TimeInterval {
+        if firstFrameTimestamp == nil {
+            firstFrameTimestamp = frame.timestamp
+        }
+        return max(frame.timestamp - (firstFrameTimestamp ?? frame.timestamp), 0)
+    }
+
+    @discardableResult
+    private func appendFrameSample(from frame: ARFrame, elapsed: TimeInterval, bundleURL: URL) -> Bool {
+        let framesFolderURL = bundleURL.appendingPathComponent("frames", isDirectory: true)
+        try? FileManager.default.createDirectory(at: framesFolderURL, withIntermediateDirectories: true)
+
+        let frameIndex = frameSamples.count + 1
+        let imageFileName = String(format: "frame-%03d.jpg", frameIndex)
+        let imageURL = framesFolderURL.appendingPathComponent(imageFileName)
+
+        guard let frameJPEGData = jpegData(from: frame.capturedImage) else { return false }
+        do {
+            try frameJPEGData.write(to: imageURL, options: .atomic)
+        } catch {
+            return false
+        }
+
+        if previewImageData == nil {
+            let previewData = previewJPEGData(from: frame.capturedImage) ?? frameJPEGData
+            previewImageData = previewData
+            let previewURL = bundleURL.appendingPathComponent(previewImageFileName)
+            try? previewData.write(to: previewURL, options: .atomic)
+        }
+
+        frameSamples.append(
+            SpatialScanFrameSample(
+                imageFileName: "frames/\(imageFileName)",
+                timeOffset: max(elapsed, 0),
+                cameraTransform: flattenedMatrix(frame.camera.transform),
+                cameraIntrinsics: flattenedMatrix(frame.camera.intrinsics),
+                imageWidth: CVPixelBufferGetWidth(frame.capturedImage),
+                imageHeight: CVPixelBufferGetHeight(frame.capturedImage)
+            )
+        )
+        sampledFrameCount = frameSamples.count
+        lastCameraTransform = frame.camera.transform
+        lastFrameTimestamp = max(elapsed, lastFrameTimestamp)
+        return true
+    }
+
+    private func guidanceText(for trackingState: ARCamera.TrackingState?) -> String {
+        guard let trackingState else {
+            return "空間の準備を整えています。端末を安定させて少しお待ちください。"
+        }
+
+        switch trackingState {
+        case .limited(.initializing):
+            return "初期化中です。端末を胸の前で安定させて、少しだけ待ってください。"
+        case .limited(.insufficientFeatures):
+            return "壁や家具などの輪郭が入るように、少しだけ視線を広げてください。"
+        case .limited(.excessiveMotion):
+            return "動きが速すぎます。半歩ぶんの速さで、滑らかに見渡してください。"
+        case .limited(.relocalizing):
+            return "位置合わせ中です。直前に見た場所へゆっくり戻してください。"
+        case .limited:
+            return "追跡を整えています。端末を安定させて、輪郭が重なるように動かしてください。"
+        case .normal:
+            if sampledFrameCount < CaptureConstants.minimumPreferredFrameCount {
+                return "その場で半歩ぶんだけ視線を動かし、重なりを保ちながら集めています。"
+            }
+            return "良好です。端を一度なぞるように見渡すと精度が安定します。"
+        case .notAvailable:
+            return "空間の準備を整えています。端末を安定させて少しお待ちください。"
+        }
+    }
+
+    private func captureHeadingDegrees(from transform: simd_float4x4?) -> Double? {
+        guard let transform else { return nil }
+        let forward = -transform.columns.2.xyz
+        let magnitude = simd_length(forward)
+        guard magnitude > 0 else { return nil }
+        let normalizedForward = forward / magnitude
+        let degrees = atan2(Double(normalizedForward.x), Double(-normalizedForward.z)) * 180 / .pi
+        return degrees >= 0 ? degrees : degrees + 360
     }
 
     private func jpegData(from pixelBuffer: CVPixelBuffer) -> Data? {
         let image = CIImage(cvPixelBuffer: pixelBuffer)
         guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return nil }
         return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.82)
+    }
+
+    private func previewJPEGData(from pixelBuffer: CVPixelBuffer) -> Data? {
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return nil }
+        return UIImage(
+            cgImage: cgImage,
+            scale: 1,
+            orientation: previewImageOrientation
+        ).jpegData(compressionQuality: 0.86)
+    }
+
+    private var previewImageOrientation: UIImage.Orientation {
+        switch UIDevice.current.orientation {
+        case .landscapeLeft:
+            return .up
+        case .landscapeRight:
+            return .down
+        case .portraitUpsideDown:
+            return .left
+        default:
+            return .right
+        }
     }
 
     private func flattenedMatrix(_ matrix: simd_float4x4) -> [Float] {
@@ -412,6 +614,7 @@ struct SpatialScanCaptureView: View {
             if model.isScanning {
                 model.cancelCapture()
             }
+            model.unbind()
         }
     }
 

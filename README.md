@@ -44,6 +44,7 @@
 - 時期・時間帯・お気に入り・音声有無・ムードで絞り込み
 - 検索は generic な例ではなく、実際の保存記録に存在する言葉から提案
 - 詳細画面で、場所・音・時間帯をまとめて再訪
+- 3D Scan 記録は詳細から frame sequence / reconstruction 状態 / bundle asset をまとめてプレビュー
 - タイトル / メモ / タグ / ムード / 場所で横断検索
 
 ## こんなときに向いています
@@ -67,6 +68,7 @@
 - foreground-only interval capture と scene 保存
 - collection / smart collection / slideshow
 - ライブラリ / 詳細 / 検索
+- 3D Scan bundle の frame-sequence preview と reconstruction progress surface
 - ダークモード対応の atmospheric UI
 
 ## 補足

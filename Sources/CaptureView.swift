@@ -1,3 +1,4 @@
+import ARKit
 import SwiftData
 import SwiftUI
 import UIKit
@@ -156,9 +157,16 @@ final class CaptureFlowModel: ObservableObject {
                 notes = ""
                 capturedDraft = nil
                 lastSavedEntry = entry
-                saveMessage = draft.placeLabel.map { "\($0)の空気を保存しました。" } ?? "記録を保存しました。"
+                if draft.spatialScanPayload != nil {
+                    saveMessage = draft.placeLabel.map { "\($0)の3Dスキャンを保存しました。" } ?? "3Dスキャンを保存しました。"
+                } else {
+                    saveMessage = draft.placeLabel.map { "\($0)の空気を保存しました。" } ?? "記録を保存しました。"
+                }
                 if let analysisAudioTempURL = draft.analysisAudioTempURL, analysisAudioTempURL != draft.audioTempURL {
                     try? FileManager.default.removeItem(at: analysisAudioTempURL)
+                }
+                if let scanBundleURL = draft.spatialScanPayload?.bundleURL {
+                    try? FileManager.default.removeItem(at: scanBundleURL)
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -412,11 +420,18 @@ final class CaptureFlowModel: ObservableObject {
         async let sensorSnapshot = locationService.currentEnvironmentSnapshot(forceRefresh: true)
         async let resolvedLocation = locationService.currentLocation(forceRefresh: true)
         let captionGeneration = await photoCaption
+        let resolvedSensorSnapshot = await sensorSnapshot
         enrichedDraft.placeLabel = await placeLabel
         enrichedDraft.photoCaption = captionGeneration?.text
         enrichedDraft.photoCaptionSource = captionGeneration?.source
         enrichedDraft.photoCaptionStyle = captionGeneration?.style ?? captionStyle
-        enrichedDraft.sensorSnapshot = await sensorSnapshot
+        enrichedDraft.sensorSnapshot = resolvedSensorSnapshot
+        if let heading = resolvedSensorSnapshot?.heading,
+           var spatialScanPayload = enrichedDraft.spatialScanPayload,
+           spatialScanPayload.manifest.anchorHeadingDegrees == nil {
+            spatialScanPayload.manifest.anchorHeadingDegrees = heading
+            enrichedDraft.spatialScanPayload = spatialScanPayload
+        }
         _ = await resolvedLocation
         return enrichedDraft
     }
@@ -427,88 +442,107 @@ final class CaptureFlowModel: ObservableObject {
         notes: String,
         modelContext: ModelContext
     ) async throws -> MemoryEntry {
-        let storedMedia = try MediaStore.save(
-            photoData: draft.photoData,
-            audioTempURL: draft.audioTempURL,
-            analysisAudioTempURL: draft.analysisAudioTempURL
-        )
-        let storedAudioURL = storedMedia.audioFileName.map(MediaStore.audioURL(for:))
-        let analysisAudioURL = storedMedia.analysisAudioFileName.map(MediaStore.audioURL(for:)) ?? draft.analysisAudioURL ?? storedAudioURL
-        let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: analysisAudioURL)
-        let immersiveAnalysis = await Task.detached(priority: .userInitiated) {
-            ImmersiveAudioIntelligence.analyze(url: analysisAudioURL, snapshot: draft.sensorSnapshot)
-        }.value
-        let captionGeneration = await MemoryAnalysisService.captionGeneration(
-            from: draft.photoData,
-            title: title,
-            placeLabel: draft.placeLabel,
-            style: captionStyle
-        )
-        let hasVerifiedFoundationCaption =
-            draft.photoCaptionSource == .foundationModels
-            && !(draft.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-        let shouldPreserveVerifiedFoundationCaption =
-            hasVerifiedFoundationCaption && captionGeneration?.source != .foundationModels
-        let resolvedPhotoCaption =
-            shouldPreserveVerifiedFoundationCaption
-            ? draft.photoCaption
-            : (captionGeneration?.text ?? draft.photoCaption)
-        let resolvedPhotoCaptionSource =
-            shouldPreserveVerifiedFoundationCaption
-            ? draft.photoCaptionSource
-            : (captionGeneration?.source ?? draft.photoCaptionSource)
-
         let entry = MemoryEntry(
             createdAt: draft.capturedAt,
             title: title,
             notes: notes,
-            photoFileName: storedMedia.photoFileName,
-            audioFileName: storedMedia.audioFileName,
-            audioDuration: storedMedia.audioDuration,
-            visualTags: analysis.visualTags,
-            audioTags: analysis.audioTags,
-            transcript: analysis.transcript,
-            mood: analysis.mood
+            photoFileName: "",
+            audioFileName: nil,
+            audioDuration: draft.audioDuration,
+            visualTags: [],
+            audioTags: [],
+            transcript: "",
+            mood: MemoryMood.calm.rawValue
         )
+        var didInsertEntry = false
+        do {
+            let storedMedia = try MediaStore.save(
+                photoData: draft.photoData,
+                audioTempURL: draft.audioTempURL,
+                analysisAudioTempURL: draft.analysisAudioTempURL
+            )
+            entry.photoFileName = storedMedia.photoFileName
+            entry.audioFileName = storedMedia.audioFileName
+            entry.audioDuration = storedMedia.audioDuration
 
-        let storedSpatialScan = try draft.spatialScanPayload.map {
-            try MediaStore.saveSpatialScan($0, for: entry.id)
+            let storedAudioURL = storedMedia.audioFileName.map(MediaStore.audioURL(for:))
+            let analysisAudioURL = storedMedia.analysisAudioFileName.map(MediaStore.audioURL(for:)) ?? draft.analysisAudioURL ?? storedAudioURL
+            let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: analysisAudioURL)
+            let immersiveAnalysis = await Task.detached(priority: .userInitiated) {
+                ImmersiveAudioIntelligence.analyze(url: analysisAudioURL, snapshot: draft.sensorSnapshot)
+            }.value
+            let captionGeneration = await MemoryAnalysisService.captionGeneration(
+                from: draft.photoData,
+                title: title,
+                placeLabel: draft.placeLabel,
+                style: captionStyle
+            )
+            let hasVerifiedFoundationCaption =
+                draft.photoCaptionSource == .foundationModels
+                && !(draft.photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            let shouldPreserveVerifiedFoundationCaption =
+                hasVerifiedFoundationCaption && captionGeneration?.source != .foundationModels
+            let resolvedPhotoCaption =
+                shouldPreserveVerifiedFoundationCaption
+                ? draft.photoCaption
+                : (captionGeneration?.text ?? draft.photoCaption)
+            let resolvedPhotoCaptionSource =
+                shouldPreserveVerifiedFoundationCaption
+                ? draft.photoCaptionSource
+                : (captionGeneration?.source ?? draft.photoCaptionSource)
+
+            entry.visualTagsRaw = MemoryEntry.encodeTags(analysis.visualTags)
+            entry.audioTagsRaw = MemoryEntry.encodeTags(analysis.audioTags)
+            entry.transcript = analysis.transcript
+            entry.mood = analysis.mood
+
+            let storedSpatialScan = try draft.spatialScanPayload.map {
+                try MediaStore.saveSpatialScan($0, for: entry.id)
+            }
+            let spatialScanSyncMetadata = storedSpatialScan.flatMap(MediaStore.spatialScanSyncMetadata(for:))
+
+            let metadata = MemoryAtmosphereMetadata(
+                placeLabel: draft.placeLabel,
+                waveformFingerprint: immersiveAnalysis.waveformFingerprint,
+                analysisAudioFileName: storedMedia.analysisAudioFileName,
+                photoCaption: resolvedPhotoCaption,
+                atmosphereStyle: draft.atmosphereStyle,
+                captureDuration: draft.audioDuration,
+                sensorSnapshot: draft.sensorSnapshot,
+                minimumDecibels: draft.minimumDecibels,
+                maximumDecibels: draft.maximumDecibels,
+                audioFeatureVector: immersiveAnalysis.audioFeatureVector,
+                seamlessLoopStartPoint: immersiveAnalysis.seamlessLoopStartPoint,
+                seamlessLoopEndPoint: immersiveAnalysis.seamlessLoopEndPoint,
+                directionalHotspots: immersiveAnalysis.directionalHotspots,
+                capturedSpatialAudio: draft.isSpatialAudio,
+                spatialScan: storedSpatialScan,
+                spatialScanSync: spatialScanSyncMetadata
+            )
+            var finalMetadata = metadata
+            finalMetadata.photoCaptionSourceRaw =
+                (resolvedPhotoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+                ? resolvedPhotoCaptionSource?.rawValue
+                : nil
+            finalMetadata.photoCaptionStyleRaw = resolvedPhotoCaption == nil ? nil : captionStyle.rawValue
+
+            try MediaStore.saveAtmosphereMetadata(finalMetadata, for: entry.id)
+            modelContext.insert(entry)
+            didInsertEntry = true
+            try modelContext.save()
+            return entry
+        } catch {
+            if didInsertEntry {
+                modelContext.delete(entry)
+            }
+            if entry.photoFileName.isEmpty && entry.audioFileName == nil {
+                try? FileManager.default.removeItem(at: MediaStore.spatialScanBundleURL(for: entry.id.uuidString))
+                MediaStore.deleteAtmosphereMetadata(for: entry.id)
+            } else {
+                MediaStore.deleteAssets(for: entry)
+            }
+            throw error
         }
-
-        let metadata = MemoryAtmosphereMetadata(
-            placeLabel: draft.placeLabel,
-            waveformFingerprint: immersiveAnalysis.waveformFingerprint,
-            analysisAudioFileName: storedMedia.analysisAudioFileName,
-            photoCaption: resolvedPhotoCaption,
-            atmosphereStyle: draft.atmosphereStyle,
-            captureDuration: draft.audioDuration,
-            sensorSnapshot: draft.sensorSnapshot,
-            minimumDecibels: draft.minimumDecibels,
-            maximumDecibels: draft.maximumDecibels,
-            audioFeatureVector: immersiveAnalysis.audioFeatureVector,
-            seamlessLoopStartPoint: immersiveAnalysis.seamlessLoopStartPoint,
-            seamlessLoopEndPoint: immersiveAnalysis.seamlessLoopEndPoint,
-            directionalHotspots: immersiveAnalysis.directionalHotspots,
-            capturedSpatialAudio: draft.isSpatialAudio,
-            spatialScanBundleFolderName: storedSpatialScan?.bundleFolderName,
-            spatialScanManifestFileName: storedSpatialScan?.manifestFileName,
-            spatialScanPreviewFileName: storedSpatialScan?.previewImageFileName,
-            spatialScanWorldMapFileName: storedSpatialScan?.worldMapFileName,
-            spatialScanFrameCount: storedSpatialScan?.frameCount,
-            spatialScanCaptureDuration: storedSpatialScan?.captureDuration,
-            spatialScanReconstructionState: storedSpatialScan?.reconstructionState
-        )
-        var finalMetadata = metadata
-        finalMetadata.photoCaptionSourceRaw =
-            (resolvedPhotoCaption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
-            ? resolvedPhotoCaptionSource?.rawValue
-            : nil
-        finalMetadata.photoCaptionStyleRaw = resolvedPhotoCaption == nil ? nil : captionStyle.rawValue
-
-        try MediaStore.saveAtmosphereMetadata(finalMetadata, for: entry.id)
-        modelContext.insert(entry)
-        try modelContext.save()
-        return entry
     }
 
     private func scheduleNextIntervalTick(
@@ -734,6 +768,10 @@ struct CaptureView: View {
         CaptureModeOption(rawValue: captureModeRawValue) ?? .ambient
     }
 
+    private var isSpatialScanSupportedOnDevice: Bool {
+        ARWorldTrackingConfiguration.isSupported
+    }
+
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
     }
@@ -798,12 +836,16 @@ struct CaptureView: View {
         .toolbar(.hidden, for: .navigationBar)
         .animation(.easeInOut(duration: 0.25), value: needsStartupOverlay)
         .onAppear {
+            normalizeCaptureModeIfNeeded()
             if isActive {
                 model.captionStyle = PhotoCaptionStyle(rawValue: defaultCaptionStyle) ?? .poetic
                 model.prepare()
             }
         }
         .onChange(of: isActive) { _, active in
+            if active {
+                normalizeCaptureModeIfNeeded()
+            }
             if active {
                 model.captionStyle = PhotoCaptionStyle(rawValue: defaultCaptionStyle) ?? .poetic
                 model.prepare()
@@ -900,6 +942,7 @@ struct CaptureView: View {
         }
         .onChange(of: captureModeRawValue) { _, newValue in
             AudioPlaybackDiagnostics.shared.record("capture mode changed: \(newValue)", category: "capture")
+            normalizeCaptureModeIfNeeded()
             if newValue != CaptureModeOption.interval.rawValue,
                model.intervalSession != nil {
                 model.stopIntervalCapture(modelContext: modelContext)
@@ -1524,6 +1567,7 @@ struct CaptureView: View {
 
     private func captureModeButton(for mode: CaptureModeOption, compact: Bool) -> some View {
         let isSelected = captureMode == mode
+        let isUnavailable = mode == .scan && !isSpatialScanSupportedOnDevice
         return Button {
             setCaptureMode(mode)
         } label: {
@@ -1540,6 +1584,12 @@ struct CaptureView: View {
                         .font(.footnote)
                         .foregroundStyle(isSelected ? Color.white.opacity(0.88) : palette.secondaryText)
                 }
+
+                if isUnavailable && !compact {
+                    Text("このデバイスでは利用できません")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.78) : palette.secondaryText)
+                }
             }
             .frame(maxWidth: .infinity, alignment: compact ? .center : .leading)
             .padding(.horizontal, compact ? 12 : 16)
@@ -1550,9 +1600,10 @@ struct CaptureView: View {
                     .strokeBorder(isSelected ? Color.white.opacity(0.22) : palette.stroke)
             }
             .foregroundStyle(isSelected ? Color.white : palette.primaryText)
+            .opacity(isUnavailable ? 0.55 : 1)
         }
         .buttonStyle(.plain)
-        .disabled(model.camera.isCapturing || model.isPreparingReview)
+        .disabled(model.camera.isCapturing || model.isPreparingReview || isUnavailable)
     }
 
     private func captureModeSymbol(for mode: CaptureModeOption) -> String {
@@ -1573,7 +1624,9 @@ struct CaptureView: View {
         case .interval:
             return "一定間隔で複数シーンを連続保存"
         case .scan:
-            return "短時間の spatial bundle capture"
+            return isSpatialScanSupportedOnDevice
+                ? "短時間の spatial bundle capture"
+                : "対応端末のみ"
         }
     }
 
@@ -1583,6 +1636,11 @@ struct CaptureView: View {
         if mode == .interval, intervalCaptureSceneTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             intervalCaptureSceneTitle = "Memory Scene \(Date.now.formatted(date: .abbreviated, time: .shortened))"
         }
+    }
+
+    private func normalizeCaptureModeIfNeeded() {
+        guard captureMode == .scan, !isSpatialScanSupportedOnDevice else { return }
+        captureModeRawValue = CaptureModeOption.ambient.rawValue
     }
 
     private var idleCaptureDescription: String {
@@ -1684,6 +1742,10 @@ struct CaptureView: View {
         }
 
         if captureMode == .scan {
+            guard ARWorldTrackingConfiguration.isSupported else {
+                model.errorMessage = CaptureError.spatialScanUnavailable.localizedDescription
+                return
+            }
             model.camera.suspend()
             showingSpatialScanCapture = true
             return
@@ -1717,7 +1779,8 @@ struct CaptureView: View {
         }
 
         if captureMode == .scan {
-            return model.camera.permissionState == .ready
+            return ARWorldTrackingConfiguration.isSupported
+                && model.camera.permissionState == .ready
                 && !showingSpatialScanCapture
                 && !model.isSaving
                 && !model.isPreparingReview
