@@ -20,6 +20,16 @@ final class AudioPlayerController: NSObject, ObservableObject {
     private var shouldLoop = false
     private var volume: Float = 1
     private var playbackEnvelope: [CGFloat] = []
+    private var engine: AVAudioEngine?
+    private var enginePlayerNode: AVAudioPlayerNode?
+    private var environmentNode: AVAudioEnvironmentNode?
+    private var engineProgressTimer: Timer?
+    private var engineDuration: TimeInterval = 0
+    private var loopRange: ClosedRange<Double>?
+    private var spatialPan: Float = 0
+    private var spatialOffset: CGSize = .zero
+    private var listenerYawDegrees: Double = 0
+    private var usesEngineLoop = false
     private let diagnostics = AudioPlaybackDiagnostics.shared
 
     func togglePlayback(for url: URL?) {
@@ -53,9 +63,20 @@ final class AudioPlayerController: NSObject, ObservableObject {
         diagnostics.record("seek -> \(Self.timeString(clampedTime))")
     }
 
-    func setPan(_ pan: Float) {}
+    func setPan(_ pan: Float) {
+        spatialPan = max(-1, min(1, pan))
+        refreshSpatialPlacement()
+    }
 
-    func setSpatialOffset(_ offset: CGSize) {}
+    func setSpatialOffset(_ offset: CGSize) {
+        spatialOffset = offset
+        refreshSpatialPlacement()
+    }
+
+    func setListenerYaw(_ yawDegrees: Double) {
+        listenerYawDegrees = yawDegrees
+        refreshSpatialPlacement()
+    }
 
     func setPlaybackEnvelope(_ samples: [CGFloat]) {
         playbackEnvelope = samples
@@ -65,6 +86,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
     func setVolume(_ volume: Float) {
         self.volume = volume
         player?.volume = volume
+        enginePlayerNode?.volume = volume
     }
 
     func stop() {
@@ -72,18 +94,32 @@ final class AudioPlayerController: NSObject, ObservableObject {
         tearDownPlayer(deactivateSession: true)
     }
 
-    func load(url: URL, autoPlay: Bool = false, loop: Bool = false, volume: Float = 1.0) {
+    func load(
+        url: URL,
+        autoPlay: Bool = false,
+        loop: Bool = false,
+        volume: Float = 1.0,
+        loopRange: ClosedRange<Double>? = nil
+    ) {
         diagnostics.record("load requested: \(Self.fileSummary(for: url))")
         tearDownPlayer(deactivateSession: false)
 
         loadedURL = url
         shouldLoop = loop
         self.volume = volume
+        self.loopRange = loopRange
         duration = Self.assetDuration(for: url)
         currentTime = 0
         reactiveLevel = Double(playbackEnvelope.first ?? 0.18)
         let assetProfile = AudioAssetProfile.inspect(url: url)
         isSpatialPlaybackActive = assetProfile.isTrueSpatialAudio
+
+        if loop, configureEngineLoopIfPossible(url: url, assetProfile: assetProfile) {
+            if autoPlay {
+                play()
+            }
+            return
+        }
 
         let item = AVPlayerItem(url: url)
         if loop {
@@ -116,6 +152,11 @@ final class AudioPlayerController: NSObject, ObservableObject {
     }
 
     private func play() {
+        if usesEngineLoop {
+            playEngineLoop()
+            return
+        }
+
         guard let player else {
             diagnostics.record("play ignored: player missing")
             return
@@ -134,6 +175,14 @@ final class AudioPlayerController: NSObject, ObservableObject {
     }
 
     private func pause() {
+        if usesEngineLoop {
+            enginePlayerNode?.pause()
+            currentTime = currentEnginePlaybackTime()
+            isPlaying = false
+            diagnostics.record("pause at \(Self.timeString(currentTime))")
+            return
+        }
+
         player?.pause()
         if let seconds = player?.currentTime().seconds, seconds.isFinite {
             currentTime = seconds
@@ -145,7 +194,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
     private func preparePlaybackSession() throws {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .moviePlayback, options: [.allowAirPlay, .allowBluetoothA2DP])
+            try session.setCategory(.playback, mode: .default, options: [.allowAirPlay, .allowBluetoothA2DP])
             try session.setActive(true)
             diagnostics.record("audio session active: category=\(session.category.rawValue) mode=\(session.mode.rawValue) strategy=preferred")
         } catch {
@@ -217,16 +266,125 @@ final class AudioPlayerController: NSObject, ObservableObject {
             try? await Task.sleep(nanoseconds: 700_000_000)
             guard let self, self.loadedURL == expectedURL, self.isPlaying else { return }
 
-            let current = self.player?.currentTime().seconds ?? self.currentTime
-            let rate = self.player?.rate ?? 0
-            let itemStatus = self.player?.currentItem?.status.diagnosticLabel ?? "nil"
+            let current = self.usesEngineLoop ? self.currentEnginePlaybackTime() : (self.player?.currentTime().seconds ?? self.currentTime)
+            let rate = self.usesEngineLoop ? (self.isPlaying ? 1 : 0) : (self.player?.rate ?? 0)
+            let itemStatus = self.usesEngineLoop ? "engine-loop" : (self.player?.currentItem?.status.diagnosticLabel ?? "nil")
             self.diagnostics.record(
                 "play probe: time=\(Self.timeString(current)) rate=\(String(format: "%.2f", rate)) item=\(itemStatus) route=\(Self.routeDescription())"
             )
         }
     }
 
+    private func configureEngineLoopIfPossible(url: URL, assetProfile: AudioAssetProfile) -> Bool {
+        guard
+            let engineBundle = try? Self.makeLoopEngineBundle(for: url, loopRange: loopRange)
+        else {
+            diagnostics.record("loop strategy: engine loop unavailable, falling back to AVPlayerLooper")
+            return false
+        }
+
+        engine = engineBundle.engine
+        enginePlayerNode = engineBundle.playerNode
+        environmentNode = engineBundle.environmentNode
+        enginePlayerNode?.volume = volume
+        engineDuration = engineBundle.duration
+        duration = engineBundle.duration
+        usesEngineLoop = true
+        player = nil
+        looper = nil
+        refreshSpatialPlacement()
+
+        diagnostics.record(
+            "loop strategy: AVAudioEngine seamless loop enabled range=\(Self.timeString(engineBundle.range.lowerBound))-\(Self.timeString(engineBundle.range.upperBound))"
+        )
+        diagnostics.record(
+            assetProfile.isTrueSpatialAudio
+                ? "spatial audio playback check: true (\(assetProfile.diagnosticSummary))"
+                : "spatial audio playback check: false (\(assetProfile.diagnosticSummary))"
+        )
+        return true
+    }
+
+    private func playEngineLoop() {
+        guard let engine, let enginePlayerNode else {
+            diagnostics.record("play ignored: engine missing")
+            return
+        }
+
+        do {
+            try preparePlaybackSession()
+            if !engine.isRunning {
+                try engine.start()
+            }
+            diagnostics.record("play start: route=\(Self.routeDescription())")
+            if !enginePlayerNode.isPlaying {
+                enginePlayerNode.play()
+            }
+            isPlaying = true
+            startEngineProgressTimer()
+            schedulePlaybackProbe()
+        } catch {
+            diagnostics.record("play failed: session error=\(error.localizedDescription)")
+            tearDownPlayer(deactivateSession: true)
+        }
+    }
+
+    private func startEngineProgressTimer() {
+        engineProgressTimer?.invalidate()
+        guard engineDuration > 0 else { return }
+        engineProgressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let seconds = self.currentEnginePlaybackTime()
+            self.currentTime = seconds
+            if !self.playbackEnvelope.isEmpty, self.engineDuration > 0 {
+                let progress = max(0, min(seconds / max(self.engineDuration, 0.1), 0.999))
+                let index = min(Int(progress * Double(self.playbackEnvelope.count)), self.playbackEnvelope.count - 1)
+                self.reactiveLevel = Double(self.playbackEnvelope[index])
+            }
+        }
+    }
+
+    private func currentEnginePlaybackTime() -> TimeInterval {
+        guard
+            let enginePlayerNode,
+            let lastRenderTime = enginePlayerNode.lastRenderTime,
+            let playerTime = enginePlayerNode.playerTime(forNodeTime: lastRenderTime),
+            playerTime.sampleRate > 0,
+            engineDuration > 0
+        else {
+            return currentTime
+        }
+
+        let elapsed = Double(playerTime.sampleTime) / playerTime.sampleRate
+        let loopDuration = max(engineDuration, 0.001)
+        let wrapped = elapsed.truncatingRemainder(dividingBy: loopDuration)
+        guard wrapped.isFinite else { return 0 }
+
+        let clamped = min(max(wrapped, 0), max(loopDuration - 0.001, 0))
+        if loopDuration - clamped < 0.005 {
+            return 0
+        }
+        return clamped
+    }
+
+    private func refreshSpatialPlacement() {
+        guard let enginePlayerNode else { return }
+
+        let yawRadians = listenerYawDegrees * .pi / 180.0
+        let lateralBase = Double(spatialPan) * 1.35 + Double(spatialOffset.width / 34.0)
+        let verticalBase = max(-0.45, min(0.45, Double(-spatialOffset.height / 82.0)))
+        let rotatedLateral = max(-1.8, min(1.8, lateralBase + (sin(yawRadians) * 0.95)))
+        let depth = max(-2.3, min(-0.75, -1.45 - (cos(yawRadians) * 0.24)))
+        enginePlayerNode.position = AVAudio3DPoint(
+            x: Float(rotatedLateral),
+            y: Float(verticalBase),
+            z: Float(depth)
+        )
+    }
+
     private func tearDownPlayer(deactivateSession: Bool) {
+        engineProgressTimer?.invalidate()
+        engineProgressTimer = nil
         if let timeObserver, let player {
             player.removeTimeObserver(timeObserver)
         }
@@ -241,6 +399,14 @@ final class AudioPlayerController: NSObject, ObservableObject {
         player?.pause()
         player = nil
         looper = nil
+        enginePlayerNode?.stop()
+        engine?.stop()
+        enginePlayerNode = nil
+        environmentNode = nil
+        engine = nil
+        engineDuration = 0
+        loopRange = nil
+        usesEngineLoop = false
         loadedURL = nil
         shouldLoop = false
         isPlaying = false
@@ -260,6 +426,59 @@ private extension AudioPlayerController {
     static func assetDuration(for url: URL) -> TimeInterval {
         let duration = AVURLAsset(url: url).duration.seconds
         return duration.isFinite ? duration : 0
+    }
+
+    struct LoopEngineBundle {
+        let engine: AVAudioEngine
+        let playerNode: AVAudioPlayerNode
+        let environmentNode: AVAudioEnvironmentNode
+        let duration: TimeInterval
+        let range: ClosedRange<Double>
+    }
+
+    static func makeLoopEngineBundle(for url: URL, loopRange: ClosedRange<Double>?) throws -> LoopEngineBundle {
+        let file = try AVAudioFile(forReading: url)
+        let sampleRate = file.processingFormat.sampleRate
+        let totalFrameCount = AVAudioFramePosition(file.length)
+        guard totalFrameCount > 0, sampleRate > 0 else {
+            throw NSError(domain: "ResonanceLoopEngine", code: -1, userInfo: nil)
+        }
+
+        let startFrame = max(0, min(totalFrameCount - 1, AVAudioFramePosition((loopRange?.lowerBound ?? 0) * sampleRate)))
+        let endFrame = max(
+            startFrame + 1,
+            min(totalFrameCount, AVAudioFramePosition((loopRange?.upperBound ?? (Double(totalFrameCount) / sampleRate)) * sampleRate))
+        )
+        let frameCount = AVAudioFrameCount(endFrame - startFrame)
+        guard
+            frameCount > 1,
+            let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount)
+        else {
+            throw NSError(domain: "ResonanceLoopEngine", code: -2, userInfo: nil)
+        }
+
+        file.framePosition = startFrame
+        try file.read(into: buffer, frameCount: frameCount)
+
+        let engine = AVAudioEngine()
+        let playerNode = AVAudioPlayerNode()
+        let environmentNode = AVAudioEnvironmentNode()
+        engine.attach(playerNode)
+        engine.attach(environmentNode)
+        engine.connect(playerNode, to: environmentNode, format: buffer.format)
+        engine.connect(environmentNode, to: engine.mainMixerNode, format: buffer.format)
+        playerNode.renderingAlgorithm = .HRTFHQ
+        playerNode.volume = 1.0
+        playerNode.scheduleBuffer(buffer, at: nil, options: [.loops])
+
+        let resolvedRange = (Double(startFrame) / sampleRate)...(Double(endFrame) / sampleRate)
+        return LoopEngineBundle(
+            engine: engine,
+            playerNode: playerNode,
+            environmentNode: environmentNode,
+            duration: Double(frameCount) / sampleRate,
+            range: resolvedRange
+        )
     }
 
     static func fileSummary(for url: URL) -> String {

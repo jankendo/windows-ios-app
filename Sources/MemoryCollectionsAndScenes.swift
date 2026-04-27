@@ -774,7 +774,8 @@ private struct SavedMemoryImmersivePreviewContainer: View {
             AtmosphericImmersiveOverlay(
                 atmosphere: entry.atmosphereStyle,
                 snapshot: entry.sensorSnapshot,
-                audioReactiveLevel: player.reactiveLevel
+                audioReactiveLevel: player.reactiveLevel,
+                hotspots: entry.directionalHotspots
             )
             .ignoresSafeArea()
         }

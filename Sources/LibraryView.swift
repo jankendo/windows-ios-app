@@ -528,7 +528,7 @@ struct LibraryView: View {
 
                 HStack(spacing: 12) {
                     ResonanceStatTile(title: "合計", value: "\(entries.count)", symbol: "square.stack.3d.down.right.fill")
-                    ResonanceStatTile(title: "地図対応", value: "\(entries.filter(\.hasMapLocation).count)", symbol: "map.fill")
+                    ResonanceStatTile(title: "地図対応", value: "\(entries.filter { $0.hasMapLocation }.count)", symbol: "map.fill")
                     if nearbyMemoriesEnabled {
                         ResonanceStatTile(title: "近く", value: "\(nearbyEntries.count)", symbol: "location.fill")
                     }

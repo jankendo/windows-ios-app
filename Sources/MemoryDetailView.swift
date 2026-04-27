@@ -32,25 +32,12 @@ struct MemoryDetailView: View {
         return items
     }
 
+    private var playbackURL: URL? {
+        entry.analysisAudioURL ?? entry.audioURL
+    }
+
     private var relatedEntries: [MemoryEntry] {
-        allEntries
-            .filter { $0.id != entry.id }
-            .map { candidate in
-                let sharedTags = Set(candidate.autoTags).intersection(entry.autoTags).count
-                let moodScore = candidate.mood == entry.mood ? 2 : 0
-                let placeScore = candidate.placeLabel == entry.placeLabel && entry.placeLabel != nil ? 2 : 0
-                return (candidate, sharedTags + moodScore + placeScore)
-            }
-            .filter { $0.1 > 0 }
-            .sorted { lhs, rhs in
-                if lhs.1 == rhs.1 {
-                    return lhs.0.createdAt > rhs.0.createdAt
-                }
-                return lhs.1 > rhs.1
-            }
-            .map(\.0)
-            .prefix(3)
-            .map { $0 }
+        MemorySearchEngine.similarEntries(to: entry, from: allEntries, limit: 3)
     }
 
     var body: some View {
@@ -211,8 +198,8 @@ struct MemoryDetailView: View {
             waveformSamples = entry.waveformFingerprint
             resolvedPhotoCaption = entry.photoCaption
             selectedCaptionStyle = entry.photoCaptionStyle
-            if let audioURL = entry.audioURL {
-                player.load(url: audioURL)
+            if let playbackURL {
+                player.load(url: playbackURL)
             }
             Task {
                 await backfillPhotoCaptionIfNeeded()
@@ -278,7 +265,7 @@ struct MemoryDetailView: View {
                     }
                 }
 
-                if let audioURL = entry.audioURL {
+                if let playbackURL {
                     ResonanceCard(atmosphere: entry.atmosphereStyle) {
                         VStack(alignment: .leading, spacing: 14) {
                             HStack {
@@ -287,7 +274,7 @@ struct MemoryDetailView: View {
                                     .foregroundStyle(palette.primaryText)
                                 Spacer()
                                 Button {
-                                    player.togglePlayback(for: audioURL)
+                                    player.togglePlayback(for: playbackURL)
                                 } label: {
                                     Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                                         .font(.system(size: 34))
@@ -510,7 +497,7 @@ private struct SavedMemoryImmersivePreviewView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var environmentService = CaptureLocationService.shared
-    @StateObject private var player = AudioPlayerController()
+    @StateObject private var viewModel = ImmersivePlaybackViewModel()
     @State private var controlsVisible = true
     @State private var dragOffset: CGSize = .zero
     @State private var saliencyFocus = CGPoint(x: 0.5, y: 0.5)
@@ -568,12 +555,14 @@ private struct SavedMemoryImmersivePreviewView: View {
             )
             .ignoresSafeArea()
 
-            AtmosphericImmersiveOverlay(
-                atmosphere: entry.atmosphereStyle,
-                snapshot: entry.sensorSnapshot,
-                audioReactiveLevel: player.reactiveLevel
-            )
-            .ignoresSafeArea()
+                    AtmosphericImmersiveOverlay(
+                        atmosphere: entry.atmosphereStyle,
+                        snapshot: entry.sensorSnapshot,
+                        audioReactiveLevel: viewModel.player.reactiveLevel,
+                        hotspots: entry.directionalHotspots,
+                        headingDegrees: viewModel.hotspotHeadingDegrees
+                    )
+                    .ignoresSafeArea()
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -585,20 +574,13 @@ private struct SavedMemoryImmersivePreviewView: View {
             DragGesture(minimumDistance: 8)
                 .onChanged { value in
                     dragOffset = value.translation
-                    player.setPan(Float(value.translation.width / 180))
-                    player.setSpatialOffset(
-                        CGSize(
-                            width: environmentService.previewHorizontalShift + (value.translation.width * 0.22),
-                            height: environmentService.previewVerticalShift + (value.translation.height * 0.16)
-                        )
-                    )
+                    viewModel.updateDrag(value.translation)
                 }
                 .onEnded { _ in
                     withAnimation(.interactiveSpring(response: 0.62, dampingFraction: 0.88, blendDuration: 0.16)) {
                         dragOffset = .zero
                     }
-                    player.setPan(0)
-                    player.setSpatialOffset(environmentService.previewParallax)
+                    viewModel.resetDrag()
                 }
         )
         .safeAreaInset(edge: .top) {
@@ -646,11 +628,18 @@ private struct SavedMemoryImmersivePreviewView: View {
             }
         }
         .onAppear {
-            if let audioURL = entry.audioURL {
-                player.load(url: audioURL, autoPlay: true, loop: true, volume: 0.78)
-            }
-            player.setPlaybackEnvelope(entry.waveformFingerprint)
-            player.setSpatialOffset(environmentService.previewParallax)
+            viewModel.loadAmbientLoop(
+                playbackURL: playbackURL,
+                analysisURL: entry.analysisAudioURL,
+                waveform: entry.waveformFingerprint,
+                loopRange: {
+                    guard let start = entry.seamlessLoopStartPoint, let end = entry.seamlessLoopEndPoint else { return nil }
+                    return start...end
+                }(),
+                volume: 0.78
+            )
+            viewModel.updateBaseSpatialOffset(environmentService.previewParallax)
+            viewModel.startMotionTracking()
             kenBurnsExpanded = true
             if let image = UIImage(contentsOfFile: entry.photoURL.path) {
                 Task {
@@ -659,10 +648,10 @@ private struct SavedMemoryImmersivePreviewView: View {
             }
         }
         .onChange(of: environmentService.previewParallax) { _, newValue in
-            player.setSpatialOffset(newValue)
+            viewModel.updateBaseSpatialOffset(newValue)
         }
         .onDisappear {
-            player.stop()
+            viewModel.stop()
         }
     }
 
@@ -670,9 +659,9 @@ private struct SavedMemoryImmersivePreviewView: View {
     private var previewPlayButton: some View {
         if let audioURL = entry.audioURL {
             Button {
-                player.togglePlayback(for: audioURL)
+                viewModel.togglePlayback()
             } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                Image(systemName: viewModel.player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 52, height: 52)
@@ -683,13 +672,13 @@ private struct SavedMemoryImmersivePreviewView: View {
                     }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(player.isPlaying ? "一時停止" : "再生")
+            .accessibilityLabel(viewModel.player.isPlaying ? "一時停止" : "再生")
         }
     }
 
     private func previewTexts(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 6 : 8) {
-            if player.isSpatialPlaybackActive {
+            if entry.isSpatialCapture {
                 Label("空間オーディオ", systemImage: "dot.radiowaves.left.and.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.78))
@@ -745,7 +734,7 @@ private struct SavedMemoryImmersivePreviewView: View {
 
             AudioWaveformView(
                 samples: entry.waveformFingerprint,
-                progress: player.duration > 0 ? player.currentTime / player.duration : 0,
+                progress: viewModel.player.duration > 0 ? viewModel.player.currentTime / viewModel.player.duration : 0,
                 activeColor: .white,
                 inactiveColor: Color.white.opacity(0.14),
                 minimumBarHeight: compact ? 8 : 10
@@ -754,7 +743,7 @@ private struct SavedMemoryImmersivePreviewView: View {
             .accessibilityHidden(true)
 
             HStack {
-                Text(player.currentTime.resonanceClockText)
+                Text(viewModel.player.currentTime.resonanceClockText)
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.74))
 

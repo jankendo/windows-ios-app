@@ -4,6 +4,7 @@ import Foundation
 struct StoredMedia {
     let photoFileName: String
     let audioFileName: String?
+    let analysisAudioFileName: String?
     let audioDuration: Double
 }
 
@@ -14,7 +15,7 @@ enum MediaStore {
     private static let metadataFolderName = "Metadata"
     private static var metadataCache: [UUID: MemoryAtmosphereMetadata] = [:]
 
-    static func save(photoData: Data, audioTempURL: URL?) throws -> StoredMedia {
+    static func save(photoData: Data, audioTempURL: URL?, analysisAudioTempURL: URL? = nil) throws -> StoredMedia {
         try ensureDirectories()
         Task { @MainActor in
             AudioPlaybackDiagnostics.shared.record("media save started photoBytes=\(photoData.count) audioTemp=\(audioTempURL?.lastPathComponent ?? "none")", category: "storage")
@@ -25,6 +26,7 @@ enum MediaStore {
         try photoData.write(to: photoURL, options: .atomic)
 
         var audioFileName: String?
+        var analysisAudioFileName: String?
         var audioDuration = 0.0
 
         if let audioTempURL, FileManager.default.fileExists(atPath: audioTempURL.path) {
@@ -40,13 +42,34 @@ enum MediaStore {
             audioDuration = asset.duration.seconds.isFinite ? asset.duration.seconds : 0
         }
 
+        if let analysisAudioTempURL, FileManager.default.fileExists(atPath: analysisAudioTempURL.path) {
+            if analysisAudioTempURL == audioTempURL {
+                analysisAudioFileName = audioFileName
+            } else {
+                let analysisExtension = analysisAudioTempURL.pathExtension.isEmpty ? "caf" : analysisAudioTempURL.pathExtension
+                analysisAudioFileName = UUID().uuidString + ".\(analysisExtension)"
+                let analysisDestinationURL = audioURL(for: analysisAudioFileName!)
+                if FileManager.default.fileExists(atPath: analysisDestinationURL.path) {
+                    try FileManager.default.removeItem(at: analysisDestinationURL)
+                }
+                try FileManager.default.copyItem(at: analysisAudioTempURL, to: analysisDestinationURL)
+                try? FileManager.default.removeItem(at: analysisAudioTempURL)
+            }
+        } else {
+            analysisAudioFileName = audioFileName
+        }
+
         Task { @MainActor in
-            AudioPlaybackDiagnostics.shared.record("media save completed photo=\(photoFileName) audio=\(audioFileName ?? "none") duration=\(String(format: "%.2fs", audioDuration))", category: "storage")
+            AudioPlaybackDiagnostics.shared.record(
+                "media save completed photo=\(photoFileName) audio=\(audioFileName ?? "none") analysis=\(analysisAudioFileName ?? "none") duration=\(String(format: "%.2fs", audioDuration))",
+                category: "storage"
+            )
         }
 
         return StoredMedia(
             photoFileName: photoFileName,
             audioFileName: audioFileName,
+            analysisAudioFileName: analysisAudioFileName,
             audioDuration: audioDuration
         )
     }
@@ -58,6 +81,10 @@ enum MediaStore {
         try? FileManager.default.removeItem(at: photoURL(for: entry.photoFileName))
         if let audioFileName = entry.audioFileName {
             try? FileManager.default.removeItem(at: audioURL(for: audioFileName))
+        }
+        if let analysisAudioFileName = entry.atmosphereMetadata?.analysisAudioFileName,
+           analysisAudioFileName != entry.audioFileName {
+            try? FileManager.default.removeItem(at: audioURL(for: analysisAudioFileName))
         }
         deleteAtmosphereMetadata(for: entry.id)
     }
