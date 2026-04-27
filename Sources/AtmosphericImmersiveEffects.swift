@@ -16,23 +16,37 @@ struct AtmosphericImmersiveOverlay: View {
     @AppStorage(ResonancePreferenceKey.immersiveHotspotOverlayEnabled) private var immersiveHotspotOverlayEnabled = true
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            Canvas { context, size in
-                drawBaseGlow(in: &context, size: size)
-
-                if immersiveAudioReactiveLightEnabled {
-                    drawAudioReactiveLight(in: &context, size: size)
+        Group {
+            if requiresAnimatedTimeline {
+                TimelineView(.animation(minimumInterval: 1.0 / 18.0)) { timeline in
+                    overlayCanvas(date: timeline.date)
                 }
-
-                if immersiveHotspotOverlayEnabled, !hotspots.isEmpty {
-                    drawHotspots(in: &context, size: size)
-                }
-
-                guard immersiveParticlesEnabled, !reduceMotion else { return }
-                drawParticles(in: &context, size: size, date: timeline.date)
+            } else {
+                overlayCanvas(date: nil)
             }
         }
         .allowsHitTesting(false)
+    }
+
+    private var requiresAnimatedTimeline: Bool {
+        immersiveParticlesEnabled && !reduceMotion
+    }
+
+    private func overlayCanvas(date: Date?) -> some View {
+        Canvas { context, size in
+            drawBaseGlow(in: &context, size: size)
+
+            if immersiveAudioReactiveLightEnabled {
+                drawAudioReactiveLight(in: &context, size: size)
+            }
+
+            if immersiveHotspotOverlayEnabled, !hotspots.isEmpty {
+                drawHotspots(in: &context, size: size)
+            }
+
+            guard let date, immersiveParticlesEnabled, !reduceMotion else { return }
+            drawParticles(in: &context, size: size, date: date)
+        }
     }
 
     private func drawBaseGlow(in context: inout GraphicsContext, size: CGSize) {
@@ -167,13 +181,13 @@ struct AtmosphericImmersiveOverlay: View {
     private var baseParticleCount: Int {
         switch atmosphere {
         case .dawn:
-            return 22
+            return 14
         case .day:
-            return 18
+            return 12
         case .dusk:
-            return 24
+            return 16
         case .night:
-            return 28
+            return 18
         }
     }
 

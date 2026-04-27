@@ -818,7 +818,14 @@ struct CaptureView: View {
         .fullScreenCover(item: $model.intervalReviewPresentation) { presentation in
             NavigationStack {
                 if let scene = scenes.first(where: { $0.id == presentation.sceneID }) {
-                    MemorySceneDetailView(scene: scene)
+                    MemorySceneDetailView(
+                        scene: scene,
+                        showsCompletionCTA: true,
+                        completionButtonTitle: "このシーンを保存",
+                        onComplete: {
+                            model.intervalReviewPresentation = nil
+                        }
+                    )
                 } else {
                     ZStack {
                         ResonanceGradientBackground()

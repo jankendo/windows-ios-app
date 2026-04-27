@@ -433,6 +433,9 @@ struct MemorySceneDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     let scene: MemoryScene
+    var showsCompletionCTA = false
+    var completionButtonTitle = "このシーンを保存"
+    var onComplete: (() -> Void)? = nil
 
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var allEntries: [MemoryEntry]
     @Query(sort: \MemoryCollection.updatedAt, order: .reverse) private var allCollections: [MemoryCollection]
@@ -468,6 +471,14 @@ struct MemorySceneDetailView: View {
             sceneActionBar
         }
         .toolbar {
+            if showsCompletionCTA {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("閉じる") {
+                        dismissCompletedReview()
+                    }
+                }
+            }
+
             ToolbarItem(placement: .topBarTrailing) {
                 Button(role: .destructive) {
                     showingDeleteConfirmation = true
@@ -510,6 +521,18 @@ struct MemorySceneDetailView: View {
                 .buttonStyle(.bordered)
             }
 
+            if showsCompletionCTA {
+                Button {
+                    dismissCompletedReview()
+                } label: {
+                    Label(completionButtonTitle, systemImage: "checkmark.circle.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
             Button {
                 showingSlideshow = true
             } label: {
@@ -536,6 +559,11 @@ struct MemorySceneDetailView: View {
         }
         modelContext.delete(scene)
         try? modelContext.save()
+        dismiss()
+    }
+
+    private func dismissCompletedReview() {
+        onComplete?()
         dismiss()
     }
 }
@@ -605,7 +633,7 @@ struct AtmosphericMemorySlideshowView: View {
     }
 
     private func playCurrentEntry() {
-        guard let audioURL = currentEntry?.audioURL else {
+        guard let audioURL = currentEntry?.analysisAudioURL ?? currentEntry?.audioURL else {
             player.stop()
             return
         }

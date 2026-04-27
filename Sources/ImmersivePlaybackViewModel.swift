@@ -72,11 +72,11 @@ final class ImmersivePlaybackViewModel: ObservableObject {
             return
         }
         guard motionManager.isDeviceMotionAvailable, !motionManager.isDeviceMotionActive else { return }
-        motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
+        motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, _ in
             guard let self, let motion else { return }
             let yawDegrees = motion.attitude.yaw * 180.0 / .pi
-            self.smoothedYawDegrees = (self.smoothedYawDegrees * 0.82) + (yawDegrees * 0.18)
+            self.smoothedYawDegrees = (self.smoothedYawDegrees * 0.88) + (yawDegrees * 0.12)
             self.hotspotHeadingDegrees = -self.smoothedYawDegrees
             self.player.setListenerYaw(-self.smoothedYawDegrees)
         }

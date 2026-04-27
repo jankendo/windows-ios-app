@@ -614,7 +614,7 @@ enum MemorySearchEngine {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let tokenResult = queryTokens(from: normalizedQuery)
 
-        return entries
+        let rankedEntries = entries
             .filter { entry in
                 let moodMatches = mood == nil || mood == entry.mood
                 let queryMatches = normalizedQuery.isEmpty || matches(entry: entry, query: normalizedQuery, tokens: tokenResult.tokens, conceptGroups: tokenResult.conceptGroups)
@@ -643,6 +643,21 @@ enum MemorySearchEngine {
                 }
                 return lhsScore > rhsScore
             }
+
+        if compass.isCentered {
+            return rankedEntries
+        }
+
+        let threshold = compassDistanceThreshold(for: compass)
+        let narrowedEntries = rankedEntries.filter {
+            compassDistance(from: compass, to: compassPoint(for: $0)) <= threshold
+        }
+
+        if !narrowedEntries.isEmpty {
+            return narrowedEntries
+        }
+
+        return Array(rankedEntries.prefix(min(max(entries.count, 1), 12)))
     }
 
     static func similarEntries(to seed: MemoryEntry, from entries: [MemoryEntry], limit: Int = 6) -> [MemoryEntry] {
@@ -777,8 +792,8 @@ enum MemorySearchEngine {
 
         if !compass.isCentered {
             let entryCompass = compassPoint(for: entry)
-            let distance = hypot(entryCompass.naturalUrban - compass.naturalUrban, entryCompass.quietLively - compass.quietLively)
-            score += max(0, 2.2 - distance * 1.2)
+            let distance = compassDistance(from: compass, to: entryCompass)
+            score += max(0, 3.6 - distance * 2.6)
         }
 
         if let similaritySeed, similaritySeed.id != entry.id {
@@ -792,6 +807,15 @@ enum MemorySearchEngine {
 
     private static func filter(_ entries: [MemoryEntry], query: String, mood: String?) -> [MemoryEntry] {
         filter(entries, query: query, mood: mood, compass: .zero, similaritySeed: nil)
+    }
+
+    private static func compassDistance(from source: MoodCompassPoint, to destination: MoodCompassPoint) -> Double {
+        hypot(destination.naturalUrban - source.naturalUrban, destination.quietLively - source.quietLively)
+    }
+
+    private static func compassDistanceThreshold(for compass: MoodCompassPoint) -> Double {
+        let focus = max(abs(compass.naturalUrban), abs(compass.quietLively))
+        return max(0.42, 1.12 - (focus * 0.48))
     }
 
     static func aliases(for term: String) -> [String] {
