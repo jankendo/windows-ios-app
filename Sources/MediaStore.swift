@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreGraphics
 import Foundation
 
 struct StoredMedia {
@@ -14,6 +15,8 @@ enum MediaStore {
     private static let audioFolderName = "Audio"
     private static let metadataFolderName = "Metadata"
     private static var metadataCache: [UUID: MemoryAtmosphereMetadata] = [:]
+    private static var waveformCache: [UUID: [CGFloat]] = [:]
+    private static let waveformCacheLock = NSLock()
 
     static func save(photoData: Data, audioTempURL: URL?, analysisAudioTempURL: URL? = nil) throws -> StoredMedia {
         try ensureDirectories()
@@ -103,6 +106,7 @@ enum MediaStore {
         let data = try JSONEncoder().encode(metadata)
         try data.write(to: fileURL, options: .atomic)
         metadataCache[entryID] = metadata
+        cacheWaveformFingerprint(metadata.waveformFingerprint.map(CGFloat.init), for: entryID)
         Task { @MainActor in
             AudioPlaybackDiagnostics.shared.record("metadata saved entry=\(entryID.uuidString)", category: "storage")
         }
@@ -128,12 +132,30 @@ enum MediaStore {
         }
 
         metadataCache[entryID] = metadata
+        cacheWaveformFingerprint(metadata.waveformFingerprint.map(CGFloat.init), for: entryID)
         return metadata
     }
 
     static func deleteAtmosphereMetadata(for entryID: UUID) {
         metadataCache[entryID] = nil
+        cacheWaveformFingerprint([], for: entryID)
         try? FileManager.default.removeItem(at: metadataURL(for: entryID))
+    }
+
+    static func cachedWaveformFingerprint(for entryID: UUID) -> [CGFloat]? {
+        waveformCacheLock.lock()
+        defer { waveformCacheLock.unlock() }
+        return waveformCache[entryID]
+    }
+
+    static func cacheWaveformFingerprint(_ samples: [CGFloat], for entryID: UUID) {
+        waveformCacheLock.lock()
+        defer { waveformCacheLock.unlock() }
+        if samples.isEmpty {
+            waveformCache[entryID] = nil
+        } else {
+            waveformCache[entryID] = samples
+        }
     }
 
     private static func ensureDirectories() throws {

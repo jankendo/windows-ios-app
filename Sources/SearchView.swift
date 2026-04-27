@@ -16,27 +16,25 @@ struct SearchView: View {
     @Query(sort: \MemoryScene.startedAt, order: .reverse) private var scenes: [MemoryScene]
     @State private var searchText = ""
     @State private var favoritesOnly = false
-    @State private var compassPoint = MoodCompassPoint.zero
+    @State private var liveCompassPoint = MoodCompassPoint.zero
+    @State private var effectiveCompassPoint = MoodCompassPoint.zero
     @State private var similaritySeedID: UUID?
+    @State private var filteredEntriesSnapshot: [MemoryEntry] = []
+    @State private var activeSearchPoolSnapshot: [MemoryEntry] = []
+    @State private var similarEntriesSnapshot: [MemoryEntry] = []
+    @State private var suggestedTermsSnapshot: [MemorySearchSuggestion] = []
+    @State private var compassRefreshTask: Task<Void, Never>?
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme)
     }
 
     private var filteredEntries: [MemoryEntry] {
-        MemorySearchEngine.filter(
-            entries,
-            query: searchText,
-            mood: nil,
-            compass: compassPoint,
-            similaritySeed: activeSimilaritySeed
-        )
-        .filter { !favoritesOnly || $0.isFavorite }
+        filteredEntriesSnapshot
     }
 
     private var activeSearchPool: [MemoryEntry] {
-        let candidates = filteredEntries.isEmpty ? entries : filteredEntries
-        return favoritesOnly ? candidates.filter { $0.isFavorite } : candidates
+        activeSearchPoolSnapshot
     }
 
     private var activeSimilaritySeed: MemoryEntry? {
@@ -51,9 +49,7 @@ struct SearchView: View {
     }
 
     private var similarEntries: [MemoryEntry] {
-        guard let similaritySeed else { return [] }
-        let pool = activeSearchPool.count > 1 ? activeSearchPool : entries
-        return MemorySearchEngine.similarEntries(to: similaritySeed, from: pool)
+        similarEntriesSnapshot
     }
 
     private var filteredCollections: [MemoryCollection] {
@@ -76,6 +72,116 @@ struct SearchView: View {
     }
 
     private var suggestedTerms: [MemorySearchSuggestion] {
+        suggestedTermsSnapshot
+    }
+
+    var body: some View {
+        ZStack {
+            ResonanceGradientBackground()
+
+            VStack(spacing: 16) {
+                compassSection
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+
+                ScrollView {
+                    LazyVStack(spacing: 18) {
+                        suggestionSection
+                        similarSpaceSection
+
+                        if !filteredCollections.isEmpty {
+                            collectionSection
+                        }
+
+                        if !filteredScenes.isEmpty {
+                            sceneSection
+                        }
+
+                        if !hasAnyResults {
+                            ResonanceEmptyState(
+                                title: "一致する記録が見つかりませんでした",
+                                message: "コンパスの方向や検索語を少し変えて、その場の空気感を辿ってみてください。",
+                                symbol: "magnifyingglass.circle"
+                            )
+                        } else if !filteredEntries.isEmpty {
+                            resultSection
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 24)
+                }
+            }
+        }
+        .navigationTitle("検索")
+        .searchable(text: $searchText, prompt: "音、場所、空気感で検索")
+        .searchSuggestions {
+            ForEach(suggestedTerms) { suggestion in
+                Text(suggestion.term).searchCompletion(suggestion.term)
+            }
+        }
+        .onAppear {
+            liveCompassPoint = effectiveCompassPoint
+            suggestedTermsSnapshot = buildSuggestedTerms()
+            refreshSearchSnapshots()
+        }
+        .onChange(of: searchText) { _, _ in
+            refreshSearchSnapshots()
+        }
+        .onChange(of: favoritesOnly) { _, _ in
+            refreshSearchSnapshots()
+        }
+        .onChange(of: similaritySeedID) { _, _ in
+            refreshSearchSnapshots()
+        }
+        .onChange(of: effectiveCompassPoint) { _, _ in
+            refreshSearchSnapshots()
+        }
+        .onChange(of: entries.count) { _, _ in
+            suggestedTermsSnapshot = buildSuggestedTerms()
+            refreshSearchSnapshots()
+        }
+        .onChange(of: liveCompassPoint) { _, newValue in
+            scheduleCompassRefresh(for: newValue)
+        }
+        .onDisappear {
+            compassRefreshTask?.cancel()
+        }
+    }
+
+    private func refreshSearchSnapshots() {
+        let filtered = MemorySearchEngine.filter(
+            entries,
+            query: searchText,
+            mood: nil,
+            compass: effectiveCompassPoint,
+            similaritySeed: activeSimilaritySeed
+        )
+        .filter { !favoritesOnly || $0.isFavorite }
+
+        filteredEntriesSnapshot = filtered
+
+        let pool = filtered.isEmpty ? entries : filtered
+        let updatedPool = favoritesOnly ? pool.filter { $0.isFavorite } : pool
+        activeSearchPoolSnapshot = updatedPool
+
+        if let seed = activeSimilaritySeed ?? updatedPool.first ?? entries.first {
+            let similarityPool = Array((updatedPool.count > 1 ? updatedPool : entries).prefix(36))
+            similarEntriesSnapshot = MemorySearchEngine.similarEntries(to: seed, from: similarityPool)
+        } else {
+            similarEntriesSnapshot = []
+        }
+    }
+
+    private func scheduleCompassRefresh(for point: MoodCompassPoint) {
+        compassRefreshTask?.cancel()
+        compassRefreshTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 55_000_000)
+            guard !Task.isCancelled else { return }
+            effectiveCompassPoint = point
+        }
+    }
+
+    private func buildSuggestedTerms() -> [MemorySearchSuggestion] {
         guard !entries.isEmpty else {
             return [
                 MemorySearchSuggestion(term: "海辺", count: 0, systemImage: "water.waves"),
@@ -117,52 +223,6 @@ struct SearchView: View {
             .map { $0 }
     }
 
-    var body: some View {
-        ZStack {
-            ResonanceGradientBackground()
-
-            VStack(spacing: 16) {
-                compassSection
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
-
-                ScrollView {
-                    VStack(spacing: 18) {
-                        suggestionSection
-                        similarSpaceSection
-
-                        if !filteredCollections.isEmpty {
-                            collectionSection
-                        }
-
-                        if !filteredScenes.isEmpty {
-                            sceneSection
-                        }
-
-                        if !hasAnyResults {
-                            ResonanceEmptyState(
-                                title: "一致する記録が見つかりませんでした",
-                                message: "コンパスの方向や検索語を少し変えて、その場の空気感を辿ってみてください。",
-                                symbol: "magnifyingglass.circle"
-                            )
-                        } else if !filteredEntries.isEmpty {
-                            resultSection
-                        }
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 24)
-                }
-            }
-        }
-        .navigationTitle("検索")
-        .searchable(text: $searchText, prompt: "音、場所、空気感で検索")
-        .searchSuggestions {
-            ForEach(suggestedTerms) { suggestion in
-                Text(suggestion.term).searchCompletion(suggestion.term)
-            }
-        }
-    }
-
     private var compassSection: some View {
         ResonanceCard {
             VStack(alignment: .leading, spacing: 16) {
@@ -171,7 +231,7 @@ struct SearchView: View {
                         Text("場の空気感で探す")
                             .font(.headline)
                             .foregroundStyle(palette.primaryText)
-                        Text(compassPoint.localizedLabel)
+                        Text(liveCompassPoint.localizedLabel)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(palette.accent)
                     }
@@ -189,8 +249,10 @@ struct SearchView: View {
                         .tint(favoritesOnly ? .pink : palette.secondaryText.opacity(0.75))
 
                         Button("リセット") {
+                            compassRefreshTask?.cancel()
                             withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                                compassPoint = .zero
+                                liveCompassPoint = .zero
+                                effectiveCompassPoint = .zero
                             }
                         }
                         .font(.caption.weight(.semibold))
@@ -198,7 +260,7 @@ struct SearchView: View {
                     }
                 }
 
-                MoodCompassControl(point: $compassPoint, palette: palette)
+                MoodCompassControl(point: $liveCompassPoint, palette: palette)
 
                 Text(searchText.isEmpty ? "ここを静かになぞるだけで、今の気分に近い記録へ寄せていきます。" : "検索語とコンパスを重ねると、言葉と空気感の両方から辿れます。")
                     .font(.footnote)

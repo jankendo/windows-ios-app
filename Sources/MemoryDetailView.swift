@@ -19,6 +19,8 @@ struct MemoryDetailView: View {
     @State private var selectedCaptionStyle: PhotoCaptionStyle = .poetic
     @State private var captionGenerationMessage: String?
     @State private var isRegeneratingCaption = false
+    @State private var relatedEntriesSnapshot: [MemoryEntry] = []
+    @State private var relatedEntriesRefreshTask: Task<Void, Never>?
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
@@ -34,10 +36,6 @@ struct MemoryDetailView: View {
             items.append(audioURL)
         }
         return items
-    }
-
-    private var relatedEntries: [MemoryEntry] {
-        MemorySearchEngine.similarEntries(to: entry, from: allEntries, limit: 3)
     }
 
     var body: some View {
@@ -132,13 +130,13 @@ struct MemoryDetailView: View {
                         }
                     }
 
-                    if !relatedEntries.isEmpty {
+                    if !relatedEntriesSnapshot.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("関連する記録")
                                 .font(.headline)
                                 .foregroundStyle(palette.primaryText)
 
-                            ForEach(relatedEntries) { related in
+                            ForEach(relatedEntriesSnapshot) { related in
                                 NavigationLink {
                                     MemoryDetailView(entry: related)
                                 } label: {
@@ -198,6 +196,7 @@ struct MemoryDetailView: View {
             waveformSamples = entry.waveformFingerprint
             resolvedPhotoCaption = entry.photoCaption
             selectedCaptionStyle = entry.photoCaptionStyle
+            scheduleRelatedEntriesRefresh()
             if let playbackURL {
                 player.load(url: playbackURL)
             }
@@ -205,8 +204,22 @@ struct MemoryDetailView: View {
                 await backfillPhotoCaptionIfNeeded()
             }
         }
+        .onChange(of: allEntries.count) { _, _ in
+            scheduleRelatedEntriesRefresh()
+        }
         .onDisappear {
+            relatedEntriesRefreshTask?.cancel()
             player.stop()
+        }
+    }
+
+    private func scheduleRelatedEntriesRefresh() {
+        relatedEntriesRefreshTask?.cancel()
+        let candidates = Array(allEntries.prefix(60))
+        relatedEntriesRefreshTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            guard !Task.isCancelled else { return }
+            relatedEntriesSnapshot = MemorySearchEngine.similarEntries(to: entry, from: candidates, limit: 3)
         }
     }
 

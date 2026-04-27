@@ -1625,7 +1625,7 @@ struct MemoryCardView: View {
                         .lineLimit(2)
 
                     AudioWaveformView(
-                        samples: entry.waveformFingerprint,
+                        samples: entry.previewWaveformFingerprint,
                         progress: 1,
                         activeColor: palette.accent,
                         inactiveColor: palette.accent.opacity(0.18),
@@ -1702,7 +1702,7 @@ private struct MemoryGridCardView: View {
                         .lineLimit(2)
 
                     AudioWaveformView(
-                        samples: entry.waveformFingerprint,
+                        samples: entry.previewWaveformFingerprint,
                         progress: 1,
                         activeColor: palette.accent,
                         inactiveColor: palette.accent.opacity(0.18),

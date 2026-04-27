@@ -445,11 +445,19 @@ final class MemoryEntry: Identifiable {
     }
 
     var waveformFingerprint: [CGFloat] {
-        let storedSamples = atmosphereMetadata?.waveformFingerprint.map { CGFloat($0) } ?? []
-        if !storedSamples.isEmpty {
-            return storedSamples
+        if !storedOrCachedWaveformFingerprint.isEmpty {
+            return storedOrCachedWaveformFingerprint
         }
-        return WaveformExtractor.samples(from: analysisAudioURL, sampleCount: 28)
+        let extracted = WaveformExtractor.samples(from: analysisAudioURL, sampleCount: 28)
+        MediaStore.cacheWaveformFingerprint(extracted, for: id)
+        return extracted
+    }
+
+    var previewWaveformFingerprint: [CGFloat] {
+        if !storedOrCachedWaveformFingerprint.isEmpty {
+            return storedOrCachedWaveformFingerprint
+        }
+        return Array(repeating: 0.25, count: 28)
     }
 
     var audioFeatureVector: [Float] {
@@ -469,6 +477,14 @@ final class MemoryEntry: Identifiable {
 
     var directionalHotspots: [DirectionalAudioHotspot] {
         atmosphereMetadata?.directionalHotspots ?? []
+    }
+
+    private var storedOrCachedWaveformFingerprint: [CGFloat] {
+        let storedSamples = atmosphereMetadata?.waveformFingerprint.map { CGFloat($0) } ?? []
+        if !storedSamples.isEmpty {
+            return storedSamples
+        }
+        return MediaStore.cachedWaveformFingerprint(for: id) ?? []
     }
 
     var isSpatialCapture: Bool {
@@ -707,7 +723,8 @@ enum MemorySearchEngine {
             quietLively += Double(vector[0] * 1.6) + Double(vector[4] * 1.2) + Double(vector[6] * 0.9) - Double(vector[5] * 1.3)
             naturalUrban += Double(vector[7] * 1.4) + Double(vector[3] * 0.6)
         } else {
-            let waveformAverage = entry.waveformFingerprint.reduce(0) { $0 + $1 } / CGFloat(max(entry.waveformFingerprint.count, 1))
+            let cachedWaveform = entry.previewWaveformFingerprint
+            let waveformAverage = cachedWaveform.reduce(0) { $0 + $1 } / CGFloat(max(cachedWaveform.count, 1))
             quietLively += Double((waveformAverage - 0.25) * 2.2)
         }
 
@@ -737,7 +754,7 @@ enum MemorySearchEngine {
         if !entry.audioFeatureVector.isEmpty {
             audioVector = entry.audioFeatureVector
         } else {
-            let waveform = entry.waveformFingerprint.prefix(8).map { Float($0) }
+            let waveform = entry.previewWaveformFingerprint.prefix(8).map { Float($0) }
             audioVector = waveform + Array(repeating: 0, count: max(0, 8 - waveform.count))
         }
 
