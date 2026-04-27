@@ -24,6 +24,10 @@ struct MemoryDetailView: View {
         ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
     }
 
+    private var playbackURL: URL? {
+        entry.analysisAudioURL ?? entry.audioURL
+    }
+
     private var shareItems: [Any] {
         var items: [Any] = [entry.shareSummary, entry.photoURL]
         if let audioURL = entry.audioURL {
@@ -657,7 +661,7 @@ private struct SavedMemoryImmersivePreviewView: View {
 
     @ViewBuilder
     private var previewPlayButton: some View {
-        if let audioURL = entry.audioURL {
+        if let playbackURL {
             Button {
                 viewModel.togglePlayback()
             } label: {
