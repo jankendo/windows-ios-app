@@ -99,6 +99,23 @@ struct MemoryDetailView: View {
                         }
                     }
 
+                    if entry.hasSpatialScan {
+                        ResonanceCard(atmosphere: entry.atmosphereStyle) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("3Dスキャン")
+                                    .font(.headline)
+                                    .foregroundStyle(palette.primaryText)
+
+                                SensorDetailRow(title: "状態", value: spatialScanStateLabel)
+                                SensorDetailRow(title: "フレーム数", value: "\(entry.spatialScanFrameCount) 枚")
+                                if let duration = entry.spatialScanCaptureDuration {
+                                    SensorDetailRow(title: "収集時間", value: String(format: "%.1f 秒", duration))
+                                }
+                                SensorDetailRow(title: "方式", value: "オンデバイス優先の空間記録 bundle")
+                            }
+                        }
+                    }
+
                     if !entry.transcript.isEmpty {
                         ResonanceCard(atmosphere: entry.atmosphereStyle) {
                             VStack(alignment: .leading, spacing: 8) {
@@ -220,6 +237,23 @@ struct MemoryDetailView: View {
             try? await Task.sleep(nanoseconds: 40_000_000)
             guard !Task.isCancelled else { return }
             relatedEntriesSnapshot = MemorySearchEngine.similarEntries(to: entry, from: candidates, limit: 3)
+        }
+    }
+
+    private var spatialScanStateLabel: String {
+        switch entry.spatialScanReconstructionState {
+        case .captured:
+            return "収集完了"
+        case .proxyReady:
+            return "プレビュー準備完了"
+        case .queuedForHighQuality:
+            return "高品質化を準備中"
+        case .ready:
+            return "空間再生対応"
+        case .failed:
+            return "再処理が必要"
+        case nil:
+            return "bundle 保存済み"
         }
     }
 

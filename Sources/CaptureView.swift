@@ -5,6 +5,7 @@ import UIKit
 enum CaptureModeOption: String, CaseIterable, Identifiable {
     case ambient
     case interval
+    case scan
 
     var id: String { rawValue }
 
@@ -14,6 +15,8 @@ enum CaptureModeOption: String, CaseIterable, Identifiable {
             return "Ambient"
         case .interval:
             return "Interval"
+        case .scan:
+            return "3D Scan"
         }
     }
 }
@@ -108,6 +111,23 @@ final class CaptureFlowModel: ObservableObject {
                 errorMessage = error.localizedDescription
                 diagnostics.record("capture failed: \(error.localizedDescription)", category: "capture")
             }
+        }
+    }
+
+    func receiveSpatialScanDraft(_ draft: CapturedMemoryDraft) {
+        guard !isSaving else { return }
+        diagnostics.record("spatial scan draft received bundle=\(draft.spatialScanPayload != nil)", category: "capture")
+        errorMessage = nil
+        saveMessage = nil
+        lastSavedEntry = nil
+        isPreparingReview = true
+        captionGenerationMessage = nil
+
+        Task {
+            let enrichedDraft = await enrichDraft(draft)
+            isPreparingReview = false
+            capturedDraft = enrichedDraft
+            scheduleDraftCaptionRefresh()
         }
     }
 
@@ -281,6 +301,9 @@ final class CaptureFlowModel: ObservableObject {
         if let analysisAudioURL = capturedDraft?.analysisAudioTempURL, analysisAudioURL != capturedDraft?.audioTempURL {
             try? FileManager.default.removeItem(at: analysisAudioURL)
         }
+        if let bundleURL = capturedDraft?.spatialScanPayload?.bundleURL {
+            try? FileManager.default.removeItem(at: bundleURL)
+        }
         capturedDraft = nil
     }
 
@@ -413,7 +436,7 @@ final class CaptureFlowModel: ObservableObject {
         let analysisAudioURL = storedMedia.analysisAudioFileName.map(MediaStore.audioURL(for:)) ?? draft.analysisAudioURL ?? storedAudioURL
         let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: analysisAudioURL)
         let immersiveAnalysis = await Task.detached(priority: .userInitiated) {
-            ImmersiveAudioIntelligence.analyze(url: analysisAudioURL)
+            ImmersiveAudioIntelligence.analyze(url: analysisAudioURL, snapshot: draft.sensorSnapshot)
         }.value
         let captionGeneration = await MemoryAnalysisService.captionGeneration(
             from: draft.photoData,
@@ -448,6 +471,10 @@ final class CaptureFlowModel: ObservableObject {
             mood: analysis.mood
         )
 
+        let storedSpatialScan = try draft.spatialScanPayload.map {
+            try MediaStore.saveSpatialScan($0, for: entry.id)
+        }
+
         let metadata = MemoryAtmosphereMetadata(
             placeLabel: draft.placeLabel,
             waveformFingerprint: immersiveAnalysis.waveformFingerprint,
@@ -462,7 +489,14 @@ final class CaptureFlowModel: ObservableObject {
             seamlessLoopStartPoint: immersiveAnalysis.seamlessLoopStartPoint,
             seamlessLoopEndPoint: immersiveAnalysis.seamlessLoopEndPoint,
             directionalHotspots: immersiveAnalysis.directionalHotspots,
-            capturedSpatialAudio: draft.isSpatialAudio
+            capturedSpatialAudio: draft.isSpatialAudio,
+            spatialScanBundleFolderName: storedSpatialScan?.bundleFolderName,
+            spatialScanManifestFileName: storedSpatialScan?.manifestFileName,
+            spatialScanPreviewFileName: storedSpatialScan?.previewImageFileName,
+            spatialScanWorldMapFileName: storedSpatialScan?.worldMapFileName,
+            spatialScanFrameCount: storedSpatialScan?.frameCount,
+            spatialScanCaptureDuration: storedSpatialScan?.captureDuration,
+            spatialScanReconstructionState: storedSpatialScan?.reconstructionState
         )
         var finalMetadata = metadata
         finalMetadata.photoCaptionSourceRaw =
@@ -683,11 +717,13 @@ struct CaptureView: View {
     @AppStorage("delayRecordingUntilAfterShutter") private var delayRecordingUntilAfterShutter = true
     @AppStorage(ResonancePreferenceKey.defaultCaptionStyle) private var defaultCaptionStyle = PhotoCaptionStyle.poetic.rawValue
     @AppStorage("captureModeOption") private var captureModeRawValue = CaptureModeOption.ambient.rawValue
+    @AppStorage("spatialScanCaptureDurationSeconds") private var spatialScanCaptureDurationSeconds = 8.0
     @AppStorage(ResonancePreferenceKey.intervalCaptureSpacingSeconds) private var intervalCaptureSpacingSeconds = 30.0
     @AppStorage(ResonancePreferenceKey.intervalCapturePlannedCount) private var intervalCapturePlannedCount = 3
     @AppStorage(ResonancePreferenceKey.intervalCaptureSceneTitle) private var intervalCaptureSceneTitle = ""
     @StateObject private var model = CaptureFlowModel()
     @State private var showingCaptureSettings = false
+    @State private var showingSpatialScanCapture = false
     @State private var hasCompletedInitialStartup = false
 
     private var atmosphere: AtmosphereStyle {
@@ -704,6 +740,17 @@ struct CaptureView: View {
 
     private var recentEntry: MemoryEntry? {
         entries.first
+    }
+
+    private var captureModeBadgeTitle: String {
+        switch captureMode {
+        case .ambient:
+            return "Ambient \(Int(captureDurationSeconds.rounded()))s"
+        case .interval:
+            return "Interval \(intervalCapturePlannedCount)x"
+        case .scan:
+            return "3D Scan \(Int(spatialScanCaptureDurationSeconds.rounded()))s"
+        }
     }
 
     private var todayCount: Int {
@@ -815,6 +862,18 @@ struct CaptureView: View {
                 }
             )
         }
+        .fullScreenCover(isPresented: $showingSpatialScanCapture) {
+            SpatialScanCaptureView(
+                duration: spatialScanCaptureDurationSeconds,
+                onComplete: { draft in
+                    model.receiveSpatialScanDraft(draft)
+                    model.prepare()
+                },
+                onCancel: {
+                    model.prepare()
+                }
+            )
+        }
         .fullScreenCover(item: $model.intervalReviewPresentation) { presentation in
             NavigationStack {
                 if let scene = scenes.first(where: { $0.id == presentation.sceneID }) {
@@ -882,7 +941,7 @@ struct CaptureView: View {
                     showingCaptureSettings = true
                 } label: {
                     ResonanceBadge(
-                        title: captureMode == .ambient ? "Ambient \(Int(captureDurationSeconds.rounded()))s" : "Interval \(intervalCapturePlannedCount)x",
+                        title: captureModeBadgeTitle,
                         systemImage: "slider.horizontal.3",
                         tint: .white,
                         atmosphere: atmosphere
@@ -1030,7 +1089,7 @@ struct CaptureView: View {
             } else {
                 VStack(spacing: 10) {
                     HStack(spacing: 10) {
-                        Image(systemName: captureMode == .ambient ? "sparkles" : "timer")
+                        Image(systemName: captureModeSymbol(for: captureMode))
                             .foregroundStyle(.white)
                         Text(idleCaptureDescription)
                             .font(.subheadline.weight(.medium))
@@ -1110,13 +1169,13 @@ struct CaptureView: View {
             showingCaptureSettings = true
         } label: {
             VStack(spacing: 6) {
-                Text(captureMode == .ambient ? "AMBIENT" : "INTERVAL")
+                Text(captureModeIndicatorTitle)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.white.opacity(0.7))
-                Text(captureMode == .ambient ? "\(Int(captureDurationSeconds.rounded()))s" : "\(intervalCapturePlannedCount)x")
+                Text(captureModeIndicatorValue)
                     .font(.headline.weight(.bold))
                     .foregroundStyle(.white)
-                Text(captureMode == .ambient ? (delayRecordingUntilAfterShutter ? "quiet" : "instant") : "\(Int(intervalCaptureSpacingSeconds.rounded()))s")
+                Text(captureModeIndicatorDetail)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.7))
             }
@@ -1129,6 +1188,39 @@ struct CaptureView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    private var captureModeIndicatorTitle: String {
+        switch captureMode {
+        case .ambient:
+            return "AMBIENT"
+        case .interval:
+            return "INTERVAL"
+        case .scan:
+            return "3D SCAN"
+        }
+    }
+
+    private var captureModeIndicatorValue: String {
+        switch captureMode {
+        case .ambient:
+            return "\(Int(captureDurationSeconds.rounded()))s"
+        case .interval:
+            return "\(intervalCapturePlannedCount)x"
+        case .scan:
+            return "\(Int(spatialScanCaptureDurationSeconds.rounded()))s"
+        }
+    }
+
+    private var captureModeIndicatorDetail: String {
+        switch captureMode {
+        case .ambient:
+            return delayRecordingUntilAfterShutter ? "quiet" : "instant"
+        case .interval:
+            return "\(Int(intervalCaptureSpacingSeconds.rounded()))s"
+        case .scan:
+            return "guided"
+        }
     }
 
     private var permissionCenterOverlay: some View {
@@ -1297,14 +1389,38 @@ struct CaptureView: View {
         .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
+    private var captureSettingsTitle: String {
+        switch captureMode {
+        case .ambient:
+            return "Ambient capture"
+        case .interval:
+            return "Interval capture"
+        case .scan:
+            return "3D spatial scan"
+        }
+    }
+
+    private var captureSettingsDescription: String {
+        switch captureMode {
+        case .ambient:
+            return "環境音の長さをシーンに合わせて調整できます。短く素早く残すことも、少し長めに空気を集めることもできます。"
+        case .interval:
+            return "一定間隔で複数のシーンを残すモードです。主画面からも切り替えられ、ここでは間隔や枚数を調整できます。"
+        case .scan:
+            return "短時間の guided sweep で視野中心の spatial bundle を収集します。capture 後に preview を作り、保存時に 3D scan metadata として保持します。"
+        }
+    }
+
+    private var selectedCaptureLength: Double {
+        captureMode == .scan ? spatialScanCaptureDurationSeconds : captureDurationSeconds
+    }
+
     private var captureSettingsSheet: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(captureMode == .ambient ? "Ambient capture" : "Interval capture")
+            Text(captureSettingsTitle)
                 .font(.title3.bold())
 
-            Text(captureMode == .ambient
-                 ? "環境音の長さをシーンに合わせて調整できます。短く素早く残すことも、少し長めに空気を集めることもできます。"
-                 : "一定間隔で複数のシーンを残すモードです。主画面からも切り替えられ、ここでは間隔や枚数を調整できます。")
+            Text(captureSettingsDescription)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -1315,37 +1431,51 @@ struct CaptureView: View {
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach([3.0, 6.0, 10.0, 15.0], id: \.self) { duration in
                     Button("\(Int(duration))秒") {
-                        captureDurationSeconds = duration
+                        if captureMode == .scan {
+                            spatialScanCaptureDurationSeconds = duration
+                        } else {
+                            captureDurationSeconds = duration
+                        }
                     }
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity, minHeight: 48)
-                    .background(captureDurationSeconds == duration ? palette.accent : palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .foregroundStyle(captureDurationSeconds == duration ? Color.white : palette.primaryText)
+                    .background(selectedCaptureLength == duration ? palette.accent : palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .foregroundStyle(selectedCaptureLength == duration ? Color.white : palette.primaryText)
                 }
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("長さ")
+                    Text(captureMode == .scan ? "scan時間" : "長さ")
                     Spacer()
-                    Text("\(Int(captureDurationSeconds.rounded()))秒")
+                    Text("\(Int(selectedCaptureLength.rounded()))秒")
                         .fontWeight(.semibold)
                 }
 
-                Slider(value: $captureDurationSeconds, in: 3...20, step: 1)
+                Slider(value: captureMode == .scan ? $spatialScanCaptureDurationSeconds : $captureDurationSeconds, in: 3...20, step: 1)
                     .tint(palette.accent)
             }
 
-            Toggle(isOn: $delayRecordingUntilAfterShutter) {
+            if captureMode == .scan {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("シャッター音を避けて録音を始める")
+                    Text("3D Scan の記録方法")
                         .font(.subheadline.weight(.semibold))
-                    Text("iPhone ではシャッター音を無効化できないため、オンにすると撮影後に少し待ってから環境音を記録します。")
+                    Text("AR tracking と環境音を短時間で束ね、preview image / frame poses / world map を bundle 化します。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+            } else {
+                Toggle(isOn: $delayRecordingUntilAfterShutter) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("シャッター音を避けて録音を始める")
+                            .font(.subheadline.weight(.semibold))
+                        Text("iPhone ではシャッター音を無効化できないため、オンにすると撮影後に少し待ってから環境音を記録します。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tint(palette.accent)
             }
-            .tint(palette.accent)
 
             if captureMode == .interval {
                 VStack(alignment: .leading, spacing: 12) {
@@ -1399,14 +1529,14 @@ struct CaptureView: View {
         } label: {
             VStack(alignment: compact ? .center : .leading, spacing: compact ? 4 : 8) {
                 HStack(spacing: 8) {
-                    Image(systemName: mode == .ambient ? "sparkles" : "timer")
+                    Image(systemName: captureModeSymbol(for: mode))
                         .font(compact ? .caption.weight(.bold) : .headline.weight(.semibold))
                     Text(mode.localizedLabel)
                         .font(compact ? .caption.weight(.bold) : .headline.weight(.semibold))
                 }
 
                 if !compact {
-                    Text(mode == .ambient ? "通常の 1 シーン撮影" : "一定間隔で複数シーンを連続保存")
+                    Text(captureModeDescription(for: mode))
                         .font(.footnote)
                         .foregroundStyle(isSelected ? Color.white.opacity(0.88) : palette.secondaryText)
                 }
@@ -1425,6 +1555,28 @@ struct CaptureView: View {
         .disabled(model.camera.isCapturing || model.isPreparingReview)
     }
 
+    private func captureModeSymbol(for mode: CaptureModeOption) -> String {
+        switch mode {
+        case .ambient:
+            return "sparkles"
+        case .interval:
+            return "timer"
+        case .scan:
+            return "cube.transparent"
+        }
+    }
+
+    private func captureModeDescription(for mode: CaptureModeOption) -> String {
+        switch mode {
+        case .ambient:
+            return "通常の 1 シーン撮影"
+        case .interval:
+            return "一定間隔で複数シーンを連続保存"
+        case .scan:
+            return "短時間の spatial bundle capture"
+        }
+    }
+
     private func setCaptureMode(_ mode: CaptureModeOption) {
         guard captureMode != mode else { return }
         captureModeRawValue = mode.rawValue
@@ -1438,6 +1590,10 @@ struct CaptureView: View {
             return delayRecordingUntilAfterShutter
                 ? "シャッター後の静けさから\(Int(captureDurationSeconds.rounded()))秒間の空気を記録します"
                 : "シャッターと同時に\(Int(captureDurationSeconds.rounded()))秒間の空気を記録します"
+        }
+
+        if captureMode == .scan {
+            return "\(Int(spatialScanCaptureDurationSeconds.rounded()))秒の guided sweep で、視野中心の 3D spatial bundle と環境音を記録します"
         }
 
         if let session = model.intervalSession {
@@ -1527,6 +1683,12 @@ struct CaptureView: View {
             return
         }
 
+        if captureMode == .scan {
+            model.camera.suspend()
+            showingSpatialScanCapture = true
+            return
+        }
+
         if let session = model.intervalSession, session.phase == .running {
             model.captureNextIntervalFrame(
                 delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
@@ -1552,6 +1714,13 @@ struct CaptureView: View {
     private var primaryCaptureButtonEnabled: Bool {
         if captureMode == .ambient {
             return model.camera.isReadyToCapture && !model.isSaving && !model.camera.isCapturing
+        }
+
+        if captureMode == .scan {
+            return model.camera.permissionState == .ready
+                && !showingSpatialScanCapture
+                && !model.isSaving
+                && !model.isPreparingReview
         }
 
         if let session = model.intervalSession {

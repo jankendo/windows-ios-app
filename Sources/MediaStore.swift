@@ -14,6 +14,7 @@ enum MediaStore {
     private static let photoFolderName = "Photos"
     private static let audioFolderName = "Audio"
     private static let metadataFolderName = "Metadata"
+    private static let scanFolderName = "Scans"
     private static var metadataCache: [UUID: MemoryAtmosphereMetadata] = [:]
     private static var waveformCache: [UUID: [CGFloat]] = [:]
     private static let waveformCacheLock = NSLock()
@@ -89,6 +90,9 @@ enum MediaStore {
            analysisAudioFileName != entry.audioFileName {
             try? FileManager.default.removeItem(at: audioURL(for: analysisAudioFileName))
         }
+        if let scanFolderName = entry.atmosphereMetadata?.spatialScanBundleFolderName {
+            try? FileManager.default.removeItem(at: spatialScanBundleURL(for: scanFolderName))
+        }
         deleteAtmosphereMetadata(for: entry.id)
     }
 
@@ -142,6 +146,31 @@ enum MediaStore {
         try? FileManager.default.removeItem(at: metadataURL(for: entryID))
     }
 
+    static func saveSpatialScan(_ payload: SpatialScanCapturePayload, for entryID: UUID) throws -> StoredSpatialScan {
+        try ensureDirectories()
+
+        let destinationFolderName = entryID.uuidString
+        let destinationURL = spatialScanBundleURL(for: destinationFolderName)
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+        try FileManager.default.copyItem(at: payload.bundleURL, to: destinationURL)
+
+        return StoredSpatialScan(
+            bundleFolderName: destinationFolderName,
+            manifestFileName: "manifest.json",
+            previewImageFileName: payload.manifest.previewImageFileName,
+            worldMapFileName: payload.manifest.worldMapFileName,
+            frameCount: payload.manifest.frameCount,
+            captureDuration: payload.manifest.captureDuration,
+            reconstructionState: payload.manifest.reconstructionState
+        )
+    }
+
+    static func spatialScanBundleURL(for folderName: String) -> URL {
+        folderURL(named: scanFolderName).appendingPathComponent(folderName)
+    }
+
     static func cachedWaveformFingerprint(for entryID: UUID) -> [CGFloat]? {
         waveformCacheLock.lock()
         defer { waveformCacheLock.unlock() }
@@ -160,7 +189,7 @@ enum MediaStore {
 
     private static func ensureDirectories() throws {
         let fileManager = FileManager.default
-        try [folderURL(named: photoFolderName), folderURL(named: audioFolderName), folderURL(named: metadataFolderName)].forEach {
+        try [folderURL(named: photoFolderName), folderURL(named: audioFolderName), folderURL(named: metadataFolderName), folderURL(named: scanFolderName)].forEach {
             if !fileManager.fileExists(atPath: $0.path) {
                 try fileManager.createDirectory(at: $0, withIntermediateDirectories: true)
             }

@@ -7,6 +7,7 @@ struct CapturedMemoryDraft: Identifiable {
     let photoData: Data
     let audioTempURL: URL?
     let analysisAudioTempURL: URL?
+    let spatialScanPayload: SpatialScanCapturePayload?
     let capturedAt: Date
     let audioDuration: TimeInterval
     let isSpatialAudio: Bool
@@ -471,6 +472,7 @@ final class CameraCaptureService: NSObject, ObservableObject, @preconcurrency AV
             photoData: photoData,
             audioTempURL: audioURL,
             analysisAudioTempURL: analysisAudioURL,
+            spatialScanPayload: nil,
             capturedAt: capturedAt,
             audioDuration: audioDuration,
             isSpatialAudio: pendingCapture.isSpatialAudio,

@@ -161,6 +161,13 @@ struct MemoryAtmosphereMetadata: Codable {
     var seamlessLoopEndPoint: Double?
     var directionalHotspots: [DirectionalAudioHotspot]
     var capturedSpatialAudio: Bool?
+    var spatialScanBundleFolderName: String?
+    var spatialScanManifestFileName: String?
+    var spatialScanPreviewFileName: String?
+    var spatialScanWorldMapFileName: String?
+    var spatialScanFrameCount: Int?
+    var spatialScanCaptureDuration: Double?
+    var spatialScanReconstructionStateRaw: String?
 
     init(
         placeLabel: String?,
@@ -176,7 +183,14 @@ struct MemoryAtmosphereMetadata: Codable {
         seamlessLoopStartPoint: Double? = nil,
         seamlessLoopEndPoint: Double? = nil,
         directionalHotspots: [DirectionalAudioHotspot] = [],
-        capturedSpatialAudio: Bool? = nil
+        capturedSpatialAudio: Bool? = nil,
+        spatialScanBundleFolderName: String? = nil,
+        spatialScanManifestFileName: String? = nil,
+        spatialScanPreviewFileName: String? = nil,
+        spatialScanWorldMapFileName: String? = nil,
+        spatialScanFrameCount: Int? = nil,
+        spatialScanCaptureDuration: Double? = nil,
+        spatialScanReconstructionState: SpatialScanReconstructionState? = nil
     ) {
         let trimmedCaption = photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedCaption = (trimmedCaption?.isEmpty == false) ? trimmedCaption : nil
@@ -198,6 +212,13 @@ struct MemoryAtmosphereMetadata: Codable {
         self.seamlessLoopEndPoint = seamlessLoopEndPoint
         self.directionalHotspots = directionalHotspots
         self.capturedSpatialAudio = capturedSpatialAudio
+        self.spatialScanBundleFolderName = spatialScanBundleFolderName
+        self.spatialScanManifestFileName = spatialScanManifestFileName
+        self.spatialScanPreviewFileName = spatialScanPreviewFileName
+        self.spatialScanWorldMapFileName = spatialScanWorldMapFileName
+        self.spatialScanFrameCount = spatialScanFrameCount
+        self.spatialScanCaptureDuration = spatialScanCaptureDuration
+        self.spatialScanReconstructionStateRaw = spatialScanReconstructionState?.rawValue
     }
 
     var atmosphereStyle: AtmosphereStyle {
@@ -217,6 +238,11 @@ struct MemoryAtmosphereMetadata: Codable {
     var photoCaptionStyle: PhotoCaptionStyle {
         guard let photoCaptionStyleRaw else { return .poetic }
         return PhotoCaptionStyle(rawValue: photoCaptionStyleRaw) ?? .poetic
+    }
+
+    var spatialScanReconstructionState: SpatialScanReconstructionState? {
+        guard let spatialScanReconstructionStateRaw else { return nil }
+        return SpatialScanReconstructionState(rawValue: spatialScanReconstructionStateRaw)
     }
 
     var hasImmersiveAudioProfile: Bool {
@@ -426,6 +452,22 @@ final class MemoryEntry: Identifiable {
 
     var sensorSnapshot: CaptureEnvironmentSnapshot? {
         atmosphereMetadata?.sensorSnapshot
+    }
+
+    var hasSpatialScan: Bool {
+        atmosphereMetadata?.spatialScanBundleFolderName?.isEmpty == false
+    }
+
+    var spatialScanFrameCount: Int {
+        atmosphereMetadata?.spatialScanFrameCount ?? 0
+    }
+
+    var spatialScanCaptureDuration: Double? {
+        atmosphereMetadata?.spatialScanCaptureDuration
+    }
+
+    var spatialScanReconstructionState: SpatialScanReconstructionState? {
+        atmosphereMetadata?.spatialScanReconstructionState
     }
 
     var minimumDecibels: Double? {

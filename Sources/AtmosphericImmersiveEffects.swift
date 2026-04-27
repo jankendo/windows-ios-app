@@ -144,12 +144,13 @@ struct AtmosphericImmersiveOverlay: View {
         let radiusY = size.height * 0.14
 
         for hotspot in hotspots {
-            let adjustedAngle = hotspot.angleRadians - headingRadians
+            let anchorHeadingRadians = (hotspot.anchorHeadingDegrees ?? snapshot?.heading ?? 0) * .pi / 180.0
+            let adjustedAngle = hotspot.angleRadians + anchorHeadingRadians - headingRadians
             let point = CGPoint(
                 x: center.x + CGFloat(cos(adjustedAngle)) * radiusX,
                 y: center.y + CGFloat(sin(adjustedAngle)) * radiusY
             )
-            let glowRadius = CGFloat(26 + (hotspot.intensity * 30))
+            let glowRadius = CGFloat(24 + (hotspot.intensity * 24) + (hotspot.confidence * 12))
             let glowRect = CGRect(
                 x: point.x - glowRadius,
                 y: point.y - glowRadius,
@@ -160,21 +161,32 @@ struct AtmosphericImmersiveOverlay: View {
             context.fill(
                 Path(ellipseIn: glowRect),
                 with: .radialGradient(
-                    Gradient(colors: [hotspotColor.opacity(0.28 + (hotspot.intensity * 0.24)), .clear]),
+                    Gradient(colors: [hotspotColor.opacity(0.18 + (hotspot.intensity * 0.18) + (hotspot.confidence * 0.18)), .clear]),
                     center: point,
                     startRadius: 0,
                     endRadius: glowRadius
                 )
             )
 
-            let coreRadius = CGFloat(4 + (hotspot.intensity * 5))
+            let arcRadius = glowRadius * CGFloat(max(0.26, min(hotspot.spreadRadians / .pi, 0.72)))
+            let startAngle = Angle(radians: adjustedAngle - (hotspot.spreadRadians / 2))
+            let endAngle = Angle(radians: adjustedAngle + (hotspot.spreadRadians / 2))
+            var arcPath = Path()
+            arcPath.addArc(center: point, radius: arcRadius, startAngle: startAngle, endAngle: endAngle, clockwise: false)
+            context.stroke(
+                arcPath,
+                with: .color(hotspotColor.opacity(0.18 + (hotspot.confidence * 0.26))),
+                style: StrokeStyle(lineWidth: 2.4, lineCap: .round)
+            )
+
+            let coreRadius = CGFloat(4 + (hotspot.intensity * 4.2) + (hotspot.confidence * 2.6))
             let coreRect = CGRect(
                 x: point.x - coreRadius,
                 y: point.y - coreRadius,
                 width: coreRadius * 2,
                 height: coreRadius * 2
             )
-            context.fill(Path(ellipseIn: coreRect), with: .color(hotspotColor.opacity(0.78)))
+            context.fill(Path(ellipseIn: coreRect), with: .color(hotspotColor.opacity(0.48 + (hotspot.confidence * 0.34))))
         }
     }
 

@@ -6,9 +6,12 @@ struct DirectionalAudioHotspot: Codable, Hashable, Identifiable {
     let timeFraction: Double
     let angleRadians: Double
     let intensity: Double
+    let confidence: Double
+    let spreadRadians: Double
+    let anchorHeadingDegrees: Double?
 
     var id: String {
-        "\(timeFraction)-\(angleRadians)-\(intensity)"
+        "\(timeFraction)-\(angleRadians)-\(intensity)-\(confidence)"
     }
 }
 
@@ -21,7 +24,7 @@ struct ImmersiveAudioAnalysis {
 }
 
 enum ImmersiveAudioIntelligence {
-    static func analyze(url: URL?, waveformSamples: Int = 28) -> ImmersiveAudioAnalysis {
+    static func analyze(url: URL?, snapshot: CaptureEnvironmentSnapshot? = nil, waveformSamples: Int = 28) -> ImmersiveAudioAnalysis {
         guard let signal = readSignal(from: url) else {
             return ImmersiveAudioAnalysis(
                 waveformFingerprint: WaveformExtractor.samples(from: url, sampleCount: waveformSamples).map(Double.init),
@@ -35,7 +38,7 @@ enum ImmersiveAudioIntelligence {
         let waveform = WaveformExtractor.samples(from: url, sampleCount: waveformSamples).map(Double.init)
         let loopPoints = analyzeLoopPoints(from: signal)
         let featureVector = makeFeatureVector(from: signal)
-        let hotspots = detectHotspots(from: signal)
+        let hotspots = detectHotspots(from: signal, snapshot: snapshot)
 
         return ImmersiveAudioAnalysis(
             waveformFingerprint: waveform,
@@ -225,12 +228,14 @@ private extension ImmersiveAudioIntelligence {
         ]
     }
 
-    static func detectHotspots(from signal: Signal) -> [DirectionalAudioHotspot] {
+    static func detectHotspots(from signal: Signal, snapshot: CaptureEnvironmentSnapshot?) -> [DirectionalAudioHotspot] {
         let mono = signal.mono
         guard mono.count > 2_048 else { return [] }
 
         let channelCount = signal.channels.count
-        let bucketCount = 12
+        let anchorHeadingDegrees = snapshot?.heading ?? snapshot?.yawDegrees
+        let estimatedDuration = Double(mono.count) / max(signal.sampleRate, 1)
+        let bucketCount = min(max(Int((estimatedDuration * 3.2).rounded()), 12), 24)
         let bucketSize = max(mono.count / bucketCount, 1)
         var hotspots: [DirectionalAudioHotspot] = []
 
@@ -244,43 +249,74 @@ private extension ImmersiveAudioIntelligence {
             guard intensity > 0.018 else { continue }
 
             let angle: Double
+            let confidence: Double
             if channelCount >= 3 {
+                let wEnergy = channelCount >= 1 ? max(Double(vDSP.rootMeanSquare(Array(signal.channels[0][start..<end]))), 0.0001) : 0.0001
                 let xSegment = Array(signal.channels[1][start..<end])
                 let ySegment = Array(signal.channels[2][start..<end])
-                let xBalance = signedBalance(xSegment)
-                let yBalance = signedBalance(ySegment)
-                angle = atan2(Double(yBalance), Double(xBalance == 0 && yBalance == 0 ? 0.0001 : xBalance))
+                let xBalance = Double(signedBalance(xSegment)) / wEnergy
+                let yBalance = Double(signedBalance(ySegment)) / wEnergy
+                angle = atan2(yBalance, xBalance == 0 && yBalance == 0 ? 0.0001 : xBalance)
+                confidence = min(max(hypot(xBalance, yBalance) * 1.7, 0.12), 1)
             } else if channelCount >= 2 {
                 let leftSegment = Array(signal.channels[0][start..<end])
                 let rightSegment = Array(signal.channels[1][start..<end])
-                let leftEnergy = vDSP.rootMeanSquare(leftSegment)
-                let rightEnergy = vDSP.rootMeanSquare(rightSegment)
-                let balance = max(-1, min(1, rightEnergy - leftEnergy))
-                angle = Double(balance) * (.pi / 2.0)
+                let leftEnergy = Double(vDSP.rootMeanSquare(leftSegment))
+                let rightEnergy = Double(vDSP.rootMeanSquare(rightSegment))
+                let balance = max(-1.0, min(1.0, rightEnergy - leftEnergy))
+                angle = balance * (.pi / 2.0)
+                confidence = min(max(abs(balance) * 1.8, 0.1), 0.82)
             } else {
                 angle = 0
+                confidence = 0.16
             }
+
+            let spreadRadians = max(0.18, (Double.pi * 0.42) - (confidence * 0.58))
 
             hotspots.append(
                 DirectionalAudioHotspot(
                     timeFraction: Double(start) / Double(max(mono.count - 1, 1)),
                     angleRadians: angle,
-                    intensity: intensity
+                    intensity: intensity,
+                    confidence: confidence,
+                    spreadRadians: spreadRadians,
+                    anchorHeadingDegrees: anchorHeadingDegrees
                 )
             )
         }
 
         let peakIntensity = hotspots.map(\.intensity).max() ?? 1
-        return hotspots
-            .sorted { $0.intensity > $1.intensity }
-            .prefix(6)
+        let normalized = hotspots
             .map {
                 DirectionalAudioHotspot(
                     timeFraction: $0.timeFraction,
                     angleRadians: $0.angleRadians,
-                    intensity: min(max($0.intensity / peakIntensity, 0.22), 1)
+                    intensity: min(max($0.intensity / peakIntensity, 0.22), 1),
+                    confidence: $0.confidence,
+                    spreadRadians: $0.spreadRadians,
+                    anchorHeadingDegrees: $0.anchorHeadingDegrees
                 )
             }
+            .sorted {
+                let lhsScore = ($0.intensity * 0.72) + ($0.confidence * 0.28)
+                let rhsScore = ($1.intensity * 0.72) + ($1.confidence * 0.28)
+                return lhsScore > rhsScore
+            }
+
+        var selected: [DirectionalAudioHotspot] = []
+        for hotspot in normalized {
+            let overlapsExisting = selected.contains { existing in
+                angularDistance(between: existing.angleRadians, and: hotspot.angleRadians) < max(existing.spreadRadians, hotspot.spreadRadians) * 0.68
+                    && abs(existing.timeFraction - hotspot.timeFraction) < 0.16
+            }
+            guard !overlapsExisting else { continue }
+            selected.append(hotspot)
+            if selected.count == 6 {
+                break
+            }
+        }
+
+        return selected
     }
 
     static func nearestZeroCrossing(around index: Int, in samples: [Float], searchRadius: Int = 512) -> Int {
@@ -312,5 +348,16 @@ private extension ImmersiveAudioIntelligence {
         return samples.reduce(Float.zero) { partial, sample in
             partial + (sample * abs(sample))
         } / Float(samples.count)
+    }
+
+    static func angularDistance(between lhs: Double, and rhs: Double) -> Double {
+        let delta = (lhs - rhs).truncatingRemainder(dividingBy: .pi * 2)
+        if delta > .pi {
+            return abs(delta - (.pi * 2))
+        }
+        if delta < -.pi {
+            return abs(delta + (.pi * 2))
+        }
+        return abs(delta)
     }
 }
