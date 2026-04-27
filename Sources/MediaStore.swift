@@ -106,7 +106,7 @@ enum MediaStore {
         let data = try JSONEncoder().encode(metadata)
         try data.write(to: fileURL, options: .atomic)
         metadataCache[entryID] = metadata
-        cacheWaveformFingerprint(metadata.waveformFingerprint.map(CGFloat.init), for: entryID)
+        cacheWaveformFingerprint(metadata.waveformFingerprint.map { CGFloat($0) }, for: entryID)
         Task { @MainActor in
             AudioPlaybackDiagnostics.shared.record("metadata saved entry=\(entryID.uuidString)", category: "storage")
         }
@@ -132,7 +132,7 @@ enum MediaStore {
         }
 
         metadataCache[entryID] = metadata
-        cacheWaveformFingerprint(metadata.waveformFingerprint.map(CGFloat.init), for: entryID)
+        cacheWaveformFingerprint(metadata.waveformFingerprint.map { CGFloat($0) }, for: entryID)
         return metadata
     }
 
