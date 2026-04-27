@@ -29,6 +29,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
     private var spatialPan: Float = 0
     private var spatialOffset: CGSize = .zero
     private var listenerYawDegrees: Double = 0
+    private var usesWorldLockedSoundfieldRotation = false
     private var usesEngineLoop = false
     private let diagnostics = AudioPlaybackDiagnostics.shared
 
@@ -112,7 +113,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
         currentTime = 0
         reactiveLevel = Double(playbackEnvelope.first ?? 0.18)
         let assetProfile = AudioAssetProfile.inspect(url: url)
-        isSpatialPlaybackActive = assetProfile.isTrueSpatialAudio
+        isSpatialPlaybackActive = assetProfile.hasFOATrack
 
         if loop, configureEngineLoopIfPossible(url: url, assetProfile: assetProfile) {
             if autoPlay {
@@ -141,7 +142,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
 
         diagnostics.record("player created: duration=\(Self.timeString(duration)) loop=\(loop) volume=\(String(format: "%.2f", volume))")
         diagnostics.record(
-            assetProfile.isTrueSpatialAudio
+            assetProfile.hasFOATrack
                 ? "spatial audio playback check: true (\(assetProfile.diagnosticSummary))"
                 : "spatial audio playback check: false (\(assetProfile.diagnosticSummary))"
         )
@@ -289,6 +290,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
         enginePlayerNode?.volume = volume
         engineDuration = engineBundle.duration
         duration = engineBundle.duration
+        usesWorldLockedSoundfieldRotation = assetProfile.hasFOATrack
         usesEngineLoop = true
         player = nil
         looper = nil
@@ -298,10 +300,11 @@ final class AudioPlayerController: NSObject, ObservableObject {
             "loop strategy: AVAudioEngine seamless loop enabled range=\(Self.timeString(engineBundle.range.lowerBound))-\(Self.timeString(engineBundle.range.upperBound))"
         )
         diagnostics.record(
-            assetProfile.isTrueSpatialAudio
+            assetProfile.hasFOATrack
                 ? "spatial audio playback check: true (\(assetProfile.diagnosticSummary))"
                 : "spatial audio playback check: false (\(assetProfile.diagnosticSummary))"
         )
+        diagnostics.record(Self.spatialRendererSummary(for: assetProfile))
         return true
     }
 
@@ -370,11 +373,21 @@ final class AudioPlayerController: NSObject, ObservableObject {
     private func refreshSpatialPlacement() {
         guard let enginePlayerNode else { return }
 
+        if let environmentNode {
+            environmentNode.listenerAngularOrientation = AVAudioMake3DAngularOrientation(
+                Float(listenerYawDegrees),
+                0,
+                0
+            )
+        }
+
         let yawRadians = listenerYawDegrees * .pi / 180.0
         let lateralBase = Double(spatialPan) * 1.35 + Double(spatialOffset.width / 34.0)
         let verticalBase = max(-0.45, min(0.45, Double(-spatialOffset.height / 82.0)))
-        let rotatedLateral = max(-1.8, min(1.8, lateralBase + (sin(yawRadians) * 0.95)))
-        let depth = max(-2.3, min(-0.75, -1.45 - (cos(yawRadians) * 0.24)))
+        let orientationLinkedOffset = usesWorldLockedSoundfieldRotation ? 0 : (sin(yawRadians) * 0.95)
+        let rotatedLateral = max(-1.8, min(1.8, lateralBase + orientationLinkedOffset))
+        let depthBase = usesWorldLockedSoundfieldRotation ? -1.2 : (-1.45 - (cos(yawRadians) * 0.24))
+        let depth = max(-2.3, min(-0.75, depthBase))
         enginePlayerNode.position = AVAudio3DPoint(
             x: Float(rotatedLateral),
             y: Float(verticalBase),
@@ -406,6 +419,7 @@ final class AudioPlayerController: NSObject, ObservableObject {
         engine = nil
         engineDuration = 0
         loopRange = nil
+        usesWorldLockedSoundfieldRotation = false
         usesEngineLoop = false
         loadedURL = nil
         shouldLoop = false
@@ -513,6 +527,16 @@ private extension AudioPlayerController {
     static func timeString(_ time: TimeInterval) -> String {
         guard time.isFinite else { return "nan" }
         return String(format: "%.2fs", time)
+    }
+
+    static func spatialRendererSummary(for assetProfile: AudioAssetProfile) -> String {
+        if assetProfile.hasFOATrack {
+            return "spatial renderer: FOA soundfield rotation via AVAudioEnvironmentNode.listenerAngularOrientation"
+        }
+        if assetProfile.hasStereoFallbackTrack {
+            return "spatial renderer: stereo fallback with orientation-linked source positioning"
+        }
+        return "spatial renderer: standard stereo playback"
     }
 }
 

@@ -35,22 +35,6 @@ private enum LibraryMode: String, CaseIterable, Identifiable {
     }
 }
 
-private enum LibraryTimelineLayout: String, CaseIterable, Identifiable {
-    case list
-    case grid
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .list:
-            return "リスト"
-        case .grid:
-            return "グリッド"
-        }
-    }
-}
-
 private enum MemoryDateFilter: String, CaseIterable, Identifiable {
     case all
     case today
@@ -97,7 +81,6 @@ struct LibraryView: View {
     @AppStorage(ResonancePreferenceKey.nearbyMemoriesRadius) private var nearbyMemoriesRadius = NearbyMemoriesRadius.meters500.rawValue
 
     @State private var selectedMode: LibraryMode = .timeline
-    @State private var timelineLayout: LibraryTimelineLayout = .list
     @State private var selectedMood: String?
     @State private var selectedAtmosphere: AtmosphereStyle?
     @State private var favoritesOnly = false
@@ -141,7 +124,7 @@ struct LibraryView: View {
         entries.filter { selectedEntryIDs.contains($0.id) }
     }
 
-    private var timelineGridColumns: [GridItem] {
+    private var cardGridColumns: [GridItem] {
         [GridItem(.adaptive(minimum: 168, maximum: 240), spacing: 14, alignment: .top)]
     }
 
@@ -435,7 +418,6 @@ struct LibraryView: View {
             VStack(spacing: 18) {
                 summaryCard
                 modePicker
-                layoutPicker
                 filterBar
                 reunionSection
                 collectionsSection
@@ -585,15 +567,6 @@ struct LibraryView: View {
         }
     }
 
-    private var layoutPicker: some View {
-        Picker("一覧レイアウト", selection: $timelineLayout) {
-            ForEach(LibraryTimelineLayout.allCases) { layout in
-                Text(layout.label).tag(layout)
-            }
-        }
-        .pickerStyle(.segmented)
-    }
-
     private var timelineSection: some View {
         VStack(spacing: 16) {
             if isSelectionModeEnabled {
@@ -606,17 +579,9 @@ struct LibraryView: View {
                         .font(.title3.bold())
                         .foregroundStyle(palette.primaryText)
 
-                    if timelineLayout == .list {
-                        VStack(spacing: 12) {
-                            ForEach(section.entries) { entry in
-                                timelineListEntry(for: entry)
-                            }
-                        }
-                    } else {
-                        LazyVGrid(columns: timelineGridColumns, spacing: 14) {
-                            ForEach(section.entries) { entry in
-                                timelineGridEntry(for: entry)
-                            }
+                    VStack(spacing: 12) {
+                        ForEach(section.entries) { entry in
+                            timelineListEntry(for: entry)
                         }
                     }
                 }
@@ -755,7 +720,7 @@ struct LibraryView: View {
                         .foregroundStyle(palette.secondaryText)
                 }
             } else {
-                LazyVGrid(columns: timelineGridColumns, spacing: 14) {
+                LazyVGrid(columns: cardGridColumns, spacing: 14) {
                     ForEach(collections) { collection in
                         NavigationLink {
                             MemoryCollectionDetailView(collection: collection)
@@ -1327,29 +1292,6 @@ struct LibraryView: View {
         }
     }
 
-    @ViewBuilder
-    private func timelineGridEntry(for entry: MemoryEntry) -> some View {
-        if isSelectionModeEnabled {
-            Button {
-                toggleSelection(for: entry)
-            } label: {
-                LibrarySelectableCard(isSelected: selectedEntryIDs.contains(entry.id), palette: palette) {
-                    MemoryGridCardView(entry: entry)
-                }
-            }
-            .buttonStyle(.plain)
-        } else {
-            NavigationLink {
-                MemoryDetailView(entry: entry)
-            } label: {
-                MemoryGridCardView(entry: entry)
-            }
-            .buttonStyle(.plain)
-            .contextMenu {
-                contextMenu(for: entry)
-            }
-        }
-    }
 }
 
 private struct AdvancedLibraryFilterSheet: View {

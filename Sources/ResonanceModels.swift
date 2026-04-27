@@ -629,6 +629,7 @@ enum MemorySearchEngine {
     ) -> [MemoryEntry] {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let tokenResult = queryTokens(from: normalizedQuery)
+        let compassPoints = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, compassPoint(for: $0)) })
 
         let rankedEntries = entries
             .filter { entry in
@@ -643,7 +644,8 @@ enum MemorySearchEngine {
                     tokens: tokenResult.tokens,
                     conceptGroups: tokenResult.conceptGroups,
                     compass: compass,
-                    similaritySeed: similaritySeed
+                    similaritySeed: similaritySeed,
+                    entryCompass: compassPoints[lhs.id] ?? .zero
                 )
                 let rhsScore = rankingScore(
                     for: rhs,
@@ -651,7 +653,8 @@ enum MemorySearchEngine {
                     tokens: tokenResult.tokens,
                     conceptGroups: tokenResult.conceptGroups,
                     compass: compass,
-                    similaritySeed: similaritySeed
+                    similaritySeed: similaritySeed,
+                    entryCompass: compassPoints[rhs.id] ?? .zero
                 )
 
                 if abs(lhsScore - rhsScore) < 0.0001 {
@@ -664,16 +667,33 @@ enum MemorySearchEngine {
             return rankedEntries
         }
 
+        let directionallyMatchedEntries = rankedEntries.filter {
+            matchesCompassDirection(requested: compass, candidate: compassPoints[$0.id] ?? .zero)
+        }
         let threshold = compassDistanceThreshold(for: compass)
-        let narrowedEntries = rankedEntries.filter {
-            compassDistance(from: compass, to: compassPoint(for: $0)) <= threshold
+        let narrowedEntries = directionallyMatchedEntries.filter {
+            compassDistance(from: compass, to: compassPoints[$0.id] ?? .zero) <= threshold
         }
 
         if !narrowedEntries.isEmpty {
             return narrowedEntries
         }
 
-        return Array(rankedEntries.prefix(min(max(entries.count, 1), 12)))
+        if !directionallyMatchedEntries.isEmpty {
+            return Array(directionallyMatchedEntries.prefix(8))
+        }
+
+        return rankedEntries
+            .sorted { lhs, rhs in
+                let lhsDistance = compassDistance(from: compass, to: compassPoints[lhs.id] ?? .zero)
+                let rhsDistance = compassDistance(from: compass, to: compassPoints[rhs.id] ?? .zero)
+                if abs(lhsDistance - rhsDistance) < 0.0001 {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhsDistance < rhsDistance
+            }
+            .prefix(6)
+            .map { $0 }
     }
 
     static func similarEntries(to seed: MemoryEntry, from entries: [MemoryEntry], limit: Int = 6) -> [MemoryEntry] {
@@ -705,16 +725,16 @@ enum MemorySearchEngine {
         var naturalUrban = 0.0
         var quietLively = 0.0
 
-        for token in ["forest", "tree", "garden", "park", "river", "water", "ocean", "sea", "bird", "rain", "mountain", "beach", "風", "海", "雨", "木", "川", "公園", "森"] where corpus.contains(token) {
+        for token in ["forest", "tree", "garden", "park", "river", "water", "ocean", "sea", "bird", "rain", "mountain", "beach", "waves", "wind", "leaf", "leaves", "stream", "insect", "shore", "lake", "trail", "temple", "shrine", "風", "海", "雨", "木", "川", "公園", "森", "波", "葉", "滝", "湖", "虫", "神社", "寺", "浜"] where corpus.contains(token) {
             naturalUrban -= 0.22
         }
-        for token in ["street", "city", "traffic", "car", "building", "train", "station", "crowd", "都会", "車", "街", "駅", "電車", "人混み"] where corpus.contains(token) {
+        for token in ["street", "city", "traffic", "car", "building", "train", "station", "crowd", "shop", "cafe", "office", "mall", "crossing", "signal", "bus", "subway", "restaurant", "都会", "車", "街", "駅", "電車", "人混み", "店", "カフェ", "交差点", "信号", "バス", "地下鉄", "商店街", "ビル"] where corpus.contains(token) {
             naturalUrban += 0.22
         }
-        for token in ["quiet", "calm", "silent", "静か", "落ち着き", "しみじみ"] where corpus.contains(token) {
+        for token in ["quiet", "calm", "silent", "soft", "whisper", "breeze", "library", "midnight", "dawn", "still", "静か", "落ち着き", "しみじみ", "静寂", "ささやき", "そよ風", "深夜", "朝"] where corpus.contains(token) {
             quietLively -= 0.24
         }
-        for token in ["lively", "joyful", "active", "crowd", "music", "speech", "賑やか", "楽しい", "活気", "会話", "音楽"] where corpus.contains(token) {
+        for token in ["lively", "joyful", "active", "crowd", "music", "speech", "festival", "laugh", "cheer", "applause", "children", "kids", "market", "party", "busy", "loud", "賑やか", "楽しい", "活気", "会話", "音楽", "祭", "笑い", "拍手", "子ども", "市場", "騒がしい"] where corpus.contains(token) {
             quietLively += 0.24
         }
 
@@ -726,6 +746,26 @@ enum MemorySearchEngine {
             let cachedWaveform = entry.previewWaveformFingerprint
             let waveformAverage = cachedWaveform.reduce(0) { $0 + $1 } / CGFloat(max(cachedWaveform.count, 1))
             quietLively += Double((waveformAverage - 0.25) * 2.2)
+        }
+
+        if let maximumDecibels = entry.maximumDecibels {
+            quietLively += ((maximumDecibels - 48) / 34) * 0.16
+        }
+        if let minimumDecibels = entry.minimumDecibels, let maximumDecibels = entry.maximumDecibels {
+            let dynamicRange = max(0, maximumDecibels - minimumDecibels)
+            quietLively += (dynamicRange / 28) * 0.14
+        }
+
+        switch entry.atmosphereStyle {
+        case .dawn:
+            quietLively -= 0.18
+            naturalUrban -= 0.04
+        case .day:
+            quietLively += 0.08
+        case .dusk:
+            quietLively -= 0.02
+        case .night:
+            quietLively -= 0.24
         }
 
         switch MemoryMood(rawValue: entry.mood) {
@@ -795,7 +835,8 @@ enum MemorySearchEngine {
         tokens: [String],
         conceptGroups: [[String]],
         compass: MoodCompassPoint,
-        similaritySeed: MemoryEntry?
+        similaritySeed: MemoryEntry?,
+        entryCompass: MoodCompassPoint
     ) -> Double {
         var score = 0.0
 
@@ -808,9 +849,9 @@ enum MemorySearchEngine {
         }
 
         if !compass.isCentered {
-            let entryCompass = compassPoint(for: entry)
             let distance = compassDistance(from: compass, to: entryCompass)
-            score += max(0, 3.6 - distance * 2.6)
+            let directionalBonus = matchesCompassDirection(requested: compass, candidate: entryCompass) ? 1.1 : -0.8
+            score += max(0, 4.6 - distance * 3.4) + directionalBonus
         }
 
         if let similaritySeed, similaritySeed.id != entry.id {
@@ -832,7 +873,32 @@ enum MemorySearchEngine {
 
     private static func compassDistanceThreshold(for compass: MoodCompassPoint) -> Double {
         let focus = max(abs(compass.naturalUrban), abs(compass.quietLively))
-        return max(0.42, 1.12 - (focus * 0.48))
+        return max(0.26, 0.76 - (focus * 0.34))
+    }
+
+    private static func matchesCompassDirection(requested: MoodCompassPoint, candidate: MoodCompassPoint) -> Bool {
+        let requestedMagnitude = hypot(requested.naturalUrban, requested.quietLively)
+        guard requestedMagnitude >= 0.18 else { return true }
+
+        let candidateMagnitude = hypot(candidate.naturalUrban, candidate.quietLively)
+        if candidateMagnitude < 0.12 {
+            return requestedMagnitude < 0.36
+        }
+
+        let dot = (requested.naturalUrban * candidate.naturalUrban) + (requested.quietLively * candidate.quietLively)
+        let cosine = dot / max(requestedMagnitude * candidateMagnitude, 0.0001)
+
+        let minimumCosine: Double
+        switch requestedMagnitude {
+        case 0.75...:
+            minimumCosine = 0.72
+        case 0.48...:
+            minimumCosine = 0.50
+        default:
+            minimumCosine = 0.24
+        }
+
+        return dot > 0 && cosine >= minimumCosine
     }
 
     static func aliases(for term: String) -> [String] {
