@@ -173,9 +173,11 @@ final class CaptureLocationService: NSObject, ObservableObject, CLLocationManage
                 let targetVerticalShift = CGFloat(verticalTilt * 14)
                 let pitchDegrees = motion.attitude.pitch * 180 / .pi
                 let rollDegrees = motion.attitude.roll * 180 / .pi
-                let resolvedYawDegrees = referenceFrame.flatMap { frame in
-                    guard ImmersiveDirectionSpace.isCompassReferenced(frame) else { return nil }
-                    return ImmersiveDirectionSpace.headingDegrees(fromYawRadians: motion.attitude.yaw)
+                let resolvedYawDegrees: Double?
+                if let referenceFrame, ImmersiveDirectionSpace.isCompassReferenced(referenceFrame) {
+                    resolvedYawDegrees = ImmersiveDirectionSpace.headingDegrees(fromYawRadians: motion.attitude.yaw)
+                } else {
+                    resolvedYawDegrees = nil
                 }
 
                 Task { @MainActor [weak self] in
