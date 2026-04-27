@@ -34,6 +34,10 @@ struct MemorySceneReviewView: View {
         ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
     }
 
+    private var playbackURL: URL? {
+        draft.analysisAudioURL ?? draft.audioTempURL
+    }
+
     private var previewDisplayTitle: String {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedTitle.isEmpty ? "深呼吸して、この空気にとどまる" : trimmedTitle
@@ -77,7 +81,7 @@ struct MemorySceneReviewView: View {
             )
         }
         .onAppear {
-            waveformSamples = WaveformExtractor.samples(from: draft.analysisAudioURL, sampleCount: 64)
+            waveformSamples = WaveformExtractor.samples(from: playbackURL, sampleCount: 64)
             startLoopingAmbientPlayback()
         }
         .onChange(of: showingImmersivePreview) { _, isPresented in
@@ -502,8 +506,8 @@ struct MemorySceneReviewView: View {
     }
 
     private func startLoopingAmbientPlayback() {
-        if let audioURL = draft.audioTempURL {
-            player.load(url: audioURL, autoPlay: true, loop: true, volume: 0.72)
+        if let playbackURL {
+            player.load(url: playbackURL, autoPlay: true, loop: true, volume: 0.72)
         }
     }
 }
@@ -518,7 +522,7 @@ private struct ImmersiveMemoryPlaybackView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var environmentService = CaptureLocationService.shared
-    @StateObject private var player = AudioPlayerController()
+    @StateObject private var viewModel = ImmersivePlaybackViewModel()
     @State private var controlsVisible = true
     @State private var dragOffset: CGSize = .zero
     @State private var saliencyFocus = CGPoint(x: 0.5, y: 0.5)
@@ -589,7 +593,9 @@ private struct ImmersiveMemoryPlaybackView: View {
             AtmosphericImmersiveOverlay(
                 atmosphere: atmosphere,
                 snapshot: draft.sensorSnapshot,
-                audioReactiveLevel: player.reactiveLevel
+                audioReactiveLevel: viewModel.player.reactiveLevel,
+                hotspots: [],
+                headingDegrees: viewModel.hotspotHeadingDegrees
             )
             .ignoresSafeArea()
         }
@@ -603,20 +609,13 @@ private struct ImmersiveMemoryPlaybackView: View {
             DragGesture(minimumDistance: 8)
                 .onChanged { value in
                     dragOffset = value.translation
-                    player.setPan(Float(value.translation.width / 180))
-                    player.setSpatialOffset(
-                        CGSize(
-                            width: environmentService.previewHorizontalShift + (value.translation.width * 0.22),
-                            height: environmentService.previewVerticalShift + (value.translation.height * 0.16)
-                        )
-                    )
+                    viewModel.updateDrag(value.translation)
                 }
                 .onEnded { _ in
                     withAnimation(.interactiveSpring(response: 0.62, dampingFraction: 0.88, blendDuration: 0.16)) {
                         dragOffset = .zero
                     }
-                    player.setPan(0)
-                    player.setSpatialOffset(environmentService.previewParallax)
+                    viewModel.resetDrag()
                 }
         )
         .safeAreaInset(edge: .top) {
@@ -664,11 +663,15 @@ private struct ImmersiveMemoryPlaybackView: View {
             }
         }
         .onAppear {
-            if let audioURL = draft.audioTempURL {
-                player.load(url: audioURL, autoPlay: true, loop: true, volume: 0.78)
-            }
-            player.setPlaybackEnvelope(waveformSamples)
-            player.setSpatialOffset(environmentService.previewParallax)
+            viewModel.loadAmbientLoop(
+                playbackURL: draft.audioTempURL,
+                analysisURL: draft.analysisAudioURL,
+                waveform: waveformSamples,
+                loopRange: nil,
+                volume: 0.78
+            )
+            viewModel.updateBaseSpatialOffset(environmentService.previewParallax)
+            viewModel.startMotionTracking()
             kenBurnsExpanded = true
             if let image = UIImage(data: draft.photoData) {
                 Task {
@@ -677,10 +680,10 @@ private struct ImmersiveMemoryPlaybackView: View {
             }
         }
         .onChange(of: environmentService.previewParallax) { _, newValue in
-            player.setSpatialOffset(newValue)
+            viewModel.updateBaseSpatialOffset(newValue)
         }
         .onDisappear {
-            player.stop()
+            viewModel.stop()
         }
     }
 
@@ -688,9 +691,9 @@ private struct ImmersiveMemoryPlaybackView: View {
     private var immersivePlayButton: some View {
         if let audioURL = draft.audioTempURL {
             Button {
-                player.togglePlayback(for: audioURL)
+                viewModel.togglePlayback()
             } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                Image(systemName: viewModel.player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 52, height: 52)
@@ -701,13 +704,13 @@ private struct ImmersiveMemoryPlaybackView: View {
                     }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(player.isPlaying ? "一時停止" : "再生")
+            .accessibilityLabel(viewModel.player.isPlaying ? "一時停止" : "再生")
         }
     }
 
     private func immersiveTexts(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 6 : 8) {
-            if player.isSpatialPlaybackActive {
+            if viewModel.player.isSpatialPlaybackActive {
                 Label("空間オーディオ", systemImage: "dot.radiowaves.left.and.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.78))
@@ -762,7 +765,7 @@ private struct ImmersiveMemoryPlaybackView: View {
 
             AudioWaveformView(
                 samples: waveformSamples,
-                progress: player.duration > 0 ? player.currentTime / player.duration : 0,
+                progress: viewModel.player.duration > 0 ? viewModel.player.currentTime / viewModel.player.duration : 0,
                 activeColor: .white,
                 inactiveColor: Color.white.opacity(0.14),
                 minimumBarHeight: compact ? 8 : 10
@@ -771,7 +774,7 @@ private struct ImmersiveMemoryPlaybackView: View {
             .accessibilityHidden(true)
 
             HStack(alignment: .firstTextBaseline) {
-                Text(player.currentTime.resonanceClockText)
+                Text(viewModel.player.currentTime.resonanceClockText)
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.74))
 

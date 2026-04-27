@@ -146,6 +146,7 @@ struct MemoryAtmosphereMetadata: Codable {
 
     var placeLabel: String?
     var waveformFingerprint: [Double]
+    var analysisAudioFileName: String?
     var photoCaption: String?
     var photoCaptionSourceRaw: String?
     var photoCaptionStyleRaw: String?
@@ -155,22 +156,34 @@ struct MemoryAtmosphereMetadata: Codable {
     var sensorSnapshot: CaptureEnvironmentSnapshot?
     var minimumDecibels: Double?
     var maximumDecibels: Double?
+    var audioFeatureVector: [Float]?
+    var seamlessLoopStartPoint: Double?
+    var seamlessLoopEndPoint: Double?
+    var directionalHotspots: [DirectionalAudioHotspot]
+    var capturedSpatialAudio: Bool?
 
     init(
         placeLabel: String?,
         waveformFingerprint: [Double],
+        analysisAudioFileName: String? = nil,
         photoCaption: String? = nil,
         atmosphereStyle: AtmosphereStyle,
         captureDuration: Double? = nil,
         sensorSnapshot: CaptureEnvironmentSnapshot? = nil,
         minimumDecibels: Double? = nil,
-        maximumDecibels: Double? = nil
+        maximumDecibels: Double? = nil,
+        audioFeatureVector: [Float]? = nil,
+        seamlessLoopStartPoint: Double? = nil,
+        seamlessLoopEndPoint: Double? = nil,
+        directionalHotspots: [DirectionalAudioHotspot] = [],
+        capturedSpatialAudio: Bool? = nil
     ) {
         let trimmedCaption = photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedCaption = (trimmedCaption?.isEmpty == false) ? trimmedCaption : nil
 
         self.placeLabel = placeLabel
         self.waveformFingerprint = waveformFingerprint
+        self.analysisAudioFileName = analysisAudioFileName
         self.photoCaption = normalizedCaption
         self.photoCaptionSourceRaw = normalizedCaption == nil ? nil : PhotoCaptionSource.composedFallback.rawValue
         self.photoCaptionStyleRaw = normalizedCaption == nil ? nil : PhotoCaptionStyle.poetic.rawValue
@@ -180,6 +193,11 @@ struct MemoryAtmosphereMetadata: Codable {
         self.sensorSnapshot = sensorSnapshot
         self.minimumDecibels = minimumDecibels
         self.maximumDecibels = maximumDecibels
+        self.audioFeatureVector = audioFeatureVector
+        self.seamlessLoopStartPoint = seamlessLoopStartPoint
+        self.seamlessLoopEndPoint = seamlessLoopEndPoint
+        self.directionalHotspots = directionalHotspots
+        self.capturedSpatialAudio = capturedSpatialAudio
     }
 
     var atmosphereStyle: AtmosphereStyle {
@@ -199,6 +217,10 @@ struct MemoryAtmosphereMetadata: Codable {
     var photoCaptionStyle: PhotoCaptionStyle {
         guard let photoCaptionStyleRaw else { return .poetic }
         return PhotoCaptionStyle(rawValue: photoCaptionStyleRaw) ?? .poetic
+    }
+
+    var hasImmersiveAudioProfile: Bool {
+        seamlessLoopStartPoint != nil || seamlessLoopEndPoint != nil || !(audioFeatureVector?.isEmpty ?? true)
     }
 }
 
@@ -350,6 +372,13 @@ final class MemoryEntry: Identifiable {
         return MediaStore.audioURL(for: audioFileName)
     }
 
+    var analysisAudioURL: URL? {
+        guard let analysisAudioFileName = atmosphereMetadata?.analysisAudioFileName else {
+            return audioURL
+        }
+        return MediaStore.audioURL(for: analysisAudioFileName)
+    }
+
     var notePreview: String {
         let trimmed = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return descriptiveCaption }
@@ -420,7 +449,34 @@ final class MemoryEntry: Identifiable {
         if !storedSamples.isEmpty {
             return storedSamples
         }
-        return WaveformExtractor.samples(from: audioURL, sampleCount: 28)
+        return WaveformExtractor.samples(from: analysisAudioURL, sampleCount: 28)
+    }
+
+    var audioFeatureVector: [Float] {
+        if let stored = atmosphereMetadata?.audioFeatureVector, !stored.isEmpty {
+            return stored
+        }
+        return []
+    }
+
+    var seamlessLoopStartPoint: Double? {
+        atmosphereMetadata?.seamlessLoopStartPoint
+    }
+
+    var seamlessLoopEndPoint: Double? {
+        atmosphereMetadata?.seamlessLoopEndPoint
+    }
+
+    var directionalHotspots: [DirectionalAudioHotspot] {
+        atmosphereMetadata?.directionalHotspots ?? []
+    }
+
+    var isSpatialCapture: Bool {
+        if let stored = atmosphereMetadata?.capturedSpatialAudio {
+            return stored
+        }
+        guard let audioURL else { return false }
+        return AudioAssetProfile.inspect(url: audioURL).isTrueSpatialAudio
     }
 
     var sensorHighlights: [String] {
@@ -510,16 +566,232 @@ enum MemoryMood: String, CaseIterable, Identifiable {
     }
 }
 
+struct MoodCompassPoint: Equatable {
+    var naturalUrban: Double
+    var quietLively: Double
+
+    static let zero = MoodCompassPoint(naturalUrban: 0, quietLively: 0)
+
+    var isCentered: Bool {
+        abs(naturalUrban) < 0.12 && abs(quietLively) < 0.12
+    }
+
+    var localizedLabel: String {
+        if isCentered {
+            return "すべての空気感"
+        }
+
+        let horizontal: String
+        if naturalUrban < -0.28 {
+            horizontal = "自然"
+        } else if naturalUrban > 0.28 {
+            horizontal = "都市"
+        } else {
+            horizontal = "場"
+        }
+
+        let vertical: String
+        if quietLively < -0.28 {
+            vertical = "静かな"
+        } else if quietLively > 0.28 {
+            vertical = "賑やかな"
+        } else {
+            vertical = ""
+        }
+
+        return "\(vertical)\(horizontal)の空気感"
+    }
+}
+
 enum MemorySearchEngine {
-    static func filter(_ entries: [MemoryEntry], query: String, mood: String?) -> [MemoryEntry] {
+    static func filter(
+        _ entries: [MemoryEntry],
+        query: String,
+        mood: String?,
+        compass: MoodCompassPoint = .zero,
+        similaritySeed: MemoryEntry? = nil
+    ) -> [MemoryEntry] {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let tokenResult = queryTokens(from: normalizedQuery)
 
-        return entries.filter { entry in
-            let moodMatches = mood == nil || mood == entry.mood
-            let queryMatches = normalizedQuery.isEmpty || matches(entry: entry, query: normalizedQuery, tokens: tokenResult.tokens, conceptGroups: tokenResult.conceptGroups)
-            return moodMatches && queryMatches
+        return entries
+            .filter { entry in
+                let moodMatches = mood == nil || mood == entry.mood
+                let queryMatches = normalizedQuery.isEmpty || matches(entry: entry, query: normalizedQuery, tokens: tokenResult.tokens, conceptGroups: tokenResult.conceptGroups)
+                return moodMatches && queryMatches
+            }
+            .sorted { lhs, rhs in
+                let lhsScore = rankingScore(
+                    for: lhs,
+                    query: normalizedQuery,
+                    tokens: tokenResult.tokens,
+                    conceptGroups: tokenResult.conceptGroups,
+                    compass: compass,
+                    similaritySeed: similaritySeed
+                )
+                let rhsScore = rankingScore(
+                    for: rhs,
+                    query: normalizedQuery,
+                    tokens: tokenResult.tokens,
+                    conceptGroups: tokenResult.conceptGroups,
+                    compass: compass,
+                    similaritySeed: similaritySeed
+                )
+
+                if abs(lhsScore - rhsScore) < 0.0001 {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhsScore > rhsScore
+            }
+    }
+
+    static func similarEntries(to seed: MemoryEntry, from entries: [MemoryEntry], limit: Int = 6) -> [MemoryEntry] {
+        entries
+            .filter { $0.id != seed.id }
+            .sorted { lhs, rhs in
+                let lhsScore = similarityScore(between: seed, and: lhs)
+                let rhsScore = similarityScore(between: seed, and: rhs)
+                if abs(lhsScore - rhsScore) < 0.0001 {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhsScore > rhsScore
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    static func compassPoint(for entry: MemoryEntry) -> MoodCompassPoint {
+        let corpus = [
+            entry.autoTags.joined(separator: " "),
+            entry.transcript,
+            entry.placeLabel ?? "",
+            entry.localizedMood,
+            entry.descriptiveCaption
+        ]
+        .joined(separator: " ")
+        .lowercased()
+
+        var naturalUrban = 0.0
+        var quietLively = 0.0
+
+        for token in ["forest", "tree", "garden", "park", "river", "water", "ocean", "sea", "bird", "rain", "mountain", "beach", "風", "海", "雨", "木", "川", "公園", "森"] where corpus.contains(token) {
+            naturalUrban -= 0.22
         }
+        for token in ["street", "city", "traffic", "car", "building", "train", "station", "crowd", "都会", "車", "街", "駅", "電車", "人混み"] where corpus.contains(token) {
+            naturalUrban += 0.22
+        }
+        for token in ["quiet", "calm", "silent", "静か", "落ち着き", "しみじみ"] where corpus.contains(token) {
+            quietLively -= 0.24
+        }
+        for token in ["lively", "joyful", "active", "crowd", "music", "speech", "賑やか", "楽しい", "活気", "会話", "音楽"] where corpus.contains(token) {
+            quietLively += 0.24
+        }
+
+        if entry.audioFeatureVector.count >= 8 {
+            let vector = entry.audioFeatureVector
+            quietLively += Double(vector[0] * 1.6) + Double(vector[4] * 1.2) + Double(vector[6] * 0.9) - Double(vector[5] * 1.3)
+            naturalUrban += Double(vector[7] * 1.4) + Double(vector[3] * 0.6)
+        } else {
+            let waveformAverage = entry.waveformFingerprint.reduce(0) { $0 + $1 } / CGFloat(max(entry.waveformFingerprint.count, 1))
+            quietLively += Double((waveformAverage - 0.25) * 2.2)
+        }
+
+        switch MemoryMood(rawValue: entry.mood) {
+        case .calm:
+            quietLively -= 0.32
+        case .lively:
+            quietLively += 0.36
+        case .joyful:
+            quietLively += 0.18
+        case .urban:
+            naturalUrban += 0.32
+        case .reflective:
+            quietLively -= 0.16
+        case nil:
+            break
+        }
+
+        return MoodCompassPoint(
+            naturalUrban: max(-1, min(1, naturalUrban)),
+            quietLively: max(-1, min(1, quietLively))
+        )
+    }
+
+    static func composedFeatureVector(for entry: MemoryEntry) -> [Float] {
+        let audioVector: [Float]
+        if !entry.audioFeatureVector.isEmpty {
+            audioVector = entry.audioFeatureVector
+        } else {
+            let waveform = entry.waveformFingerprint.prefix(8).map { Float($0) }
+            audioVector = waveform + Array(repeating: 0, count: max(0, 8 - waveform.count))
+        }
+
+        let compass = compassPoint(for: entry)
+        let atmosphereEncoding: [Float] = AtmosphereStyle.allCases.map {
+            $0 == entry.atmosphereStyle ? 1 : 0
+        }
+        return audioVector + [
+            Float(compass.naturalUrban),
+            Float(compass.quietLively),
+            entry.isFavorite ? 1 : 0
+        ] + atmosphereEncoding
+    }
+
+    static func similarityScore(between lhs: MemoryEntry, and rhs: MemoryEntry) -> Double {
+        let leftVector = composedFeatureVector(for: lhs)
+        let rightVector = composedFeatureVector(for: rhs)
+        guard leftVector.count == rightVector.count, !leftVector.isEmpty else { return 0 }
+
+        var dot = 0.0
+        var lhsNorm = 0.0
+        var rhsNorm = 0.0
+        for index in leftVector.indices {
+            let left = Double(leftVector[index])
+            let right = Double(rightVector[index])
+            dot += left * right
+            lhsNorm += left * left
+            rhsNorm += right * right
+        }
+
+        guard lhsNorm > 0, rhsNorm > 0 else { return 0 }
+        return dot / (sqrt(lhsNorm) * sqrt(rhsNorm))
+    }
+
+    private static func rankingScore(
+        for entry: MemoryEntry,
+        query: String,
+        tokens: [String],
+        conceptGroups: [[String]],
+        compass: MoodCompassPoint,
+        similaritySeed: MemoryEntry?
+    ) -> Double {
+        var score = 0.0
+
+        if !query.isEmpty {
+            let reasons = matchReasons(for: entry, query: query)
+            score += Double(reasons.count) * 1.4
+            if entry.searchableText.contains(query) {
+                score += 1.1
+            }
+        }
+
+        if !compass.isCentered {
+            let entryCompass = compassPoint(for: entry)
+            let distance = hypot(entryCompass.naturalUrban - compass.naturalUrban, entryCompass.quietLively - compass.quietLively)
+            score += max(0, 2.2 - distance * 1.2)
+        }
+
+        if let similaritySeed, similaritySeed.id != entry.id {
+            score += similarityScore(between: similaritySeed, and: entry) * 2.6
+        }
+
+        score += entry.isFavorite ? 0.18 : 0
+        score += max(0, 0.18 - (Date.now.timeIntervalSince(entry.createdAt) / (60 * 60 * 24 * 30 * 4)))
+        return score
+    }
+
+    private static func filter(_ entries: [MemoryEntry], query: String, mood: String?) -> [MemoryEntry] {
+        filter(entries, query: query, mood: mood, compass: .zero, similaritySeed: nil)
     }
 
     static func aliases(for term: String) -> [String] {

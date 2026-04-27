@@ -66,6 +66,8 @@ enum ResonancePreferenceKey {
     static let nearbyMemoriesRadius = "nearbyMemoriesRadius"
     static let immersiveParticlesEnabled = "immersiveParticlesEnabled"
     static let immersiveAudioReactiveLightEnabled = "immersiveAudioReactiveLightEnabled"
+    static let immersiveHotspotOverlayEnabled = "immersiveHotspotOverlayEnabled"
+    static let immersiveGazeLinkedAudioEnabled = "immersiveGazeLinkedAudioEnabled"
     static let immersiveSlideshowAutoAdvanceEnabled = "immersiveSlideshowAutoAdvanceEnabled"
     static let immersiveSlideshowIntervalSeconds = "immersiveSlideshowIntervalSeconds"
     static let immersivePreviewVolume = "immersivePreviewVolume"
@@ -96,6 +98,14 @@ enum ResonancePreferences {
 
     static var immersiveAudioReactiveLightEnabled: Bool {
         value(for: ResonancePreferenceKey.immersiveAudioReactiveLightEnabled, default: true)
+    }
+
+    static var immersiveHotspotOverlayEnabled: Bool {
+        value(for: ResonancePreferenceKey.immersiveHotspotOverlayEnabled, default: true)
+    }
+
+    static var immersiveGazeLinkedAudioEnabled: Bool {
+        value(for: ResonancePreferenceKey.immersiveGazeLinkedAudioEnabled, default: true)
     }
 
     static var immersiveSlideshowAutoAdvanceEnabled: Bool {
@@ -140,6 +150,8 @@ struct SettingsView: View {
     @AppStorage(ResonancePreferenceKey.nearbyMemoriesRadius) private var nearbyMemoriesRadius = NearbyMemoriesRadius.meters500.rawValue
     @AppStorage(ResonancePreferenceKey.immersiveParticlesEnabled) private var immersiveParticlesEnabled = true
     @AppStorage(ResonancePreferenceKey.immersiveAudioReactiveLightEnabled) private var immersiveAudioReactiveLightEnabled = true
+    @AppStorage(ResonancePreferenceKey.immersiveHotspotOverlayEnabled) private var immersiveHotspotOverlayEnabled = true
+    @AppStorage(ResonancePreferenceKey.immersiveGazeLinkedAudioEnabled) private var immersiveGazeLinkedAudioEnabled = true
     @AppStorage(ResonancePreferenceKey.immersiveSlideshowAutoAdvanceEnabled) private var immersiveSlideshowAutoAdvanceEnabled = true
     @AppStorage(ResonancePreferenceKey.immersiveSlideshowIntervalSeconds) private var immersiveSlideshowIntervalSeconds = 8.0
     @AppStorage(ResonancePreferenceKey.immersivePreviewVolume) private var immersivePreviewVolume = 0.78
@@ -172,6 +184,8 @@ struct SettingsView: View {
                 Section("没入プレビュー") {
                     Toggle("環境粒子を有効化", isOn: $immersiveParticlesEnabled)
                     Toggle("音量連動の光を有効化", isOn: $immersiveAudioReactiveLightEnabled)
+                    Toggle("音のホットスポットを重ねる", isOn: $immersiveHotspotOverlayEnabled)
+                    Toggle("端末の向きで音場を揺らす", isOn: $immersiveGazeLinkedAudioEnabled)
 
                     Toggle("スライドショーを自動再生", isOn: $immersiveSlideshowAutoAdvanceEnabled)
 

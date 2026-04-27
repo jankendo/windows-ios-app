@@ -6,11 +6,14 @@ struct AtmosphericImmersiveOverlay: View {
     let atmosphere: AtmosphereStyle
     let snapshot: CaptureEnvironmentSnapshot?
     let audioReactiveLevel: Double
+    var hotspots: [DirectionalAudioHotspot] = []
+    var headingDegrees: Double = 0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(ResonancePreferenceKey.immersiveParticlesEnabled) private var immersiveParticlesEnabled = true
     @AppStorage(ResonancePreferenceKey.immersiveAudioReactiveLightEnabled) private var immersiveAudioReactiveLightEnabled = true
+    @AppStorage(ResonancePreferenceKey.immersiveHotspotOverlayEnabled) private var immersiveHotspotOverlayEnabled = true
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
@@ -19,6 +22,10 @@ struct AtmosphericImmersiveOverlay: View {
 
                 if immersiveAudioReactiveLightEnabled {
                     drawAudioReactiveLight(in: &context, size: size)
+                }
+
+                if immersiveHotspotOverlayEnabled, !hotspots.isEmpty {
+                    drawHotspots(in: &context, size: size)
                 }
 
                 guard immersiveParticlesEnabled, !reduceMotion else { return }
@@ -116,6 +123,47 @@ struct AtmosphericImmersiveOverlay: View {
         }
     }
 
+    private func drawHotspots(in context: inout GraphicsContext, size: CGSize) {
+        let headingRadians = headingDegrees * .pi / 180.0
+        let center = CGPoint(x: size.width * 0.5, y: size.height * 0.44)
+        let radiusX = size.width * 0.22
+        let radiusY = size.height * 0.14
+
+        for hotspot in hotspots {
+            let adjustedAngle = hotspot.angleRadians - headingRadians
+            let point = CGPoint(
+                x: center.x + CGFloat(cos(adjustedAngle)) * radiusX,
+                y: center.y + CGFloat(sin(adjustedAngle)) * radiusY
+            )
+            let glowRadius = CGFloat(26 + (hotspot.intensity * 30))
+            let glowRect = CGRect(
+                x: point.x - glowRadius,
+                y: point.y - glowRadius,
+                width: glowRadius * 2,
+                height: glowRadius * 2
+            )
+
+            context.fill(
+                Path(ellipseIn: glowRect),
+                with: .radialGradient(
+                    Gradient(colors: [hotspotColor.opacity(0.28 + (hotspot.intensity * 0.24)), .clear]),
+                    center: point,
+                    startRadius: 0,
+                    endRadius: glowRadius
+                )
+            )
+
+            let coreRadius = CGFloat(4 + (hotspot.intensity * 5))
+            let coreRect = CGRect(
+                x: point.x - coreRadius,
+                y: point.y - coreRadius,
+                width: coreRadius * 2,
+                height: coreRadius * 2
+            )
+            context.fill(Path(ellipseIn: coreRect), with: .color(hotspotColor.opacity(0.78)))
+        }
+    }
+
     private var baseParticleCount: Int {
         switch atmosphere {
         case .dawn:
@@ -139,6 +187,19 @@ struct AtmosphericImmersiveOverlay: View {
             return .orange
         case .night:
             return .blue
+        }
+    }
+
+    private var hotspotColor: Color {
+        switch atmosphere {
+        case .dawn:
+            return .yellow
+        case .day:
+            return .mint
+        case .dusk:
+            return .orange
+        case .night:
+            return .cyan
         }
     }
 

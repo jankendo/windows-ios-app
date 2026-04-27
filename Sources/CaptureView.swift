@@ -32,12 +32,20 @@ struct IntervalCaptureSessionState: Identifiable {
     let plannedCount: Int
     let clipDuration: TimeInterval
     var completedCount: Int
+    var pendingProcessingCount: Int
     var nextCaptureAt: Date?
     var phase: Phase
+    var isAwaitingReview: Bool
 
     var isActive: Bool {
         phase == .running || phase == .paused
     }
+}
+
+struct IntervalSceneReviewPresentation: Identifiable {
+    let sceneID: UUID
+
+    var id: UUID { sceneID }
 }
 
 @MainActor
@@ -54,11 +62,17 @@ final class CaptureFlowModel: ObservableObject {
     @Published var captionGenerationMessage: String?
     @Published var captionStyle: PhotoCaptionStyle = ResonancePreferences.defaultCaptionStyle
     @Published var intervalSession: IntervalCaptureSessionState?
+    @Published var isPreparingIntervalReview = false
+    @Published var intervalReviewPresentation: IntervalSceneReviewPresentation?
 
     let camera = CameraCaptureService()
     private let locationService = CaptureLocationService.shared
     private var captionRefreshTask: Task<Void, Never>?
     private var intervalTask: Task<Void, Never>?
+    private var intervalFinalizeTask: Task<Void, Never>?
+    private var intervalFinalizeSceneID: UUID?
+    private var pendingIntervalSaveTasks: [Task<Void, Never>] = []
+    private var intervalCaptureInFlight = false
     private let diagnostics = AudioPlaybackDiagnostics.shared
 
     func prepare() {
@@ -163,12 +177,21 @@ final class CaptureFlowModel: ObservableObject {
             plannedCount: plannedCount,
             clipDuration: clipDuration,
             completedCount: 0,
+            pendingProcessingCount: 0,
             nextCaptureAt: .now,
-            phase: .running
+            phase: .running,
+            isAwaitingReview: false
         )
         saveMessage = nil
         errorMessage = nil
-        runIntervalLoop(scene: scene, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter, modelContext: modelContext)
+        intervalReviewPresentation = nil
+        isPreparingIntervalReview = false
+        scheduleNextIntervalTick(
+            sceneID: scene.id,
+            delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
+            modelContext: modelContext,
+            triggerImmediately: true
+        )
     }
 
     func pauseIntervalCapture() {
@@ -182,10 +205,13 @@ final class CaptureFlowModel: ObservableObject {
 
     func resumeIntervalCapture(delayRecordingUntilAfterShutter: Bool, modelContext: ModelContext) {
         guard let session = intervalSession, session.phase == .paused else { return }
-        guard let scene = fetchScene(id: session.sceneID, modelContext: modelContext) else { return }
         intervalSession?.phase = .running
         intervalSession?.nextCaptureAt = .now.addingTimeInterval(Double(session.intervalSeconds))
-        runIntervalLoop(scene: scene, delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter, modelContext: modelContext)
+        scheduleNextIntervalTick(
+            sceneID: session.sceneID,
+            delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
+            modelContext: modelContext
+        )
     }
 
     func stopIntervalCapture(modelContext: ModelContext) {
@@ -199,12 +225,52 @@ final class CaptureFlowModel: ObservableObject {
         }
 
         scene.endedAt = .now
-        if scene.entryIDs.isEmpty && session.completedCount == 0 {
-            modelContext.delete(scene)
+        if session.pendingProcessingCount > 0 || intervalCaptureInFlight {
+            intervalSession?.phase = .finished
+            intervalSession?.isAwaitingReview = true
+            intervalSession?.nextCaptureAt = nil
+            isPreparingIntervalReview = true
+            saveMessage = "シーンを仕上げています。完了後にプレビューを開きます。"
+            if !intervalCaptureInFlight {
+                finalizeIntervalScene(sceneID: session.sceneID, modelContext: modelContext)
+            }
+            return
         }
+
+        if scene.entryIDs.isEmpty {
+            modelContext.delete(scene)
+            try? modelContext.save()
+            intervalSession = nil
+            saveMessage = "Interval capture を終了しました。"
+            return
+        }
+
         try? modelContext.save()
         intervalSession = nil
-        saveMessage = scene.entryIDs.isEmpty ? "Interval capture を終了しました。" : "シーンの記録を終了しました。"
+        saveMessage = "シーンの記録を終了しました。"
+    }
+
+    func captureNextIntervalFrame(delayRecordingUntilAfterShutter: Bool, modelContext: ModelContext) {
+        guard let session = intervalSession, session.phase == .running else { return }
+        guard !session.isAwaitingReview else { return }
+        guard session.completedCount < session.plannedCount else {
+            finalizeIntervalScene(sceneID: session.sceneID, modelContext: modelContext)
+            return
+        }
+        guard !intervalCaptureInFlight else { return }
+
+        intervalTask?.cancel()
+        intervalTask = nil
+        intervalSession?.nextCaptureAt = nil
+
+        Task { @MainActor [weak self] in
+            await self?.performIntervalCapture(
+                sceneID: session.sceneID,
+                delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
+                modelContext: modelContext,
+                triggerLabel: "manual"
+            )
+        }
     }
 
     func discardDraft() {
@@ -338,10 +404,17 @@ final class CaptureFlowModel: ObservableObject {
         notes: String,
         modelContext: ModelContext
     ) async throws -> MemoryEntry {
-        let storedMedia = try MediaStore.save(photoData: draft.photoData, audioTempURL: draft.audioTempURL)
+        let storedMedia = try MediaStore.save(
+            photoData: draft.photoData,
+            audioTempURL: draft.audioTempURL,
+            analysisAudioTempURL: draft.analysisAudioTempURL
+        )
         let storedAudioURL = storedMedia.audioFileName.map(MediaStore.audioURL(for:))
-        let analysisAudioURL = draft.analysisAudioURL ?? storedAudioURL
+        let analysisAudioURL = storedMedia.analysisAudioFileName.map(MediaStore.audioURL(for:)) ?? draft.analysisAudioURL ?? storedAudioURL
         let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: analysisAudioURL)
+        let immersiveAnalysis = await Task.detached(priority: .userInitiated) {
+            ImmersiveAudioIntelligence.analyze(url: analysisAudioURL)
+        }.value
         let captionGeneration = await MemoryAnalysisService.captionGeneration(
             from: draft.photoData,
             title: title,
@@ -377,13 +450,19 @@ final class CaptureFlowModel: ObservableObject {
 
         let metadata = MemoryAtmosphereMetadata(
             placeLabel: draft.placeLabel,
-            waveformFingerprint: WaveformExtractor.samples(from: analysisAudioURL, sampleCount: 28).map { Double($0) },
+            waveformFingerprint: immersiveAnalysis.waveformFingerprint,
+            analysisAudioFileName: storedMedia.analysisAudioFileName,
             photoCaption: resolvedPhotoCaption,
             atmosphereStyle: draft.atmosphereStyle,
             captureDuration: draft.audioDuration,
             sensorSnapshot: draft.sensorSnapshot,
             minimumDecibels: draft.minimumDecibels,
-            maximumDecibels: draft.maximumDecibels
+            maximumDecibels: draft.maximumDecibels,
+            audioFeatureVector: immersiveAnalysis.audioFeatureVector,
+            seamlessLoopStartPoint: immersiveAnalysis.seamlessLoopStartPoint,
+            seamlessLoopEndPoint: immersiveAnalysis.seamlessLoopEndPoint,
+            directionalHotspots: immersiveAnalysis.directionalHotspots,
+            capturedSpatialAudio: draft.isSpatialAudio
         )
         var finalMetadata = metadata
         finalMetadata.photoCaptionSourceRaw =
@@ -398,78 +477,187 @@ final class CaptureFlowModel: ObservableObject {
         return entry
     }
 
-    private func runIntervalLoop(scene: MemoryScene, delayRecordingUntilAfterShutter: Bool, modelContext: ModelContext) {
+    private func scheduleNextIntervalTick(
+        sceneID: UUID,
+        delayRecordingUntilAfterShutter: Bool,
+        modelContext: ModelContext,
+        triggerImmediately: Bool = false
+    ) {
         intervalTask?.cancel()
         intervalTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            var pendingSaveTasks: [Task<Void, Never>] = []
+            guard let session = self.intervalSession, session.sceneID == sceneID else { return }
 
-            while let session = self.intervalSession,
-                  session.phase == .running,
-                  session.completedCount < session.plannedCount {
-                if session.completedCount > 0,
-                   let nextCaptureAt = session.nextCaptureAt {
-                    while Date.now < nextCaptureAt {
-                        try? await Task.sleep(nanoseconds: 200_000_000)
-                        guard !Task.isCancelled else { return }
-                        guard self.intervalSession?.phase == .running else { return }
-                    }
+            if !triggerImmediately, let nextCaptureAt = session.nextCaptureAt {
+                while Date.now < nextCaptureAt {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                    guard !Task.isCancelled else { return }
+                    guard self.intervalSession?.phase == .running else { return }
                 }
+            }
 
+            await self.performIntervalCapture(
+                sceneID: sceneID,
+                delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
+                modelContext: modelContext,
+                triggerLabel: triggerImmediately ? "auto-start" : "auto"
+            )
+        }
+    }
+
+    private func performIntervalCapture(
+        sceneID: UUID,
+        delayRecordingUntilAfterShutter: Bool,
+        modelContext: ModelContext,
+        triggerLabel: String
+    ) async {
+        guard var session = intervalSession, session.sceneID == sceneID else { return }
+        guard session.phase == .running else { return }
+        guard !session.isAwaitingReview else { return }
+        guard session.completedCount < session.plannedCount else {
+            finalizeIntervalScene(sceneID: sceneID, modelContext: modelContext)
+            return
+        }
+        guard !intervalCaptureInFlight else { return }
+
+        intervalCaptureInFlight = true
+        defer { intervalCaptureInFlight = false }
+
+        do {
+            let rawDraft = try await captureRawDraft(
+                duration: session.clipDuration,
+                delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter
+            )
+
+            guard var refreshedSession = intervalSession, refreshedSession.sceneID == sceneID else { return }
+            let captureNumber = refreshedSession.completedCount + 1
+            let hasRemainingCapture = captureNumber < refreshedSession.plannedCount
+            let shouldFinishAfterThisCapture = refreshedSession.phase == .finished || refreshedSession.isAwaitingReview || !hasRemainingCapture
+            refreshedSession.completedCount = captureNumber
+            refreshedSession.pendingProcessingCount += 1
+            refreshedSession.nextCaptureAt = hasRemainingCapture && !shouldFinishAfterThisCapture
+                ? Date.now.addingTimeInterval(Double(refreshedSession.intervalSeconds))
+                : nil
+            refreshedSession.isAwaitingReview = shouldFinishAfterThisCapture
+            if shouldFinishAfterThisCapture {
+                refreshedSession.phase = .finished
+                isPreparingIntervalReview = true
+                saveMessage = "指定枚数の撮影が完了しました。シーンを仕上げています。"
+            } else {
+                saveMessage = "\(captureNumber)/\(refreshedSession.plannedCount) 枚を撮影しました。"
+            }
+            intervalSession = refreshedSession
+
+            diagnostics.record(
+                "interval capture shot=\(captureNumber)/\(refreshedSession.plannedCount) trigger=\(triggerLabel)",
+                category: "capture"
+            )
+
+            let title = "\(refreshedSession.title) \(captureNumber)"
+            let sessionID = refreshedSession.id
+            let saveTask = Task { @MainActor [weak self] in
+                guard let self else { return }
                 do {
-                    let rawDraft = try await self.captureRawDraft(
-                        duration: session.clipDuration,
-                        delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter
-                    )
-                    let captureNumber = session.completedCount + 1
-                    let hasRemainingCapture = captureNumber < session.plannedCount
-                    self.intervalSession?.completedCount = captureNumber
-                    self.intervalSession?.nextCaptureAt = hasRemainingCapture
-                        ? Date.now.addingTimeInterval(Double(session.intervalSeconds))
-                        : nil
-                    self.saveMessage = "\(captureNumber)/\(session.plannedCount) 枚を撮影しました。"
-
-                    let title = "\(session.title) \(captureNumber)"
-                    let saveTask = Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        do {
-                            let draft = await self.enrichDraft(rawDraft)
-                            let entry = try await self.persistDraft(draft, title: title, notes: "", modelContext: modelContext)
-                            scene.appendEntry(entry.id)
-                            scene.endedAt = nil
-                            try? modelContext.save()
-                            self.lastSavedEntry = entry
-                            if self.intervalSession?.phase != .paused {
-                                self.saveMessage = "\(captureNumber)/\(session.plannedCount) 枚を保存しました。"
-                            }
-                        } catch {
-                            self.errorMessage = error.localizedDescription
-                            self.intervalSession?.phase = .paused
-                            self.intervalSession?.nextCaptureAt = nil
-                            self.diagnostics.record("interval capture paused: \(error.localizedDescription)", category: "capture")
+                    let draft = await self.enrichDraft(rawDraft)
+                    let entry = try await self.persistDraft(draft, title: title, notes: "", modelContext: modelContext)
+                    if let scene = self.fetchScene(id: sceneID, modelContext: modelContext) {
+                        scene.appendEntry(entry.id)
+                        scene.endedAt = nil
+                        try? modelContext.save()
+                    }
+                    self.lastSavedEntry = entry
+                    if var activeSession = self.intervalSession, activeSession.id == sessionID, activeSession.sceneID == sceneID {
+                        activeSession.pendingProcessingCount = max(0, activeSession.pendingProcessingCount - 1)
+                        self.intervalSession = activeSession
+                        if !activeSession.isAwaitingReview && activeSession.phase != .paused {
+                            self.saveMessage = "\(captureNumber)/\(activeSession.plannedCount) 枚を保存しました。"
                         }
                     }
-                    pendingSaveTasks.append(saveTask)
+                    self.finalizeIntervalSceneIfReady(sceneID: sceneID, modelContext: modelContext)
                 } catch {
                     self.errorMessage = error.localizedDescription
-                    self.intervalSession?.phase = .paused
-                    self.intervalSession?.nextCaptureAt = nil
+                    if self.intervalSession?.id == sessionID {
+                        self.intervalSession?.phase = .paused
+                        self.intervalSession?.nextCaptureAt = nil
+                        self.intervalSession?.isAwaitingReview = false
+                        self.isPreparingIntervalReview = false
+                    }
                     self.diagnostics.record("interval capture paused: \(error.localizedDescription)", category: "capture")
-                    return
+                }
+            }
+            pendingIntervalSaveTasks.append(saveTask)
+
+            if hasRemainingCapture && !refreshedSession.isAwaitingReview {
+                scheduleNextIntervalTick(
+                    sceneID: sceneID,
+                    delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
+                    modelContext: modelContext
+                )
+            } else {
+                finalizeIntervalScene(sceneID: sceneID, modelContext: modelContext)
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            intervalSession?.phase = .paused
+            intervalSession?.nextCaptureAt = nil
+            intervalSession?.isAwaitingReview = false
+            isPreparingIntervalReview = false
+            diagnostics.record("interval capture paused: \(error.localizedDescription)", category: "capture")
+        }
+    }
+
+    private func finalizeIntervalSceneIfReady(sceneID: UUID, modelContext: ModelContext) {
+        guard let session = intervalSession, session.sceneID == sceneID else { return }
+        guard session.isAwaitingReview, session.pendingProcessingCount == 0, !intervalCaptureInFlight else { return }
+        finalizeIntervalScene(sceneID: sceneID, modelContext: modelContext)
+    }
+
+    private func finalizeIntervalScene(sceneID: UUID, modelContext: ModelContext) {
+        if intervalFinalizeTask != nil, intervalFinalizeSceneID == sceneID {
+            return
+        }
+
+        intervalFinalizeSceneID = sceneID
+
+        intervalFinalizeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.intervalFinalizeTask = nil
+                self.intervalFinalizeSceneID = nil
+            }
+
+            while true {
+                let tasks = self.pendingIntervalSaveTasks
+                self.pendingIntervalSaveTasks.removeAll()
+                for task in tasks {
+                    await task.value
+                }
+
+                if self.intervalCaptureInFlight {
+                    try? await Task.sleep(nanoseconds: 120_000_000)
+                    continue
+                }
+
+                if self.pendingIntervalSaveTasks.isEmpty {
+                    break
                 }
             }
 
-            for task in pendingSaveTasks {
-                await task.value
+            guard let scene = self.fetchScene(id: sceneID, modelContext: modelContext) else {
+                self.intervalSession = nil
+                self.isPreparingIntervalReview = false
+                return
             }
 
-            guard let finalSession = self.intervalSession else { return }
-            guard finalSession.phase == .running || finalSession.phase == .finished else { return }
             scene.endedAt = .now
             try? modelContext.save()
-            self.intervalSession?.phase = .finished
-            self.intervalSession?.nextCaptureAt = nil
-            self.saveMessage = "\(finalSession.title) を保存しました。"
+
+            let sceneTitle = self.intervalSession?.title ?? scene.title
+            self.intervalSession = nil
+            self.isPreparingIntervalReview = false
+            self.intervalReviewPresentation = IntervalSceneReviewPresentation(sceneID: scene.id)
+            self.saveMessage = "\(sceneTitle) のプレビューを開きます。"
+            self.diagnostics.record("interval review ready scene=\(scene.id.uuidString)", category: "capture")
         }
     }
 
@@ -489,6 +677,7 @@ struct CaptureView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \MemoryEntry.createdAt, order: .reverse) private var entries: [MemoryEntry]
+    @Query(sort: \MemoryScene.startedAt, order: .reverse) private var scenes: [MemoryScene]
     @ObservedObject private var environmentService = CaptureLocationService.shared
     @AppStorage("captureDurationSeconds") private var captureDurationSeconds = 6.0
     @AppStorage("delayRecordingUntilAfterShutter") private var delayRecordingUntilAfterShutter = true
@@ -529,7 +718,7 @@ struct CaptureView: View {
     }
 
     private var needsProcessingOverlay: Bool {
-        !model.camera.isCapturing && (model.camera.isProcessingCapture || model.isPreparingReview)
+        !model.camera.isCapturing && (model.camera.isProcessingCapture || model.isPreparingReview || model.isPreparingIntervalReview)
     }
 
     var body: some View {
@@ -625,6 +814,18 @@ struct CaptureView: View {
                     model.saveDraft(using: modelContext)
                 }
             )
+        }
+        .fullScreenCover(item: $model.intervalReviewPresentation) { presentation in
+            NavigationStack {
+                if let scene = scenes.first(where: { $0.id == presentation.sceneID }) {
+                    MemorySceneDetailView(scene: scene)
+                } else {
+                    ZStack {
+                        ResonanceGradientBackground()
+                        ProgressView("シーンを読み込んでいます…")
+                    }
+                }
+            }
         }
         .sheet(isPresented: $showingCaptureSettings) {
             captureSettingsSheet
@@ -853,8 +1054,8 @@ struct CaptureView: View {
             Spacer()
 
             CameraShutterButton(
-                isEnabled: model.camera.isReadyToCapture && !model.isSaving && (!model.camera.isCapturing || captureMode == .interval),
-                isRecording: model.camera.isCapturing || model.camera.isProcessingCapture || model.intervalSession?.isActive == true,
+                isEnabled: primaryCaptureButtonEnabled,
+                isRecording: model.camera.isCapturing || model.camera.isProcessingCapture || model.isPreparingIntervalReview,
                 progress: model.camera.captureProgress,
                 accent: palette.accent
             ) {
@@ -1050,11 +1251,15 @@ struct CaptureView: View {
                     .scaleEffect(1.18)
 
                 VStack(spacing: 8) {
-                    Text("Preparing your memory scene")
+                    Text(model.isPreparingIntervalReview ? "Finishing your interval scene" : "Preparing your memory scene")
                         .font(.title3.bold())
                         .foregroundStyle(.white)
 
-                    Text("写真、音、位置、空気感をひとつのシーンへまとめています。完了までお待ちください。")
+                    Text(
+                        model.isPreparingIntervalReview
+                        ? "指定枚数の撮影が終わりました。写真と音、位置、空気感を仕上げてからプレビューを表示します。"
+                        : "写真、音、位置、空気感をひとつのシーンへまとめています。完了までお待ちください。"
+                    )
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.82))
                         .multilineTextAlignment(.center)
@@ -1263,8 +1468,16 @@ struct CaptureView: View {
                 Text("前景に戻ったあと、再開ボタンで続きから再開できます。")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.78))
+            } else if session.isAwaitingReview {
+                Text("指定枚数の撮影が完了しました。仕上げの処理が終わると自動でプレビューを開きます。")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.78))
             } else if session.phase == .finished {
                 Text("シーンとしてライブラリに保存されました。")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.78))
+            } else {
+                Text("シャッターボタンで今すぐ次の1枚を記録できます。")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.78))
             }
@@ -1307,8 +1520,11 @@ struct CaptureView: View {
             return
         }
 
-        if model.intervalSession?.isActive == true {
-            model.stopIntervalCapture(modelContext: modelContext)
+        if let session = model.intervalSession, session.phase == .running {
+            model.captureNextIntervalFrame(
+                delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
+                modelContext: modelContext
+            )
             return
         }
 
@@ -1324,6 +1540,21 @@ struct CaptureView: View {
             delayRecordingUntilAfterShutter: delayRecordingUntilAfterShutter,
             modelContext: modelContext
         )
+    }
+
+    private var primaryCaptureButtonEnabled: Bool {
+        if captureMode == .ambient {
+            return model.camera.isReadyToCapture && !model.isSaving && !model.camera.isCapturing
+        }
+
+        if let session = model.intervalSession {
+            return session.phase == .running
+                && !session.isAwaitingReview
+                && !model.camera.isCapturing
+                && !model.camera.isProcessingCapture
+        }
+
+        return model.camera.isReadyToCapture && !model.isSaving && !model.camera.isCapturing
     }
 }
 
