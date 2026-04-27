@@ -576,7 +576,7 @@ private struct SpatialScanMetricPill: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(ResonancePalette.make(for: .dark, atmosphere: atmosphere).cardFill.opacity(0.72))
+                .fill(ResonancePalette.make(for: .dark, atmosphere: atmosphere).surfaceSecondary.opacity(0.72))
         )
     }
 }

@@ -366,7 +366,7 @@ struct MemoryAtmosphereMetadata: Codable {
     }
 
     mutating func applyStoredSpatialScan(_ storedSpatialScan: StoredSpatialScan?, syncMetadata: SpatialScanSyncMetadata? = nil) {
-        self.spatialScan = storedSpatialScan.map(SpatialScanStorageMetadata.init(storedSpatialScan:))
+        self.spatialScan = storedSpatialScan.map { SpatialScanStorageMetadata(storedSpatialScan: $0) }
         self.spatialScanBundleFolderName = storedSpatialScan?.bundleFolderName
         self.spatialScanManifestFileName = storedSpatialScan?.manifestFileName
         self.spatialScanPreviewFileName = storedSpatialScan?.previewImageFileName
