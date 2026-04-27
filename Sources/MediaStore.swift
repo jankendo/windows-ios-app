@@ -650,7 +650,7 @@ enum MediaStore {
             return
         }
 
-        let byteCount = (try? assetURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init)
+        let byteCount = (try? assetURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { Int64($0) }
         assets.append(
             SpatialScanSyncAsset(
                 kind: kind,
