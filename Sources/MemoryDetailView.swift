@@ -36,10 +36,6 @@ struct MemoryDetailView: View {
         return items
     }
 
-    private var playbackURL: URL? {
-        entry.analysisAudioURL ?? entry.audioURL
-    }
-
     private var relatedEntries: [MemoryEntry] {
         MemorySearchEngine.similarEntries(to: entry, from: allEntries, limit: 3)
     }
@@ -509,6 +505,10 @@ private struct SavedMemoryImmersivePreviewView: View {
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
+    }
+
+    private var playbackURL: URL? {
+        entry.analysisAudioURL ?? entry.audioURL
     }
 
     private var motionHorizontalShift: CGFloat {
