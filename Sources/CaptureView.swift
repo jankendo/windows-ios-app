@@ -1461,7 +1461,7 @@ struct CaptureView: View {
         case .interval:
             return "一定間隔で複数のシーンを残すモードです。主画面からも切り替えられ、ここでは間隔や枚数を調整できます。"
         case .scan:
-            return "秒数ではなく、AR tracking の安定・視差・回り込みが揃った時点で自動完了します。"
+            return "秒数ではなく、同じ地点からの360度・上下レンジ・AR tracking の安定で高精度到達を判定します。"
         }
     }
 
@@ -1549,8 +1549,8 @@ struct CaptureView: View {
     private var scanQualitySettings: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                scanQualityPill(title: "停止", value: "自動", symbol: "checkmark.seal")
-                scanQualityPill(title: "判定", value: "視差", symbol: "arrow.left.and.right")
+                scanQualityPill(title: "地点", value: "その場", symbol: "figure.stand")
+                scanQualityPill(title: "判定", value: "360°", symbol: "arrow.triangle.2.circlepath")
                 scanQualityPill(title: "追跡", value: "安定", symbol: "scope")
             }
 
@@ -1561,10 +1561,10 @@ struct CaptureView: View {
                     .frame(width: 34)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("端末を対象へ向けたまま、半歩ぶん横へ動いてから、端から端へ浅く回り込むと精度が上がります。")
+                    Text("足を前へ出さず、同じ地点で体ごとゆっくり360度回転します。端末は胸の前を基準に、上段・正面・下段へ向けてください。")
                         .font(.subheadline)
                         .foregroundStyle(palette.primaryText)
-                    Text("秒数指定は使わず、フレームの重なり・移動量・回頭レンジ・AR tracking の安定で完了します。")
+                    Text("高精度に到達したら通知します。保存するまで自動終了せず、そのまま続けてフレーム密度をさらに上げられます。")
                         .font(.footnote)
                         .foregroundStyle(palette.secondaryText)
                 }
@@ -1696,7 +1696,7 @@ struct CaptureView: View {
         }
 
         if captureMode == .scan {
-            return "精度が揃ったタイミングで自動停止し、3D spatial bundle と環境音を記録します"
+            return "その場360度で高精度に到達したら通知し、保存または継続を選べます"
         }
 
         if let session = model.intervalSession {

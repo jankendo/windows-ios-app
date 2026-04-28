@@ -117,7 +117,7 @@ struct SpatialScanPlaybackView: View {
                             atmosphere: entry.atmosphereStyle
                         )
                         ResonanceBadge(
-                            title: reduceMotion ? "固定視点" : "姿勢連動",
+                            title: reduceMotion ? "固定視点" : "端末で360確認",
                             systemImage: reduceMotion ? "viewfinder" : "gyroscope",
                             tint: .white,
                             atmosphere: entry.atmosphereStyle
@@ -219,7 +219,7 @@ struct SpatialScanPlaybackView: View {
                         .foregroundStyle(palette.secondaryText)
                 }
 
-                Text("時系列に沿って frame を送り、再構成前でもその場を見返せる vertical slice です。")
+                Text("撮影時の方位と上下角から frame を360度に配置し、端末の向きに合わせて見返せます。")
                     .font(.caption)
                     .foregroundStyle(palette.secondaryText)
 
@@ -318,8 +318,11 @@ struct SpatialScanPlaybackView: View {
                 if let summary = entry.spatialScanPreparationSummary {
                     SpatialScanMetricRow(title: "Coverage", value: "\(Int((summary.coverageScore * 100).rounded()))%")
                     SpatialScanMetricRow(title: "Proxy keyframes", value: "\(summary.selectedProxyFrameCount) 枚")
-                    SpatialScanMetricRow(title: "移動量", value: String(format: "%.2f m", summary.translationExtentMeters))
+                    SpatialScanMetricRow(title: "静止ドリフト", value: String(format: "%.2f m", summary.translationExtentMeters))
                     SpatialScanMetricRow(title: "回頭レンジ", value: String(format: "%.0f°", summary.headingSpanDegrees))
+                    if let verticalSpan = summary.verticalSpanDegrees {
+                        SpatialScanMetricRow(title: "上下レンジ", value: String(format: "%.0f°", verticalSpan))
+                    }
                 }
 
                 SpatialScanMetricRow(
@@ -573,6 +576,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
         private var frameNodes: [Int: SCNNode] = [:]
         private var renderedSignature = ""
         private var isMotionEnabled = false
+        private var referenceAttitude: CMAttitude?
 
         func makeView() -> SCNView {
             scene.background.contents = UIColor.black
@@ -634,6 +638,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             if motionManager.isDeviceMotionActive {
                 motionManager.stopDeviceMotionUpdates()
             }
+            referenceAttitude = nil
             isMotionEnabled = false
         }
 
@@ -654,6 +659,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
         private func startMotion() {
             guard motionManager.isDeviceMotionAvailable else { return }
+            referenceAttitude = nil
             motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
             let handler: CMDeviceMotionHandler = { [weak self] motion, _ in
                 guard let self, let motion else { return }
@@ -668,14 +674,24 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
         }
 
         private func apply(attitude: CMAttitude) {
-            let yaw = Float(attitude.yaw)
-            let pitch = Float(attitude.pitch)
-            let roll = Float(attitude.roll)
+            if referenceAttitude == nil {
+                referenceAttitude = attitude.copy() as? CMAttitude
+            }
+            guard let referenceAttitude,
+                  let relativeAttitude = attitude.copy() as? CMAttitude else {
+                return
+            }
+            relativeAttitude.multiply(byInverseOf: referenceAttitude)
+
+            let yaw = Float(relativeAttitude.yaw)
+            let pitch = Float(relativeAttitude.pitch)
+            let roll = Float(relativeAttitude.roll)
+            let clampedPitch = min(max(pitch, -0.95), 0.95)
 
             SCNTransaction.begin()
             SCNTransaction.animationDuration = 0.08
-            modelRoot.eulerAngles = SCNVector3(-pitch * 0.16, yaw * 0.36, roll * 0.08)
-            cameraOrbit.eulerAngles = SCNVector3(pitch * 0.08, -yaw * 0.2, 0)
+            modelRoot.eulerAngles = SCNVector3(0, 0, roll * 0.04)
+            cameraOrbit.eulerAngles = SCNVector3(clampedPitch * 0.55, -yaw, 0)
             SCNTransaction.commit()
         }
 
@@ -691,7 +707,9 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                 return
             }
 
-            let rawPositions = frames.map { rawPosition(for: $0.sample) }
+            let rawPositions = frames.enumerated().map { index, frame in
+                rawPosition(for: frame.sample, index: index, totalCount: frames.count)
+            }
             let normalizedPositions = normalizedPositions(from: rawPositions)
             addPath(positions: normalizedPositions, accent: accent)
 
@@ -801,11 +819,22 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             }
         }
 
-        private func rawPosition(for sample: SpatialScanFrameSample) -> SCNVector3 {
-            guard let translation = sample.translationVector else {
-                return SCNVector3(0, 0, 0)
-            }
-            return SCNVector3(Float(translation.x), Float(translation.y), Float(translation.z))
+        private func rawPosition(
+            for sample: SpatialScanFrameSample,
+            index: Int,
+            totalCount: Int
+        ) -> SCNVector3 {
+            let fallbackHeading = Double(index) / Double(max(totalCount, 1)) * 360
+            let heading = sample.headingDegrees ?? fallbackHeading
+            let pitch = sample.pitchDegrees ?? 0
+            let headingRadians = heading * .pi / 180
+            let pitchRadians = min(max(pitch, -75), 75) * .pi / 180
+            let radius = 1.15
+            let horizontalRadius = radius * cos(pitchRadians)
+            let x = sin(headingRadians) * horizontalRadius
+            let y = sin(pitchRadians) * 0.95
+            let z = cos(headingRadians) * horizontalRadius
+            return SCNVector3(Float(x), Float(y), Float(z))
         }
 
         private func normalizedPositions(from positions: [SCNVector3]) -> [SCNVector3] {

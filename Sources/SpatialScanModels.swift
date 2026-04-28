@@ -81,6 +81,13 @@ extension SpatialScanFrameSample {
         let normalized = degrees.truncatingRemainder(dividingBy: 360)
         return normalized >= 0 ? normalized : normalized + 360
     }
+
+    var pitchDegrees: Double? {
+        guard cameraTransform.count >= 10 else { return nil }
+        let forwardY = -Double(cameraTransform[9])
+        let clampedForwardY = min(max(forwardY, -1), 1)
+        return asin(clampedForwardY) * 180 / .pi
+    }
 }
 
 struct SpatialScanReconstructionFailure: Codable, Hashable {
@@ -96,6 +103,7 @@ struct SpatialScanPreparationSummary: Codable, Hashable {
     var coverageScore: Double
     var translationExtentMeters: Double
     var headingSpanDegrees: Double
+    var verticalSpanDegrees: Double?
     var qualityTier: SpatialScanPreparationQualityTier
 
     init(
@@ -104,6 +112,7 @@ struct SpatialScanPreparationSummary: Codable, Hashable {
         coverageScore: Double,
         translationExtentMeters: Double,
         headingSpanDegrees: Double,
+        verticalSpanDegrees: Double? = nil,
         qualityTier: SpatialScanPreparationQualityTier
     ) {
         self.selectedProxyFrameCount = max(selectedProxyFrameCount, 0)
@@ -111,6 +120,7 @@ struct SpatialScanPreparationSummary: Codable, Hashable {
         self.coverageScore = coverageScore.isFinite ? min(max(coverageScore, 0), 1) : 0
         self.translationExtentMeters = translationExtentMeters.isFinite ? max(translationExtentMeters, 0) : 0
         self.headingSpanDegrees = headingSpanDegrees.isFinite ? min(max(headingSpanDegrees, 0), 360) : 0
+        self.verticalSpanDegrees = verticalSpanDegrees.map { $0.isFinite ? min(max($0, 0), 180) : 0 }
         self.qualityTier = qualityTier
     }
 }
@@ -483,7 +493,7 @@ enum SpatialScanReconstructionPipeline {
             job.lastFailure = SpatialScanReconstructionFailure(
                 occurredAt: now,
                 code: "insufficient-coverage",
-                message: "フレームの重なりや移動量が不足しているため、再構成の準備を完了できませんでした。",
+                message: "360度の方位・上下レンジ・フレーム密度が不足しているため、再構成の準備を完了できませんでした。",
                 retryable: true
             )
             job.lastStatusMessage = "追加のスキャンで再試行できます。"
@@ -584,20 +594,30 @@ enum SpatialScanReconstructionPipeline {
         let proxyFrames = selectProxyFrameSamples(from: manifest.frameSamples)
         let translationExtent = translationExtentMeters(for: manifest.frameSamples)
         let headingSpan = headingSpanDegrees(for: manifest.frameSamples.compactMap(\.headingDegrees))
+        let verticalSpan = linearSpanDegrees(for: manifest.frameSamples.compactMap(\.pitchDegrees))
 
-        let frameScore = min(Double(frameCount) / 12, 1)
-        let durationScore = min(manifest.normalizedCaptureDuration / 10, 1)
-        let translationScore = min(translationExtent / 1.2, 1)
-        let headingScore = min(headingSpan / 120, 1)
-        var coverageScore = (frameScore * 0.4) + (durationScore * 0.15) + (translationScore * 0.25) + (headingScore * 0.2)
+        let frameScore = min(Double(frameCount) / 36, 1)
+        let durationScore = min(manifest.normalizedCaptureDuration / 14, 1)
+        let headingScore = min(headingSpan / 320, 1)
+        let verticalScore = min(verticalSpan / 60, 1)
+        let stationaryScore = stationaryScore(forTranslationExtent: translationExtent)
+        var coverageScore = (frameScore * 0.3)
+            + (headingScore * 0.34)
+            + (verticalScore * 0.16)
+            + (durationScore * 0.12)
+            + (stationaryScore * 0.08)
         if manifest.worldMapFileName != nil {
             coverageScore = min(coverageScore + 0.1, 1)
         }
 
         let qualityTier: SpatialScanPreparationQualityTier
-        if frameCount < 4 || coverageScore < 0.22 || translationExtent < 0.05 {
+        if frameCount < 8 || headingSpan < 90 || coverageScore < 0.35 {
             qualityTier = .insufficient
-        } else if frameCount >= 8 && coverageScore >= 0.58 && translationExtent >= 0.2 {
+        } else if frameCount >= 28
+            && headingSpan >= 260
+            && verticalSpan >= 42
+            && coverageScore >= 0.72
+            && stationaryScore >= 0.45 {
             qualityTier = .readyForHighQuality
         } else {
             qualityTier = .previewOnly
@@ -609,6 +629,7 @@ enum SpatialScanReconstructionPipeline {
             coverageScore: coverageScore,
             translationExtentMeters: translationExtent,
             headingSpanDegrees: headingSpan,
+            verticalSpanDegrees: verticalSpan,
             qualityTier: qualityTier
         )
     }
@@ -680,6 +701,21 @@ enum SpatialScanReconstructionPipeline {
             largestGap = max(largestGap, pair.1 - pair.0)
         }
         return min(max(360 - largestGap, 0), 360)
+    }
+
+    private static func linearSpanDegrees(for values: [Double]) -> Double {
+        guard let minimum = values.min(), let maximum = values.max() else { return 0 }
+        return min(max(maximum - minimum, 0), 180)
+    }
+
+    private static func stationaryScore(forTranslationExtent translationExtent: Double) -> Double {
+        if translationExtent <= 0.85 {
+            return 1
+        }
+        if translationExtent >= 1.8 {
+            return 0
+        }
+        return 1 - ((translationExtent - 0.85) / 0.95)
     }
 
     private static func writeRequest(_ request: SpatialScanReconstructionRequest, to url: URL) throws {

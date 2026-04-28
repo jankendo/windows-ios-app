@@ -134,7 +134,10 @@ struct MemoryDetailView: View {
                                     SensorDetailRow(title: "準備品質", value: spatialScanQualityLabel(for: summary.qualityTier))
                                     SensorDetailRow(title: "Coverage", value: "\(Int((summary.coverageScore * 100).rounded()))%")
                                     SensorDetailRow(title: "Proxy keyframes", value: "\(summary.selectedProxyFrameCount) 枚")
-                                    SensorDetailRow(title: "移動量", value: String(format: "%.2f m", summary.translationExtentMeters))
+                                    SensorDetailRow(title: "静止ドリフト", value: String(format: "%.2f m", summary.translationExtentMeters))
+                                    if let verticalSpan = summary.verticalSpanDegrees {
+                                        SensorDetailRow(title: "上下レンジ", value: String(format: "%.0f°", verticalSpan))
+                                    }
                                 }
                                 if entry.spatialScanProxyRequestFileName != nil {
                                     SensorDetailRow(title: "Proxy job", value: "request 保存済み")
