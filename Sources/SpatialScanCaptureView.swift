@@ -21,6 +21,12 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         static let minimumHighQualityVerticalSpanDegrees = 52.0
         static let idealStationaryDriftMeters = 0.85
         static let maximumStationaryDriftMeters = 1.6
+        static let maximumPointSampleCount = 9_000
+        static let maximumPointSamplesPerFrame = 220
+        static let preferredPointSampleCount = 4_800
+        static let minimumHighQualityPointSampleCount = 1_800
+        static let minimumFeaturePointDistanceMeters: Float = 0.25
+        static let maximumFeaturePointDistanceMeters: Float = 7.0
         static let sessionBindingPollCount = 20
         static let sessionBindingPollNanoseconds: UInt64 = 50_000_000
         static let sessionReadyTimeout: TimeInterval = 2.5
@@ -34,6 +40,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     @Published private(set) var headingCoverage = 0.0
     @Published private(set) var verticalCoverage = 0.0
     @Published private(set) var stationaryCoverage = 0.0
+    @Published private(set) var pointCloudCoverage = 0.0
     @Published private(set) var trackingStability = 0.0
     @Published private(set) var qualityStatusText = "精度を測定しています"
     @Published private(set) var motionHintText = "端末を胸の前で構え、足を止めてください。"
@@ -51,6 +58,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     private var startedAt: Date?
     private var bundleURL: URL?
     private var frameSamples: [SpatialScanFrameSample] = []
+    private var pointSamples: [SpatialScanPointSample] = []
+    private var seenPointIdentifiers = Set<UInt64>()
     private var firstFrameTimestamp: TimeInterval?
     private var lastFrameTimestamp: TimeInterval = 0
     private var lastCameraTransform: simd_float4x4?
@@ -66,6 +75,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         let headingCoverage: Double
         let verticalCoverage: Double
         let stationaryCoverage: Double
+        let pointCloudCoverage: Double
         let trackingStability: Double
         let isTrackingStable: Bool
         let isHighQuality: Bool
@@ -276,6 +286,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
                 previewImageFileName: previewImageFileName,
                 worldMapFileName: worldMapFileName,
                 reconstructionState: .captured,
+                pointSamples: pointSamples,
                 frameSamples: frameSamples
             )
 
@@ -379,6 +390,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         headingCoverage = 0
         verticalCoverage = 0
         stationaryCoverage = 0
+        pointCloudCoverage = 0
         trackingStability = 0
         qualityStatusText = "精度を測定しています"
         motionHintText = "端末を胸の前で構え、足を止めてください。"
@@ -386,6 +398,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         isImprovingAfterReady = false
         sampledFrameCount = 0
         frameSamples = []
+        pointSamples = []
+        seenPointIdentifiers = []
         firstFrameTimestamp = nil
         lastFrameTimestamp = 0
         lastCameraTransform = nil
@@ -410,6 +424,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         headingCoverage = 0
         verticalCoverage = 0
         stationaryCoverage = 0
+        pointCloudCoverage = 0
         trackingStability = 0
         qualityStatusText = "精度を測定しています"
         motionHintText = "端末を胸の前で構え、足を止めてください。"
@@ -428,6 +443,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         previewImageFileName = "preview.jpg"
         worldMapFileName = nil
         frameSamples = []
+        pointSamples = []
+        seenPointIdentifiers = []
         isFinishingCapture = false
         hasSentHighQualityFeedback = false
         captureResolved = true
@@ -503,10 +520,59 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
                 imageHeight: CVPixelBufferGetHeight(frame.capturedImage)
             )
         )
+        appendPointSamples(from: frame, sourceFrameIndex: frameIndex - 1)
         sampledFrameCount = frameSamples.count
         lastCameraTransform = frame.camera.transform
         lastFrameTimestamp = max(elapsed, lastFrameTimestamp)
         return true
+    }
+
+    private func appendPointSamples(from frame: ARFrame, sourceFrameIndex: Int) {
+        guard pointSamples.count < CaptureConstants.maximumPointSampleCount,
+              let pointCloud = frame.rawFeaturePoints else {
+            return
+        }
+
+        let points = pointCloud.points
+        guard !points.isEmpty else { return }
+
+        let identifiers = pointCloud.identifiers
+        let cameraPosition = frame.camera.transform.columns.3.xyz
+        let sampleStride = max(points.count / CaptureConstants.maximumPointSamplesPerFrame, 1)
+        var addedCount = 0
+
+        for index in stride(from: 0, to: points.count, by: sampleStride) {
+            guard pointSamples.count < CaptureConstants.maximumPointSampleCount,
+                  addedCount < CaptureConstants.maximumPointSamplesPerFrame else {
+                break
+            }
+
+            let identifier = identifiers.indices.contains(index) ? identifiers[index] : nil
+            if let identifier, seenPointIdentifiers.contains(identifier) {
+                continue
+            }
+
+            let point = points[index]
+            let distance = simd_length(point - cameraPosition)
+            guard distance >= CaptureConstants.minimumFeaturePointDistanceMeters,
+                  distance <= CaptureConstants.maximumFeaturePointDistanceMeters else {
+                continue
+            }
+            if let identifier {
+                seenPointIdentifiers.insert(identifier)
+            }
+
+            pointSamples.append(
+                SpatialScanPointSample(
+                    identifier: identifier,
+                    sourceFrameIndex: sourceFrameIndex,
+                    x: point.x,
+                    y: point.y,
+                    z: point.z
+                )
+            )
+            addedCount += 1
+        }
     }
 
     private func updateCaptureQuality(trackingState: ARCamera.TrackingState?, elapsed: TimeInterval) {
@@ -516,6 +582,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         headingCoverage = quality.headingCoverage
         verticalCoverage = quality.verticalCoverage
         stationaryCoverage = quality.stationaryCoverage
+        pointCloudCoverage = quality.pointCloudCoverage
         trackingStability = quality.trackingStability
         guidanceText = guidanceText(for: trackingState, quality: quality)
         motionHintText = motionHint(for: quality, trackingState: trackingState)
@@ -545,15 +612,17 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         let verticalSpan = linearSpanDegrees(for: frameSamples.compactMap(\.pitchDegrees))
         let headingScore = min(headingSpan / CaptureConstants.preferredHeadingSpanDegrees, 1)
         let verticalScore = min(verticalSpan / CaptureConstants.preferredVerticalSpanDegrees, 1)
+        let pointScore = min(Double(pointSamples.count) / Double(CaptureConstants.preferredPointSampleCount), 1)
         let trackingScore = trackingScore(for: trackingState)
         let durationScore = min(elapsed / CaptureConstants.minimumQualityEvaluationDuration, 1)
         let score = min(
-            (headingScore * 0.3)
-                + (frameScore * 0.22)
-                + (verticalScore * 0.2)
-                + (trackingScore * 0.12)
-                + (stationaryScore * 0.1)
-                + (durationScore * 0.06),
+            (headingScore * 0.26)
+                + (verticalScore * 0.18)
+                + (pointScore * 0.16)
+                + (frameScore * 0.16)
+                + (trackingScore * 0.11)
+                + (stationaryScore * 0.08)
+                + (durationScore * 0.05),
             1
         )
         let isTrackingStable = trackingScore >= 0.9
@@ -561,6 +630,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             && frameSamples.count >= CaptureConstants.minimumHighQualityFrameCount
             && headingSpan >= CaptureConstants.minimumHighQualityHeadingSpanDegrees
             && verticalSpan >= CaptureConstants.minimumHighQualityVerticalSpanDegrees
+            && pointSamples.count >= CaptureConstants.minimumHighQualityPointSampleCount
             && score >= CaptureConstants.highQualityScore
             && stationaryScore >= 0.55
             && isTrackingStable
@@ -570,6 +640,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             headingCoverage: headingScore,
             verticalCoverage: verticalScore,
             stationaryCoverage: stationaryScore,
+            pointCloudCoverage: pointScore,
             trackingStability: trackingScore,
             isTrackingStable: isTrackingStable,
             isHighQuality: isHighQuality
@@ -617,6 +688,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             if quality.verticalCoverage < 0.75 {
                 return "足は止めたまま、端末を上段・正面・下段へゆっくり向けて上下の情報を足してください。"
             }
+            if quality.pointCloudCoverage < 0.55 {
+                return "3D点群を増やしています。壁・家具・床の境目を入れたまま、同じ地点でもう一周してください。"
+            }
             if sampledFrameCount < CaptureConstants.minimumHighQualityFrameCount {
                 return "角度は揃ってきました。同じ地点でもう少しゆっくり続け、フレーム密度を上げています。"
             }
@@ -642,6 +716,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         if quality.verticalCoverage < 0.75 {
             return "上下レンジを収集中"
         }
+        if quality.pointCloudCoverage < 0.55 {
+            return "3D点群を収集中"
+        }
         if sampledFrameCount < CaptureConstants.minimumHighQualityFrameCount {
             return "フレーム密度を収集中"
         }
@@ -660,6 +737,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         }
         if quality.verticalCoverage < 0.75 {
             return "上・正面・下を追加"
+        }
+        if quality.pointCloudCoverage < 0.55 {
+            return "輪郭を多く入れる"
         }
         if sampledFrameCount < CaptureConstants.minimumHighQualityFrameCount {
             return "同じ速度で続ける"
@@ -929,6 +1009,7 @@ struct SpatialScanCaptureView: View {
             ) {
                 scanHintChip(title: "360°", value: "\(Int((model.headingCoverage * 100).rounded()))%")
                 scanHintChip(title: "上下", value: "\(Int((model.verticalCoverage * 100).rounded()))%")
+                scanHintChip(title: "点群", value: "\(Int((model.pointCloudCoverage * 100).rounded()))%")
                 scanHintChip(title: "静止", value: "\(Int((model.stationaryCoverage * 100).rounded()))%")
                 scanHintChip(title: "安定", value: "\(Int((model.trackingStability * 100).rounded()))%")
             }

@@ -61,6 +61,31 @@ struct SpatialScanFrameSample: Codable, Hashable, Identifiable {
     }
 }
 
+struct SpatialScanPointSample: Codable, Hashable, Identifiable {
+    let id: UUID
+    let identifier: UInt64?
+    let sourceFrameIndex: Int?
+    let x: Float
+    let y: Float
+    let z: Float
+
+    init(
+        id: UUID = UUID(),
+        identifier: UInt64? = nil,
+        sourceFrameIndex: Int? = nil,
+        x: Float,
+        y: Float,
+        z: Float
+    ) {
+        self.id = id
+        self.identifier = identifier
+        self.sourceFrameIndex = sourceFrameIndex
+        self.x = x
+        self.y = y
+        self.z = z
+    }
+}
+
 extension SpatialScanFrameSample {
     var translationVector: (x: Double, y: Double, z: Double)? {
         guard cameraTransform.count >= 16 else { return nil }
@@ -175,7 +200,7 @@ struct SpatialScanReconstructionJob: Codable, Hashable {
 }
 
 struct SpatialScanReconstructionRequest: Codable, Hashable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
     var kind: SpatialScanReconstructionRequestKind
@@ -188,6 +213,7 @@ struct SpatialScanReconstructionRequest: Codable, Hashable {
     var anchorHeadingDegrees: Double?
     var captureDuration: TimeInterval
     var coverageScore: Double
+    var pointSamples: [SpatialScanPointSample]
     var frameSamples: [SpatialScanFrameSample]
 
     init(
@@ -202,6 +228,7 @@ struct SpatialScanReconstructionRequest: Codable, Hashable {
         anchorHeadingDegrees: Double?,
         captureDuration: TimeInterval,
         coverageScore: Double,
+        pointSamples: [SpatialScanPointSample] = [],
         frameSamples: [SpatialScanFrameSample]
     ) {
         self.schemaVersion = schemaVersion
@@ -215,12 +242,13 @@ struct SpatialScanReconstructionRequest: Codable, Hashable {
         self.anchorHeadingDegrees = anchorHeadingDegrees
         self.captureDuration = captureDuration.isFinite ? max(captureDuration, 0) : 0
         self.coverageScore = coverageScore.isFinite ? min(max(coverageScore, 0), 1) : 0
+        self.pointSamples = pointSamples
         self.frameSamples = frameSamples
     }
 }
 
 struct SpatialScanManifest: Codable, Hashable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     var schemaVersion: Int?
     var capturedAt: Date
@@ -233,6 +261,7 @@ struct SpatialScanManifest: Codable, Hashable {
     var reconstructionState: SpatialScanReconstructionState
     var reconstructionJob: SpatialScanReconstructionJob?
     var preparationSummary: SpatialScanPreparationSummary?
+    var pointSamples: [SpatialScanPointSample]
     var frameSamples: [SpatialScanFrameSample]
 
     init(
@@ -247,6 +276,7 @@ struct SpatialScanManifest: Codable, Hashable {
         reconstructionState: SpatialScanReconstructionState,
         reconstructionJob: SpatialScanReconstructionJob? = nil,
         preparationSummary: SpatialScanPreparationSummary? = nil,
+        pointSamples: [SpatialScanPointSample] = [],
         frameSamples: [SpatialScanFrameSample]
     ) {
         self.schemaVersion = schemaVersion
@@ -260,6 +290,7 @@ struct SpatialScanManifest: Codable, Hashable {
         self.reconstructionState = reconstructionState
         self.reconstructionJob = reconstructionJob
         self.preparationSummary = preparationSummary
+        self.pointSamples = pointSamples
         self.frameSamples = frameSamples
     }
 
@@ -275,6 +306,7 @@ struct SpatialScanManifest: Codable, Hashable {
         case reconstructionState
         case reconstructionJob
         case preparationSummary
+        case pointSamples
         case frameSamples
     }
 
@@ -291,6 +323,7 @@ struct SpatialScanManifest: Codable, Hashable {
         self.reconstructionState = try container.decode(SpatialScanReconstructionState.self, forKey: .reconstructionState)
         self.reconstructionJob = try container.decodeIfPresent(SpatialScanReconstructionJob.self, forKey: .reconstructionJob)
         self.preparationSummary = try container.decodeIfPresent(SpatialScanPreparationSummary.self, forKey: .preparationSummary)
+        self.pointSamples = try container.decodeIfPresent([SpatialScanPointSample].self, forKey: .pointSamples) ?? []
         self.frameSamples = try container.decode([SpatialScanFrameSample].self, forKey: .frameSamples)
     }
 }
@@ -512,6 +545,7 @@ enum SpatialScanReconstructionPipeline {
                 anchorHeadingDegrees: resolvedManifest.anchorHeadingDegrees,
                 captureDuration: resolvedManifest.normalizedCaptureDuration,
                 coverageScore: summary.coverageScore,
+                pointSamples: resolvedManifest.pointSamples,
                 frameSamples: selectProxyFrameSamples(from: resolvedManifest.frameSamples)
             )
             try writeRequest(proxyRequest, to: proxyRequestURL)
@@ -536,6 +570,7 @@ enum SpatialScanReconstructionPipeline {
                 anchorHeadingDegrees: resolvedManifest.anchorHeadingDegrees,
                 captureDuration: resolvedManifest.normalizedCaptureDuration,
                 coverageScore: summary.coverageScore,
+                pointSamples: resolvedManifest.pointSamples,
                 frameSamples: selectProxyFrameSamples(from: resolvedManifest.frameSamples)
             )
             let highQualityRequest = SpatialScanReconstructionRequest(
@@ -549,6 +584,7 @@ enum SpatialScanReconstructionPipeline {
                 anchorHeadingDegrees: resolvedManifest.anchorHeadingDegrees,
                 captureDuration: resolvedManifest.normalizedCaptureDuration,
                 coverageScore: summary.coverageScore,
+                pointSamples: resolvedManifest.pointSamples,
                 frameSamples: resolvedManifest.frameSamples
             )
             try writeRequest(proxyRequest, to: proxyRequestURL)
@@ -595,16 +631,19 @@ enum SpatialScanReconstructionPipeline {
         let translationExtent = translationExtentMeters(for: manifest.frameSamples)
         let headingSpan = headingSpanDegrees(for: manifest.frameSamples.compactMap(\.headingDegrees))
         let verticalSpan = linearSpanDegrees(for: manifest.frameSamples.compactMap(\.pitchDegrees))
+        let pointCount = manifest.pointSamples.count
 
         let frameScore = min(Double(frameCount) / 36, 1)
         let durationScore = min(manifest.normalizedCaptureDuration / 14, 1)
         let headingScore = min(headingSpan / 320, 1)
         let verticalScore = min(verticalSpan / 60, 1)
+        let pointScore = min(Double(pointCount) / 4_800, 1)
         let stationaryScore = stationaryScore(forTranslationExtent: translationExtent)
-        var coverageScore = (frameScore * 0.3)
-            + (headingScore * 0.34)
-            + (verticalScore * 0.16)
-            + (durationScore * 0.12)
+        var coverageScore = (headingScore * 0.28)
+            + (frameScore * 0.2)
+            + (pointScore * 0.2)
+            + (verticalScore * 0.14)
+            + (durationScore * 0.1)
             + (stationaryScore * 0.08)
         if manifest.worldMapFileName != nil {
             coverageScore = min(coverageScore + 0.1, 1)
@@ -616,6 +655,7 @@ enum SpatialScanReconstructionPipeline {
         } else if frameCount >= 28
             && headingSpan >= 260
             && verticalSpan >= 42
+            && pointCount >= 1_200
             && coverageScore >= 0.72
             && stationaryScore >= 0.45 {
             qualityTier = .readyForHighQuality
