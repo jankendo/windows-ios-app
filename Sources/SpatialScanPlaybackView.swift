@@ -1082,14 +1082,27 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             let maximumY = positions.map(\.y).max() ?? 1
             let heightRange = max(maximumY - minimumY, 0.01)
 
-            return positions.map { position in
-                let height = CGFloat((position.y - minimumY) / heightRange)
-                let warm = min(max(height, 0), 1)
-                let r = Float((red * 0.45) + (0.95 * warm) + 0.12)
-                let g = Float((green * 0.55) + (0.78 * (1 - abs(warm - 0.5))) + 0.1)
-                let b = Float((blue * 0.6) + (1.0 * (1 - warm)) + 0.08)
-                return SIMD4<Float>(min(r, 1), min(g, 1), min(b, 1), 1)
+            var resolvedColors: [SIMD4<Float>] = []
+            resolvedColors.reserveCapacity(positions.count)
+
+            for position in positions {
+                let normalizedHeight = CGFloat((position.y - minimumY) / heightRange)
+                let warm = min(max(normalizedHeight, 0), 1)
+                let centerGlow = 1 - abs(warm - 0.5)
+                let redValue = (red * 0.45) + (0.95 * warm) + 0.12
+                let greenValue = (green * 0.55) + (0.78 * centerGlow) + 0.1
+                let blueValue = (blue * 0.6) + (1.0 * (1 - warm)) + 0.08
+                resolvedColors.append(
+                    SIMD4<Float>(
+                        Float(min(redValue, 1)),
+                        Float(min(greenValue, 1)),
+                        Float(min(blueValue, 1)),
+                        1
+                    )
+                )
             }
+
+            return resolvedColors
         }
 
         private func accentColor(for atmosphere: AtmosphereStyle) -> UIColor {
