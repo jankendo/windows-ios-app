@@ -25,6 +25,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         static let minimumQualityEvaluationDuration: TimeInterval = 10
         static let preferredFrameCount = 48
         static let maximumFrameSampleCount = 96
+        static let headingCoverageBucketCount = 12
+        static let verticalCoverageBandCount = 3
         static let preferredHeadingSpanDegrees = 330.0
         static let preferredVerticalSpanDegrees = 70.0
         static let highQualityScore = 0.92
@@ -35,8 +37,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         static let maximumStationaryDriftMeters = 1.6
         static let maximumPointSampleCount = 24_000
         static let maximumPointSamplesPerFrame = 420
-        static let preferredPointSampleCount = 9_000
-        static let minimumHighQualityPointSampleCount = 3_000
+        static let preferredPointSampleCount = 4_800
+        static let minimumHighQualityPointSampleCount = 2_400
         static let minimumFeaturePointDistanceMeters: Float = 0.25
         static let maximumFeaturePointDistanceMeters: Float = 7.0
         static let sessionBindingPollCount = 20
@@ -54,6 +56,12 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     @Published private(set) var stationaryCoverage = 0.0
     @Published private(set) var pointCloudCoverage = 0.0
     @Published private(set) var trackingStability = 0.0
+    @Published private(set) var captureCoverageCells = Array(
+        repeating: false,
+        count: CaptureConstants.headingCoverageBucketCount * CaptureConstants.verticalCoverageBandCount
+    )
+    @Published private(set) var coverageFocusText = "取得範囲を解析中"
+    @Published private(set) var collectedPointCount = 0
     @Published private(set) var qualityStatusText = "精度を測定しています"
     @Published private(set) var motionHintText = "端末を胸の前で構え、足を止めてください。"
     @Published private(set) var isHighQualityReady = false
@@ -91,9 +99,18 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         let verticalCoverage: Double
         let stationaryCoverage: Double
         let pointCloudCoverage: Double
+        let surfaceCoverage: Double
         let trackingStability: Double
+        let coverageCells: [Bool]
+        let coverageFocusText: String
         let isTrackingStable: Bool
         let isHighQuality: Bool
+    }
+
+    private struct CaptureCoverageMap {
+        let cells: [Bool]
+        let coverageScore: Double
+        let focusText: String
     }
 
     deinit {
@@ -468,6 +485,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         stationaryCoverage = 0
         pointCloudCoverage = 0
         trackingStability = 0
+        captureCoverageCells = Self.emptyCoverageCells
+        coverageFocusText = "取得範囲を解析中"
+        collectedPointCount = 0
         qualityStatusText = "精度を測定しています"
         motionHintText = "端末を胸の前で構え、足を止めてください。"
         isHighQualityReady = false
@@ -505,6 +525,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         stationaryCoverage = 0
         pointCloudCoverage = 0
         trackingStability = 0
+        captureCoverageCells = Self.emptyCoverageCells
+        coverageFocusText = "取得範囲を解析中"
+        collectedPointCount = 0
         qualityStatusText = "精度を測定しています"
         motionHintText = "端末を胸の前で構え、足を止めてください。"
         guidanceText = "足を止めたまま、その場で360度の輪郭を集めます。"
@@ -670,6 +693,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         stationaryCoverage = quality.stationaryCoverage
         pointCloudCoverage = quality.pointCloudCoverage
         trackingStability = quality.trackingStability
+        captureCoverageCells = quality.coverageCells
+        coverageFocusText = quality.coverageFocusText
+        collectedPointCount = pointSamples.count
         guidanceText = guidanceText(for: trackingState, quality: quality)
         motionHintText = motionHint(for: quality, trackingState: trackingState)
 
@@ -696,11 +722,20 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         let stationaryScore = stationaryScore(forTranslationExtent: translationExtent)
         let headingSpan = headingSpanDegrees(for: frameSamples.compactMap(\.headingDegrees))
         let verticalSpan = linearSpanDegrees(for: frameSamples.compactMap(\.pitchDegrees))
+        let coverageMap = captureCoverageMap(for: frameSamples)
         let headingScore = min(headingSpan / CaptureConstants.preferredHeadingSpanDegrees, 1)
         let verticalScore = min(verticalSpan / CaptureConstants.preferredVerticalSpanDegrees, 1)
-        let pointScore = min(Double(pointSamples.count) / Double(CaptureConstants.preferredPointSampleCount), 1)
         let trackingScore = trackingScore(for: trackingState)
         let durationScore = min(elapsed / CaptureConstants.minimumQualityEvaluationDuration, 1)
+        let adaptivePointTarget = adaptivePointTarget(
+            headingScore: headingScore,
+            verticalScore: verticalScore,
+            frameScore: frameScore,
+            surfaceCoverage: coverageMap.coverageScore
+        )
+        let pointDensityScore = min(Double(pointSamples.count) / adaptivePointTarget, 1)
+        let visualCoverageScore = min(coverageMap.coverageScore / 0.74, 1)
+        let pointScore = min((pointDensityScore * 0.78) + (visualCoverageScore * 0.22), 1)
         let score = min(
             (headingScore * 0.26)
                 + (verticalScore * 0.18)
@@ -717,6 +752,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             && headingSpan >= CaptureConstants.minimumHighQualityHeadingSpanDegrees
             && verticalSpan >= CaptureConstants.minimumHighQualityVerticalSpanDegrees
             && pointSamples.count >= CaptureConstants.minimumHighQualityPointSampleCount
+            && coverageMap.coverageScore >= 0.64
             && score >= CaptureConstants.highQualityScore
             && stationaryScore >= 0.55
             && isTrackingStable
@@ -727,7 +763,10 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             verticalCoverage: verticalScore,
             stationaryCoverage: stationaryScore,
             pointCloudCoverage: pointScore,
+            surfaceCoverage: coverageMap.coverageScore,
             trackingStability: trackingScore,
+            coverageCells: coverageMap.cells,
+            coverageFocusText: coverageMap.focusText,
             isTrackingStable: isTrackingStable,
             isHighQuality: isHighQuality
         )
@@ -774,8 +813,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             if quality.verticalCoverage < 0.75 {
                 return "足は止めたまま、端末を上段・正面・下段へゆっくり向けて上下の情報を足してください。"
             }
-            if quality.pointCloudCoverage < 0.55 {
-                return "3D点群を増やしています。壁・家具・床の境目を入れたまま、同じ地点でもう一周してください。"
+            if quality.pointCloudCoverage < 0.72 {
+                return "カメラ内の黄色い点が少ない面を狙ってください。\(quality.coverageFocusText)"
             }
             if sampledFrameCount < CaptureConstants.minimumHighQualityFrameCount {
                 return "角度は揃ってきました。同じ地点でもう少しゆっくり続け、フレーム密度を上げています。"
@@ -804,6 +843,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         }
         if quality.pointCloudCoverage < 0.55 {
             return "3D点群を収集中"
+        }
+        if quality.surfaceCoverage < 0.64 {
+            return "未取得方向を補完中"
         }
         if sampledFrameCount < CaptureConstants.minimumHighQualityFrameCount {
             return "フレーム密度を収集中"
@@ -834,6 +876,101 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             return "輪郭が多い場所へ"
         }
         return isHighQualityReady ? "保存または継続" : "そのまま高精度化"
+    }
+
+    private static var emptyCoverageCells: [Bool] {
+        Array(
+            repeating: false,
+            count: CaptureConstants.headingCoverageBucketCount * CaptureConstants.verticalCoverageBandCount
+        )
+    }
+
+    private func adaptivePointTarget(
+        headingScore: Double,
+        verticalScore: Double,
+        frameScore: Double,
+        surfaceCoverage: Double
+    ) -> Double {
+        let coverageBonus = min((headingScore + verticalScore + frameScore + surfaceCoverage) / 4, 1)
+        let targetRange = Double(CaptureConstants.preferredPointSampleCount - CaptureConstants.minimumHighQualityPointSampleCount)
+        return Double(CaptureConstants.minimumHighQualityPointSampleCount) + (targetRange * coverageBonus)
+    }
+
+    private func captureCoverageMap(for samples: [SpatialScanFrameSample]) -> CaptureCoverageMap {
+        var cells = Self.emptyCoverageCells
+        guard !samples.isEmpty else {
+            return CaptureCoverageMap(cells: cells, coverageScore: 0, focusText: "まず正面からゆっくり始めてください。")
+        }
+
+        for sample in samples {
+            guard let heading = sample.headingDegrees else { continue }
+            let pitch = sample.pitchDegrees ?? 0
+            let band: Int
+            if pitch > 18 {
+                band = 0
+            } else if pitch < -18 {
+                band = 2
+            } else {
+                band = 1
+            }
+
+            let normalizedHeading = ImmersiveDirectionSpace.normalizedDegrees(heading)
+            let rawBucket = Int((normalizedHeading / 360) * Double(CaptureConstants.headingCoverageBucketCount))
+            let bucket = min(max(rawBucket, 0), CaptureConstants.headingCoverageBucketCount - 1)
+            let index = (band * CaptureConstants.headingCoverageBucketCount) + bucket
+            if cells.indices.contains(index) {
+                cells[index] = true
+            }
+        }
+
+        let filledCount = cells.filter { $0 }.count
+        let centerBandStart = CaptureConstants.headingCoverageBucketCount
+        let centerBandEnd = centerBandStart + CaptureConstants.headingCoverageBucketCount
+        let centerFilled = cells[centerBandStart..<centerBandEnd].filter { $0 }.count
+        let coverageScore = min(
+            (Double(filledCount) / Double(cells.count) * 0.64)
+                + (Double(centerFilled) / Double(CaptureConstants.headingCoverageBucketCount) * 0.36),
+            1
+        )
+
+        let focusText = nextCoverageFocusText(from: cells)
+        return CaptureCoverageMap(cells: cells, coverageScore: coverageScore, focusText: focusText)
+    }
+
+    private func nextCoverageFocusText(from cells: [Bool]) -> String {
+        let bandLabels = ["上段", "正面", "下段"]
+        for band in [1, 0, 2] {
+            let start = band * CaptureConstants.headingCoverageBucketCount
+            let end = start + CaptureConstants.headingCoverageBucketCount
+            guard cells.indices.contains(start), cells.indices.contains(end - 1) else { continue }
+            let bandCells = Array(cells[start..<end])
+            if let missingIndex = bandCells.firstIndex(of: false) {
+                let direction = directionLabel(forBucket: missingIndex)
+                return "\(bandLabels[band])の\(direction)へ向けると100%に近づきます。"
+            }
+        }
+        return "全方向が埋まっています。同じ場所でもう一周して密度を上げてください。"
+    }
+
+    private func directionLabel(forBucket bucket: Int) -> String {
+        switch bucket {
+        case 0, 11:
+            return "北側"
+        case 1, 2:
+            return "北東側"
+        case 3:
+            return "東側"
+        case 4, 5:
+            return "南東側"
+        case 6:
+            return "南側"
+        case 7, 8:
+            return "南西側"
+        case 9:
+            return "西側"
+        default:
+            return "北西側"
+        }
     }
 
     private func trackingScore(for trackingState: ARCamera.TrackingState?) -> Double {
@@ -1094,6 +1231,8 @@ struct SpatialScanCaptureView: View {
                 .font(.footnote)
                 .foregroundStyle(.white.opacity(0.78))
 
+            scanCoverageRadar
+
             LazyVGrid(
                 columns: [
                     GridItem(.flexible(), spacing: 10),
@@ -1184,6 +1323,66 @@ struct SpatialScanCaptureView: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.82)
         }
+    }
+
+    private var scanCoverageRadar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label("取得マップ", systemImage: "viewfinder")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                Spacer()
+                Text("\(model.collectedPointCount) pts")
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+
+            VStack(spacing: 5) {
+                ForEach(0..<3, id: \.self) { band in
+                    HStack(spacing: 5) {
+                        Text(coverageBandLabel(band))
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white.opacity(0.66))
+                            .frame(width: 18, alignment: .leading)
+
+                        ForEach(0..<12, id: \.self) { bucket in
+                            Capsule()
+                                .fill(.white.opacity(coverageCellOpacity(band: band, bucket: bucket)))
+                                .frame(height: 8)
+                        }
+                    }
+                }
+            }
+
+            Text(model.coverageFocusText)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.white.opacity(0.68))
+                .lineLimit(2)
+                .minimumScaleFactor(0.86)
+        }
+        .padding(12)
+        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(.white.opacity(0.12))
+        }
+    }
+
+    private func coverageBandLabel(_ band: Int) -> String {
+        switch band {
+        case 0:
+            return "上"
+        case 2:
+            return "下"
+        default:
+            return "正"
+        }
+    }
+
+    private func coverageCellOpacity(band: Int, bucket: Int) -> Double {
+        let index = (band * 12) + bucket
+        guard model.captureCoverageCells.indices.contains(index) else { return 0.14 }
+        return model.captureCoverageCells[index] ? 0.9 : 0.14
     }
 
     private var highQualityActions: some View {
@@ -1296,6 +1495,8 @@ private struct SpatialScanPreviewContainer: UIViewRepresentable {
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView(frame: .zero)
         view.automaticallyUpdatesLighting = true
+        view.debugOptions = [.showFeaturePoints]
+        view.preferredFramesPerSecond = 60
         view.scene = SCNScene()
         view.contentMode = .scaleAspectFill
         onSessionReady(view.session)
@@ -1303,6 +1504,7 @@ private struct SpatialScanPreviewContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ARSCNView, context: Context) {
+        uiView.debugOptions = [.showFeaturePoints]
         onSessionReady(uiView.session)
     }
 }
