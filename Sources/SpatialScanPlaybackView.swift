@@ -750,12 +750,12 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             scene.rootNode.addChildNode(cameraOrbit)
 
             let camera = SCNCamera()
-            camera.fieldOfView = 48
-            camera.zNear = 0.01
-            camera.zFar = 120
+            camera.fieldOfView = 72
+            camera.zNear = 0.02
+            camera.zFar = 160
             cameraNode.camera = camera
-            cameraNode.position = SCNVector3(0, 0.5, 3.15)
-            cameraNode.eulerAngles.x = -Float.pi / 32
+            cameraNode.position = SCNVector3(0, 0.08, 0)
+            cameraNode.eulerAngles = SCNVector3Zero
             cameraOrbit.addChildNode(cameraNode)
 
             let ambientLight = SCNLight()
@@ -825,6 +825,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                 SCNTransaction.animationDuration = 0.2
                 modelRoot.eulerAngles = SCNVector3Zero
                 cameraOrbit.eulerAngles = SCNVector3Zero
+                cameraNode.position = SCNVector3(0, 0.08, 0)
                 SCNTransaction.commit()
                 previewView?.setNeedsDisplay()
             }
@@ -875,8 +876,8 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
             SCNTransaction.begin()
             SCNTransaction.disableActions = true
-            modelRoot.eulerAngles = SCNVector3(0, 0, nextEuler.z)
-            cameraOrbit.eulerAngles = SCNVector3(nextEuler.x, nextEuler.y, 0)
+            modelRoot.eulerAngles = SCNVector3Zero
+            cameraOrbit.eulerAngles = SCNVector3(nextEuler.x, nextEuler.y, nextEuler.z)
             SCNTransaction.commit()
             previewView?.setNeedsDisplay()
         }
@@ -955,7 +956,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
             for renderPoint in renderPoints {
                 let position = renderPoint.position
-                let surfelRadius = min(max(renderPoint.radius, 0.014), 0.065)
+                let surfelRadius = min(max(renderPoint.radius, 0.006), 0.12)
                 let radialNormal = normalized(position)
                 let normal = vectorLength(renderPoint.normal) > 0.001
                     ? renderPoint.normal
@@ -1012,15 +1013,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             material.lightingModel = .constant
             material.diffuse.contents = UIColor.white
             material.emission.contents = UIColor.black
-            material.shaderModifiers = [
-                .surface: """
-                #pragma body
-                _surface.diffuse = _geometry.color.rgb;
-                _surface.emission = _geometry.color.rgb * 0.04;
-                _surface.transparent = _geometry.color.a;
-                """
-            ]
-            material.blendMode = .alpha
+            material.blendMode = .replace
             material.isDoubleSided = true
             material.writesToDepthBuffer = true
             material.readsFromDepthBuffer = true
@@ -1186,7 +1179,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                             min(max(sample.r, 0), 1),
                             min(max(sample.g, 0), 1),
                             min(max(sample.b, 0), 1),
-                            0.98
+                            1
                         ),
                         normal: normalized(SCNVector3(sample.normalX, sample.normalY, sample.normalZ)),
                         radius: min(max(sample.radius * scale, 0.008), 0.11)
