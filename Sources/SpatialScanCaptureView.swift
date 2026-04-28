@@ -20,11 +20,13 @@ private enum SpatialScanCaptureFinalizationError: LocalizedError {
 final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency ARSessionDelegate {
     private enum CaptureConstants {
         static let frameSamplingInterval: TimeInterval = 0.22
+        static let frameImageSamplingInterval: TimeInterval = 0.55
+        static let coverageFrameImageSamplingInterval: TimeInterval = 0.28
         static let minimumTranslationMeters: Float = 0.018
         static let minimumRotationRadians: Float = 0.045
         static let minimumQualityEvaluationDuration: TimeInterval = 10
         static let preferredFrameCount = 48
-        static let maximumFrameSampleCount = 96
+        static let maximumFrameSampleCount = 144
         static let headingCoverageBucketCount = 12
         static let verticalCoverageBandCount = 3
         static let preferredHeadingSpanDegrees = 330.0
@@ -37,6 +39,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         static let maximumStationaryDriftMeters = 1.6
         static let maximumPointSampleCount = 24_000
         static let maximumPointSamplesPerFrame = 420
+        static let pointIdentifierResampleInterval = 8
         static let preferredPointSampleCount = 4_800
         static let minimumHighQualityPointSampleCount = 2_400
         static let minimumFeaturePointDistanceMeters: Float = 0.25
@@ -81,11 +84,15 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     private var startedAt: Date?
     private var bundleURL: URL?
     private var frameSamples: [SpatialScanFrameSample] = []
+    private var poseSamples: [CapturePoseSample] = []
     private var pointSamples: [SpatialScanPointSample] = []
-    private var seenPointIdentifiers = Set<UInt64>()
+    private var seenPointIdentifiers: [UInt64: Int] = [:]
+    private var savedFrameCoverageCells = Set<Int>()
     private var firstFrameTimestamp: TimeInterval?
     private var lastFrameTimestamp: TimeInterval = 0
     private var lastCameraTransform: simd_float4x4?
+    private var lastSavedFrameTimestamp: TimeInterval?
+    private var lastSavedCameraTransform: simd_float4x4?
     private var previewImageData: Data?
     private var previewImageFileName = "preview.jpg"
     private var worldMapFileName: String?
@@ -111,6 +118,34 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         let cells: [Bool]
         let coverageScore: Double
         let focusText: String
+    }
+
+    private struct CapturePoseSample {
+        let timeOffset: TimeInterval
+        let cameraTransform: simd_float4x4
+
+        var translationVector: (x: Double, y: Double, z: Double) {
+            (
+                x: Double(cameraTransform.columns.3.x),
+                y: Double(cameraTransform.columns.3.y),
+                z: Double(cameraTransform.columns.3.z)
+            )
+        }
+
+        var headingDegrees: Double? {
+            let forwardX = -Double(cameraTransform.columns.2.x)
+            let forwardZ = -Double(cameraTransform.columns.2.z)
+            let magnitude = sqrt((forwardX * forwardX) + (forwardZ * forwardZ))
+            guard magnitude > 0 else { return nil }
+            let degrees = atan2(forwardX / magnitude, -(forwardZ / magnitude)) * 180 / .pi
+            return ImmersiveDirectionSpace.normalizedDegrees(degrees)
+        }
+
+        var pitchDegrees: Double {
+            let forwardY = -Double(cameraTransform.columns.2.y)
+            let clampedForwardY = min(max(forwardY, -1), 1)
+            return asin(clampedForwardY) * 180 / .pi
+        }
     }
 
     deinit {
@@ -224,7 +259,16 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         let elapsed = resolvedElapsed(for: frame)
         let shouldSampleFrame = shouldSample(frame: frame, elapsed: elapsed)
         if shouldSampleFrame {
-            _ = appendFrameSample(from: frame, elapsed: elapsed, bundleURL: bundleURL)
+            appendPoseSample(from: frame, elapsed: elapsed)
+            let savedFrameIndex = appendFrameSampleIfNeeded(from: frame, elapsed: elapsed, bundleURL: bundleURL)
+            appendPointSamples(
+                from: frame,
+                sourceFrameIndex: savedFrameIndex ?? nearestSavedFrameIndex,
+                observationIndex: max(poseSamples.count - 1, 0)
+            )
+            sampledFrameCount = poseSamples.count
+            lastCameraTransform = frame.camera.transform
+            lastFrameTimestamp = max(elapsed, lastFrameTimestamp)
         }
 
         updateCaptureQuality(trackingState: frame.camera.trackingState, elapsed: elapsed)
@@ -497,11 +541,15 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         optimizationStatusText = "3Dデータを最適化しています"
         sampledFrameCount = 0
         frameSamples = []
+        poseSamples = []
         pointSamples = []
         seenPointIdentifiers = []
+        savedFrameCoverageCells = []
         firstFrameTimestamp = nil
         lastFrameTimestamp = 0
         lastCameraTransform = nil
+        lastSavedFrameTimestamp = nil
+        lastSavedCameraTransform = nil
         previewImageData = nil
         previewImageFileName = "preview.jpg"
         worldMapFileName = nil
@@ -544,12 +592,16 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         firstFrameTimestamp = nil
         lastFrameTimestamp = 0
         lastCameraTransform = nil
+        lastSavedFrameTimestamp = nil
+        lastSavedCameraTransform = nil
         previewImageData = nil
         previewImageFileName = "preview.jpg"
         worldMapFileName = nil
         frameSamples = []
+        poseSamples = []
         pointSamples = []
         seenPointIdentifiers = []
+        savedFrameCoverageCells = []
         isFinishingCapture = false
         hasSentHighQualityFeedback = false
         captureResolved = true
@@ -593,10 +645,53 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     }
 
     @discardableResult
-    private func appendFrameSample(from frame: ARFrame, elapsed: TimeInterval, bundleURL: URL) -> Bool {
-        guard frameSamples.count < CaptureConstants.maximumFrameSampleCount else {
+    private func appendFrameSampleIfNeeded(from frame: ARFrame, elapsed: TimeInterval, bundleURL: URL) -> Int? {
+        guard shouldPersistFrameSample(from: frame, elapsed: elapsed) else { return nil }
+        return appendFrameSample(from: frame, elapsed: elapsed, bundleURL: bundleURL)
+    }
+
+    private func appendPoseSample(from frame: ARFrame, elapsed: TimeInterval) {
+        poseSamples.append(
+            CapturePoseSample(
+                timeOffset: max(elapsed, 0),
+                cameraTransform: frame.camera.transform
+            )
+        )
+    }
+
+    private func shouldPersistFrameSample(from frame: ARFrame, elapsed: TimeInterval) -> Bool {
+        guard frameSamples.count < CaptureConstants.maximumFrameSampleCount else { return false }
+        if previewImageData == nil || frameSamples.isEmpty {
+            return true
+        }
+
+        let poseSample = CapturePoseSample(timeOffset: max(elapsed, 0), cameraTransform: frame.camera.transform)
+        let coverageCell = coverageCellIndex(heading: poseSample.headingDegrees, pitch: poseSample.pitchDegrees)
+        let fillsNewCoverageCell = coverageCell.map { !savedFrameCoverageCells.contains($0) } ?? false
+        let requiredInterval = fillsNewCoverageCell
+            ? CaptureConstants.coverageFrameImageSamplingInterval
+            : CaptureConstants.frameImageSamplingInterval
+
+        if let lastSavedFrameTimestamp,
+           elapsed - lastSavedFrameTimestamp < requiredInterval {
             return false
         }
+        guard let lastSavedCameraTransform else { return true }
+        if fillsNewCoverageCell {
+            return true
+        }
+
+        let translation = simd_length(frame.camera.transform.columns.3.xyz - lastSavedCameraTransform.columns.3.xyz)
+        let forward = simd_normalize(frame.camera.transform.columns.2.xyz)
+        let previousForward = simd_normalize(lastSavedCameraTransform.columns.2.xyz)
+        let rotationDelta = acos(max(-1, min(1, simd_dot(forward, previousForward))))
+        return translation >= CaptureConstants.minimumTranslationMeters * 1.5
+            || rotationDelta >= CaptureConstants.minimumRotationRadians * 1.5
+    }
+
+    @discardableResult
+    private func appendFrameSample(from frame: ARFrame, elapsed: TimeInterval, bundleURL: URL) -> Int? {
+        guard frameSamples.count < CaptureConstants.maximumFrameSampleCount else { return nil }
 
         let framesFolderURL = bundleURL.appendingPathComponent("frames", isDirectory: true)
         try? FileManager.default.createDirectory(at: framesFolderURL, withIntermediateDirectories: true)
@@ -605,11 +700,11 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         let imageFileName = String(format: "frame-%03d.jpg", frameIndex)
         let imageURL = framesFolderURL.appendingPathComponent(imageFileName)
 
-        guard let frameJPEGData = jpegData(from: frame.capturedImage) else { return false }
+        guard let frameJPEGData = jpegData(from: frame.capturedImage) else { return nil }
         do {
             try frameJPEGData.write(to: imageURL, options: .atomic)
         } catch {
-            return false
+            return nil
         }
 
         if previewImageData == nil {
@@ -619,24 +714,29 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             try? previewData.write(to: previewURL, options: .atomic)
         }
 
-        frameSamples.append(
-            SpatialScanFrameSample(
-                imageFileName: "frames/\(imageFileName)",
-                timeOffset: max(elapsed, 0),
-                cameraTransform: flattenedMatrix(frame.camera.transform),
-                cameraIntrinsics: flattenedMatrix(frame.camera.intrinsics),
-                imageWidth: CVPixelBufferGetWidth(frame.capturedImage),
-                imageHeight: CVPixelBufferGetHeight(frame.capturedImage)
-            )
+        let sample = SpatialScanFrameSample(
+            imageFileName: "frames/\(imageFileName)",
+            timeOffset: max(elapsed, 0),
+            cameraTransform: flattenedMatrix(frame.camera.transform),
+            cameraIntrinsics: flattenedMatrix(frame.camera.intrinsics),
+            imageWidth: CVPixelBufferGetWidth(frame.capturedImage),
+            imageHeight: CVPixelBufferGetHeight(frame.capturedImage)
         )
-        appendPointSamples(from: frame, sourceFrameIndex: frameIndex - 1)
-        sampledFrameCount = frameSamples.count
-        lastCameraTransform = frame.camera.transform
-        lastFrameTimestamp = max(elapsed, lastFrameTimestamp)
-        return true
+        frameSamples.append(sample)
+        if let cell = coverageCellIndex(heading: sample.headingDegrees, pitch: sample.pitchDegrees) {
+            savedFrameCoverageCells.insert(cell)
+        }
+        lastSavedFrameTimestamp = elapsed
+        lastSavedCameraTransform = frame.camera.transform
+        return frameIndex - 1
     }
 
-    private func appendPointSamples(from frame: ARFrame, sourceFrameIndex: Int) {
+    private var nearestSavedFrameIndex: Int? {
+        guard !frameSamples.isEmpty else { return nil }
+        return frameSamples.count - 1
+    }
+
+    private func appendPointSamples(from frame: ARFrame, sourceFrameIndex: Int?, observationIndex: Int) {
         guard pointSamples.count < CaptureConstants.maximumPointSampleCount,
               let pointCloud = frame.rawFeaturePoints else {
             return
@@ -657,7 +757,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             }
 
             let identifier = identifiers.indices.contains(index) ? identifiers[index] : nil
-            if let identifier, seenPointIdentifiers.contains(identifier) {
+            if let identifier,
+               let previousObservationIndex = seenPointIdentifiers[identifier],
+               observationIndex - previousObservationIndex < CaptureConstants.pointIdentifierResampleInterval {
                 continue
             }
 
@@ -668,7 +770,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
                 continue
             }
             if let identifier {
-                seenPointIdentifiers.insert(identifier)
+                seenPointIdentifiers[identifier] = observationIndex
             }
 
             pointSamples.append(
@@ -717,12 +819,14 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         trackingState: ARCamera.TrackingState?,
         elapsed: TimeInterval
     ) -> CaptureQualityState {
-        let frameScore = min(Double(frameSamples.count) / Double(CaptureConstants.preferredFrameCount), 1)
-        let translationExtent = translationExtentMeters(for: frameSamples)
+        let poseFrameScore = min(Double(poseSamples.count) / Double(CaptureConstants.preferredFrameCount), 1)
+        let savedFrameScore = min(Double(frameSamples.count) / Double(CaptureConstants.minimumHighQualityFrameCount), 1)
+        let frameScore = min((poseFrameScore * 0.68) + (savedFrameScore * 0.32), 1)
+        let translationExtent = translationExtentMeters(for: poseSamples)
         let stationaryScore = stationaryScore(forTranslationExtent: translationExtent)
-        let headingSpan = headingSpanDegrees(for: frameSamples.compactMap(\.headingDegrees))
-        let verticalSpan = linearSpanDegrees(for: frameSamples.compactMap(\.pitchDegrees))
-        let coverageMap = captureCoverageMap(for: frameSamples)
+        let headingSpan = headingSpanDegrees(for: poseSamples.compactMap(\.headingDegrees))
+        let verticalSpan = linearSpanDegrees(for: poseSamples.map(\.pitchDegrees))
+        let coverageMap = captureCoverageMap(for: poseSamples)
         let headingScore = min(headingSpan / CaptureConstants.preferredHeadingSpanDegrees, 1)
         let verticalScore = min(verticalSpan / CaptureConstants.preferredVerticalSpanDegrees, 1)
         let trackingScore = trackingScore(for: trackingState)
@@ -748,6 +852,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         )
         let isTrackingStable = trackingScore >= 0.9
         let isHighQuality = elapsed >= CaptureConstants.minimumQualityEvaluationDuration
+            && poseSamples.count >= CaptureConstants.minimumHighQualityFrameCount
             && frameSamples.count >= CaptureConstants.minimumHighQualityFrameCount
             && headingSpan >= CaptureConstants.minimumHighQualityHeadingSpanDegrees
             && verticalSpan >= CaptureConstants.minimumHighQualityVerticalSpanDegrees
@@ -816,6 +921,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             if quality.pointCloudCoverage < 0.72 {
                 return "カメラ内の黄色い点が少ない面を狙ってください。\(quality.coverageFocusText)"
             }
+            if frameSamples.count < CaptureConstants.minimumHighQualityFrameCount {
+                return "360度と点群は取れています。色付き3D化に必要な保存フレームをもう少し集めています。"
+            }
             if sampledFrameCount < CaptureConstants.minimumHighQualityFrameCount {
                 return "角度は揃ってきました。同じ地点でもう少しゆっくり続け、フレーム密度を上げています。"
             }
@@ -847,6 +955,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         if quality.surfaceCoverage < 0.64 {
             return "未取得方向を補完中"
         }
+        if frameSamples.count < CaptureConstants.minimumHighQualityFrameCount {
+            return "保存フレームを収集中"
+        }
         if sampledFrameCount < CaptureConstants.minimumHighQualityFrameCount {
             return "フレーム密度を収集中"
         }
@@ -868,6 +979,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         }
         if quality.pointCloudCoverage < 0.55 {
             return "輪郭を多く入れる"
+        }
+        if frameSamples.count < CaptureConstants.minimumHighQualityFrameCount {
+            return "同じ速度で保存中"
         }
         if sampledFrameCount < CaptureConstants.minimumHighQualityFrameCount {
             return "同じ速度で続ける"
@@ -896,7 +1010,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         return Double(CaptureConstants.minimumHighQualityPointSampleCount) + (targetRange * coverageBonus)
     }
 
-    private func captureCoverageMap(for samples: [SpatialScanFrameSample]) -> CaptureCoverageMap {
+    private func captureCoverageMap(for samples: [CapturePoseSample]) -> CaptureCoverageMap {
         var cells = Self.emptyCoverageCells
         guard !samples.isEmpty else {
             return CaptureCoverageMap(cells: cells, coverageScore: 0, focusText: "まず正面からゆっくり始めてください。")
@@ -904,20 +1018,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
         for sample in samples {
             guard let heading = sample.headingDegrees else { continue }
-            let pitch = sample.pitchDegrees ?? 0
-            let band: Int
-            if pitch > 18 {
-                band = 0
-            } else if pitch < -18 {
-                band = 2
-            } else {
-                band = 1
-            }
-
-            let normalizedHeading = ImmersiveDirectionSpace.normalizedDegrees(heading)
-            let rawBucket = Int((normalizedHeading / 360) * Double(CaptureConstants.headingCoverageBucketCount))
-            let bucket = min(max(rawBucket, 0), CaptureConstants.headingCoverageBucketCount - 1)
-            let index = (band * CaptureConstants.headingCoverageBucketCount) + bucket
+            guard let index = coverageCellIndex(heading: heading, pitch: sample.pitchDegrees) else { continue }
             if cells.indices.contains(index) {
                 cells[index] = true
             }
@@ -935,6 +1036,24 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
         let focusText = nextCoverageFocusText(from: cells)
         return CaptureCoverageMap(cells: cells, coverageScore: coverageScore, focusText: focusText)
+    }
+
+    private func coverageCellIndex(heading: Double?, pitch: Double?) -> Int? {
+        guard let heading else { return nil }
+        let pitch = pitch ?? 0
+        let band: Int
+        if pitch > 18 {
+            band = 0
+        } else if pitch < -18 {
+            band = 2
+        } else {
+            band = 1
+        }
+
+        let normalizedHeading = ImmersiveDirectionSpace.normalizedDegrees(heading)
+        let rawBucket = Int((normalizedHeading / 360) * Double(CaptureConstants.headingCoverageBucketCount))
+        let bucket = min(max(rawBucket, 0), CaptureConstants.headingCoverageBucketCount - 1)
+        return (band * CaptureConstants.headingCoverageBucketCount) + bucket
     }
 
     private func nextCoverageFocusText(from cells: [Bool]) -> String {
@@ -993,8 +1112,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         }
     }
 
-    private func translationExtentMeters(for samples: [SpatialScanFrameSample]) -> Double {
-        let translations = samples.compactMap(\.translationVector)
+    private func translationExtentMeters(for samples: [CapturePoseSample]) -> Double {
+        let translations = samples.map(\.translationVector)
         guard let first = translations.first else { return 0 }
 
         var minX = first.x
