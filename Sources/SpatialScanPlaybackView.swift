@@ -6,7 +6,8 @@ import CoreMotion
 
 struct SpatialScanPlaybackView: View {
     private enum PlaybackImageSizing {
-        static let thumbnailMaxDimension: CGFloat = 240
+        static let thumbnailMaxDimension: CGFloat = 144
+        static let maximumLoadedFrameCount = 28
     }
 
     let entry: MemoryEntry
@@ -444,7 +445,8 @@ struct SpatialScanPlaybackView: View {
             return []
         }
 
-        return manifest.frameSamples.enumerated().compactMap { index, frameSample in
+        let frameSamples = representativeFrameSamples(from: manifest.frameSamples)
+        return frameSamples.enumerated().compactMap { index, frameSample in
             guard
                 let frameURL = MediaStore.spatialScanAssetURL(relativePath: frameSample.imageFileName, for: storedSpatialScan),
                 let thumbnail = loadImage(at: frameURL, maxDimension: PlaybackImageSizing.thumbnailMaxDimension)
@@ -459,6 +461,35 @@ struct SpatialScanPlaybackView: View {
                 thumbnail: thumbnail
             )
         }
+    }
+
+    private func representativeFrameSamples(from samples: [SpatialScanFrameSample]) -> [SpatialScanFrameSample] {
+        guard samples.count > PlaybackImageSizing.maximumLoadedFrameCount else {
+            return samples
+        }
+
+        return evenlyDistributedIndices(
+            totalCount: samples.count,
+            targetCount: PlaybackImageSizing.maximumLoadedFrameCount
+        ).compactMap { index in
+            guard samples.indices.contains(index) else { return nil }
+            return samples[index]
+        }
+    }
+
+    private func evenlyDistributedIndices(totalCount: Int, targetCount: Int) -> [Int] {
+        guard totalCount > 0, targetCount > 0 else { return [] }
+        guard totalCount > targetCount else { return Array(0..<totalCount) }
+
+        let denominator = max(targetCount - 1, 1)
+        return Array(
+            Set(
+                (0..<targetCount).map { offset in
+                    Int(round((Double(offset) / Double(denominator)) * Double(totalCount - 1)))
+                }
+            )
+        )
+        .sorted()
     }
 
     private func loadImage(at url: URL, maxDimension: CGFloat) -> UIImage? {
@@ -573,10 +604,14 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
         private let cameraOrbit = SCNNode()
         private let cameraNode = SCNNode()
         private let motionManager = CMMotionManager()
+        private weak var previewView: SCNView?
         private var frameNodes: [Int: SCNNode] = [:]
         private var renderedSignature = ""
         private var isMotionEnabled = false
         private var referenceAttitude: CMAttitude?
+        private var lastSelectedFrameIndex: Int?
+        private var lastMotionUpdateAt = Date.distantPast
+        private var lastMotionEuler = SCNVector3Zero
 
         func makeView() -> SCNView {
             scene.background.contents = UIColor.black
@@ -611,10 +646,12 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             view.scene = scene
             view.pointOfView = cameraNode
             view.backgroundColor = .black
-            view.isPlaying = true
-            view.rendersContinuously = true
-            view.antialiasingMode = .multisampling4X
+            view.isPlaying = false
+            view.rendersContinuously = false
+            view.preferredFramesPerSecond = 30
+            view.antialiasingMode = .none
             view.allowsCameraControl = false
+            previewView = view
             return view
         }
 
@@ -654,13 +691,15 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                 modelRoot.eulerAngles = SCNVector3Zero
                 cameraOrbit.eulerAngles = SCNVector3Zero
                 SCNTransaction.commit()
+                previewView?.setNeedsDisplay()
             }
         }
 
         private func startMotion() {
             guard motionManager.isDeviceMotionAvailable else { return }
             referenceAttitude = nil
-            motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
+            lastMotionUpdateAt = .distantPast
+            motionManager.deviceMotionUpdateInterval = 1.0 / 24.0
             let handler: CMDeviceMotionHandler = { [weak self] motion, _ in
                 guard let self, let motion else { return }
                 self.apply(attitude: motion.attitude)
@@ -687,17 +726,30 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             let pitch = Float(relativeAttitude.pitch)
             let roll = Float(relativeAttitude.roll)
             let clampedPitch = min(max(pitch, -0.95), 0.95)
+            let now = Date()
+            let nextEuler = SCNVector3(clampedPitch * 0.55, -yaw, roll * 0.04)
+
+            guard now.timeIntervalSince(lastMotionUpdateAt) >= (1.0 / 24.0)
+                || abs(nextEuler.x - lastMotionEuler.x) > 0.01
+                || abs(nextEuler.y - lastMotionEuler.y) > 0.01
+                || abs(nextEuler.z - lastMotionEuler.z) > 0.01 else {
+                return
+            }
+            lastMotionUpdateAt = now
+            lastMotionEuler = nextEuler
 
             SCNTransaction.begin()
-            SCNTransaction.animationDuration = 0.08
-            modelRoot.eulerAngles = SCNVector3(0, 0, roll * 0.04)
-            cameraOrbit.eulerAngles = SCNVector3(clampedPitch * 0.55, -yaw, 0)
+            SCNTransaction.disableActions = true
+            modelRoot.eulerAngles = SCNVector3(0, 0, nextEuler.z)
+            cameraOrbit.eulerAngles = SCNVector3(nextEuler.x, nextEuler.y, 0)
             SCNTransaction.commit()
+            previewView?.setNeedsDisplay()
         }
 
         private func rebuildModel(frames: [SpatialScanPlaybackFrame], atmosphere: AtmosphereStyle) {
             modelRoot.childNodes.forEach { $0.removeFromParentNode() }
             frameNodes = [:]
+            lastSelectedFrameIndex = nil
 
             let accent = accentColor(for: atmosphere)
             addFloor(accent: accent)
@@ -764,10 +816,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             node.name = "frame-\(frame.index)"
             node.position = position
             node.opacity = 0.74
-
-            let billboard = SCNBillboardConstraint()
-            billboard.freeAxes = .all
-            node.constraints = [billboard]
+            node.eulerAngles.y = atan2(position.x, position.z) + Float.pi
 
             let marker = SCNSphere(radius: 0.026)
             let markerMaterial = SCNMaterial()
@@ -807,16 +856,20 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
         }
 
         private func updateSelection(selectedFrameIndex: Int, atmosphere: AtmosphereStyle) {
+            guard selectedFrameIndex != lastSelectedFrameIndex else { return }
+            lastSelectedFrameIndex = selectedFrameIndex
+
             let accent = accentColor(for: atmosphere)
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.12
             for (index, node) in frameNodes {
                 let isSelected = index == selectedFrameIndex
-                SCNTransaction.begin()
-                SCNTransaction.animationDuration = 0.16
                 node.opacity = isSelected ? 1 : 0.62
                 node.scale = isSelected ? SCNVector3(1.18, 1.18, 1.18) : SCNVector3(1, 1, 1)
                 node.geometry?.firstMaterial?.emission.contents = isSelected ? accent.withAlphaComponent(0.24) : UIColor.black
-                SCNTransaction.commit()
             }
+            SCNTransaction.commit()
+            previewView?.setNeedsDisplay()
         }
 
         private func rawPosition(
