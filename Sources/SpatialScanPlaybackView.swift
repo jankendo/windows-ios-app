@@ -1,23 +1,22 @@
 import SwiftUI
 import UIKit
 import ImageIO
+import SceneKit
+import CoreMotion
 
 struct SpatialScanPlaybackView: View {
     private enum PlaybackImageSizing {
-        static let previewMaxDimension: CGFloat = 1_600
-        static let selectedFrameMaxDimension: CGFloat = 1_600
         static let thumbnailMaxDimension: CGFloat = 240
     }
 
     let entry: MemoryEntry
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var player = AudioPlayerController()
     @State private var waveformSamples: [CGFloat] = Array(repeating: 0.25, count: 40)
-    @State private var previewImage: UIImage?
     @State private var frameItems: [SpatialScanPlaybackFrame] = []
     @State private var selectedFrameIndex = 0
-    @State private var selectedFrameImage: UIImage?
     @State private var isSequencePlaying = false
     @State private var framePlaybackTask: Task<Void, Never>?
 
@@ -40,13 +39,6 @@ struct SpatialScanPlaybackView: View {
     private var currentFrame: SpatialScanPlaybackFrame? {
         guard frameItems.indices.contains(selectedFrameIndex) else { return nil }
         return frameItems[selectedFrameIndex]
-    }
-
-    private var displayedImage: UIImage? {
-        if let currentFrame {
-            return isSequencePlaying ? currentFrame.thumbnail : (selectedFrameImage ?? currentFrame.thumbnail)
-        }
-        return previewImage
     }
 
     private var sequencePlaybackInterval: TimeInterval {
@@ -75,13 +67,17 @@ struct SpatialScanPlaybackView: View {
             ResonanceGradientBackground(atmosphere: entry.atmosphereStyle)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    previewCard
-                    scrubberCard
-                    reconstructionCard
-                    assetCard
+                VStack(spacing: 18) {
+                    spatialModelHero
+
+                    VStack(alignment: .leading, spacing: 18) {
+                        scrubberCard
+                        reconstructionCard
+                        assetCard
+                    }
+                    .padding(.horizontal, 20)
                 }
-                .padding(20)
+                .padding(.bottom, 20)
             }
         }
         .navigationTitle("3Dスキャン")
@@ -89,162 +85,123 @@ struct SpatialScanPlaybackView: View {
         .onAppear {
             loadScanResources()
         }
-        .onChange(of: selectedFrameIndex) { _, _ in
-            if isSequencePlaying {
-                selectedFrameImage = nil
-            } else {
-                loadSelectedFrameImage()
-            }
-        }
-        .onChange(of: isSequencePlaying) { _, isPlaying in
-            if isPlaying {
-                selectedFrameImage = nil
-            } else {
-                loadSelectedFrameImage()
-            }
-        }
         .onDisappear {
             stopPlayback()
         }
     }
 
-    private var previewCard: some View {
-        ResonanceCard(atmosphere: entry.atmosphereStyle) {
-            VStack(alignment: .leading, spacing: 14) {
-                ZStack(alignment: .bottomLeading) {
-                    Group {
-                        if let displayedImage {
-                            Image(uiImage: displayedImage)
-                                .resizable()
-                                .scaledToFill()
-                        } else {
-                            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                .fill(Color.white.opacity(colorScheme == .dark ? 0.06 : 0.18))
-                                .overlay {
-                                    VStack(spacing: 10) {
-                                        Image(systemName: "cube")
-                                            .font(.system(size: 36, weight: .semibold))
-                                        Text("プレビューを準備できませんでした")
-                                            .font(.subheadline.weight(.semibold))
-                                    }
-                                    .foregroundStyle(palette.secondaryText)
-                                }
-                        }
-                    }
-                    .frame(height: 320)
-                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    .overlay {
-                        LinearGradient(
-                            colors: [Color.black.opacity(0.06), .clear, Color.black.opacity(0.54)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    }
+    private var spatialModelHero: some View {
+        ZStack(alignment: .bottomLeading) {
+            SpatialScanModelPreviewView(
+                frames: frameItems,
+                selectedFrameIndex: $selectedFrameIndex,
+                motionEnabled: !reduceMotion,
+                atmosphere: entry.atmosphereStyle
+            )
+            .frame(height: 430)
+            .background(Color.black)
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 8) {
+            LinearGradient(
+                colors: [Color.black.opacity(0.08), .clear, Color.black.opacity(0.78)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            VStack(alignment: .leading, spacing: 12) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ResonanceBadge(
+                            title: entry.spatialScanDisplayLabel,
+                            systemImage: "cube",
+                            tint: .white,
+                            atmosphere: entry.atmosphereStyle
+                        )
+                        ResonanceBadge(
+                            title: reduceMotion ? "固定視点" : "姿勢連動",
+                            systemImage: reduceMotion ? "viewfinder" : "gyroscope",
+                            tint: .white,
+                            atmosphere: entry.atmosphereStyle
+                        )
+                        if entry.spatialScanWorldMapURL != nil {
                             ResonanceBadge(
-                                title: entry.spatialScanDisplayLabel,
-                                systemImage: "cube",
+                                title: "World Map",
+                                systemImage: "globe.asia.australia.fill",
                                 tint: .white,
                                 atmosphere: entry.atmosphereStyle
                             )
-                            if entry.spatialScanWorldMapURL != nil {
-                                ResonanceBadge(
-                                    title: "World Map",
-                                    systemImage: "globe.asia.australia.fill",
-                                    tint: .white,
-                                    atmosphere: entry.atmosphereStyle
-                                )
-                            }
-                            if player.isSpatialPlaybackActive {
-                                ResonanceBadge(
-                                    title: "空間音声",
-                                    systemImage: "dot.radiowaves.left.and.right",
-                                    tint: .white,
-                                    atmosphere: entry.atmosphereStyle
-                                )
-                            }
                         }
-
-                        Text(entry.displayTitle)
-                            .font(.title3.bold())
-                            .foregroundStyle(.white)
-
-                        Text(frameOverlaySubtitle)
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.86))
+                        if player.isSpatialPlaybackActive {
+                            ResonanceBadge(
+                                title: "空間音声",
+                                systemImage: "dot.radiowaves.left.and.right",
+                                tint: .white,
+                                atmosphere: entry.atmosphereStyle
+                            )
+                        }
                     }
-                    .padding(18)
                 }
+                .lineLimit(1)
 
-                Text("今は保存済み preview と frame sequence で安全に見返します。derived reconstruction asset が追加されると、この画面へそのまま拡張できます。")
-                    .font(.caption)
-                    .foregroundStyle(palette.secondaryText)
+                Text(entry.displayTitle)
+                    .font(.title2.bold())
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
 
-                HStack(spacing: 10) {
+                Text(frameOverlaySubtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.86))
+
+                heroPlaybackControls
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 22)
+        }
+    }
+
+    private var heroPlaybackControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Button {
+                    toggleSequencePlayback()
+                } label: {
+                    Label(
+                        isSequencePlaying ? "停止" : "再生",
+                        systemImage: isSequencePlaying ? "pause.fill" : "play.fill"
+                    )
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(palette.accent)
+                .disabled(frameItems.count < 2)
+
+                if let playbackURL {
                     Button {
-                        toggleSequencePlayback()
+                        player.togglePlayback(for: playbackURL)
                     } label: {
                         Label(
-                            isSequencePlaying ? "フレーム再生を停止" : "フレームを再生",
-                            systemImage: isSequencePlaying ? "pause.fill" : "play.fill"
+                            player.isPlaying ? "音停止" : "音再生",
+                            systemImage: player.isPlaying ? "waveform.circle.fill" : "waveform.circle"
                         )
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 11)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(palette.accent)
-                    .disabled(frameItems.count < 2)
-
-                    if let playbackURL {
-                        Button {
-                            player.togglePlayback(for: playbackURL)
-                        } label: {
-                            Label(
-                                player.isPlaying ? "録音を停止" : "録音を再生",
-                                systemImage: player.isPlaying ? "waveform.circle.fill" : "waveform.circle"
-                            )
-                            .font(.subheadline.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(palette.accent)
-                    }
+                    .buttonStyle(.bordered)
+                    .tint(.white)
                 }
+            }
 
-                if playbackURL != nil {
-                    VStack(alignment: .leading, spacing: 10) {
-                        AudioWaveformView(
-                            samples: waveformSamples,
-                            progress: audioDuration > 0 ? player.currentTime / audioDuration : 0,
-                            activeColor: palette.accent,
-                            inactiveColor: palette.accent.opacity(0.16),
-                            minimumBarHeight: 10
-                        )
-                        .frame(height: 30)
-
-                        Slider(
-                            value: Binding(
-                                get: { player.currentTime },
-                                set: { player.seek(to: $0) }
-                            ),
-                            in: 0...max(audioDuration, 1)
-                        )
-                        .tint(palette.accent)
-
-                        HStack {
-                            Text(player.currentTime.resonanceClockText)
-                            Spacer()
-                            Text(audioDuration.resonanceClockText)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(palette.secondaryText)
-                    }
-                }
+            if playbackURL != nil {
+                AudioWaveformView(
+                    samples: waveformSamples,
+                    progress: audioDuration > 0 ? player.currentTime / audioDuration : 0,
+                    activeColor: .white,
+                    inactiveColor: .white.opacity(0.22),
+                    minimumBarHeight: 8
+                )
+                .frame(height: 24)
             }
         }
     }
@@ -471,22 +428,12 @@ struct SpatialScanPlaybackView: View {
     private func loadScanResources() {
         stopSequencePlayback()
         waveformSamples = entry.waveformFingerprint
-        previewImage = loadPreviewImage()
         frameItems = loadFrameItems()
         selectedFrameIndex = min(selectedFrameIndex, max(frameItems.count - 1, 0))
-        loadSelectedFrameImage()
         player.setPlaybackEnvelope(waveformSamples)
         if let playbackURL {
             player.load(url: playbackURL, autoPlay: false, loop: false, volume: 0.82)
         }
-    }
-
-    private func loadPreviewImage() -> UIImage? {
-        if let previewURL = entry.spatialScanPreviewURL,
-           let image = loadImage(at: previewURL, maxDimension: PlaybackImageSizing.previewMaxDimension) {
-            return image
-        }
-        return loadImage(at: entry.photoURL, maxDimension: PlaybackImageSizing.previewMaxDimension)
     }
 
     private func loadFrameItems() -> [SpatialScanPlaybackFrame] {
@@ -509,17 +456,6 @@ struct SpatialScanPlaybackView: View {
                 thumbnail: thumbnail
             )
         }
-    }
-
-    private func loadSelectedFrameImage() {
-        guard let currentFrame else {
-            selectedFrameImage = nil
-            return
-        }
-        selectedFrameImage = loadImage(
-            at: currentFrame.fileURL,
-            maxDimension: PlaybackImageSizing.selectedFrameMaxDimension
-        )
     }
 
     private func loadImage(at url: URL, maxDimension: CGFloat) -> UIImage? {
@@ -598,6 +534,324 @@ private struct SpatialScanPlaybackFrame: Identifiable {
     var id: String {
         "\(index)-\(fileURL.lastPathComponent)"
     }
+}
+
+private struct SpatialScanModelPreviewView: UIViewRepresentable {
+    let frames: [SpatialScanPlaybackFrame]
+    @Binding var selectedFrameIndex: Int
+    let motionEnabled: Bool
+    let atmosphere: AtmosphereStyle
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> SCNView {
+        context.coordinator.makeView()
+    }
+
+    func updateUIView(_ uiView: SCNView, context: Context) {
+        context.coordinator.update(
+            view: uiView,
+            frames: frames,
+            selectedFrameIndex: selectedFrameIndex,
+            motionEnabled: motionEnabled,
+            atmosphere: atmosphere
+        )
+    }
+
+    static func dismantleUIView(_ uiView: SCNView, coordinator: Coordinator) {
+        coordinator.stopMotion()
+    }
+
+    final class Coordinator {
+        private let scene = SCNScene()
+        private let modelRoot = SCNNode()
+        private let cameraOrbit = SCNNode()
+        private let cameraNode = SCNNode()
+        private let motionManager = CMMotionManager()
+        private var frameNodes: [Int: SCNNode] = [:]
+        private var renderedSignature = ""
+        private var isMotionEnabled = false
+
+        func makeView() -> SCNView {
+            scene.background.contents = UIColor.black
+            scene.rootNode.addChildNode(modelRoot)
+            scene.rootNode.addChildNode(cameraOrbit)
+
+            let camera = SCNCamera()
+            camera.fieldOfView = 48
+            camera.zNear = 0.01
+            camera.zFar = 120
+            cameraNode.camera = camera
+            cameraNode.position = SCNVector3(0, 0.5, 3.15)
+            cameraNode.eulerAngles.x = -Float.pi / 32
+            cameraOrbit.addChildNode(cameraNode)
+
+            let ambientLight = SCNLight()
+            ambientLight.type = .ambient
+            ambientLight.intensity = 560
+            let ambientNode = SCNNode()
+            ambientNode.light = ambientLight
+            scene.rootNode.addChildNode(ambientNode)
+
+            let keyLight = SCNLight()
+            keyLight.type = .omni
+            keyLight.intensity = 420
+            let keyNode = SCNNode()
+            keyNode.light = keyLight
+            keyNode.position = SCNVector3(1.6, 2.2, 2.4)
+            scene.rootNode.addChildNode(keyNode)
+
+            let view = SCNView()
+            view.scene = scene
+            view.pointOfView = cameraNode
+            view.backgroundColor = .black
+            view.isPlaying = true
+            view.rendersContinuously = true
+            view.antialiasingMode = .multisampling4X
+            view.allowsCameraControl = false
+            return view
+        }
+
+        func update(
+            view: SCNView,
+            frames: [SpatialScanPlaybackFrame],
+            selectedFrameIndex: Int,
+            motionEnabled: Bool,
+            atmosphere: AtmosphereStyle
+        ) {
+            let signature = frames.map(\.id).joined(separator: "|")
+            if signature != renderedSignature {
+                renderedSignature = signature
+                rebuildModel(frames: frames, atmosphere: atmosphere)
+            }
+            updateSelection(selectedFrameIndex: selectedFrameIndex, atmosphere: atmosphere)
+            setMotionEnabled(motionEnabled)
+        }
+
+        func stopMotion() {
+            if motionManager.isDeviceMotionActive {
+                motionManager.stopDeviceMotionUpdates()
+            }
+            isMotionEnabled = false
+        }
+
+        private func setMotionEnabled(_ enabled: Bool) {
+            guard enabled != isMotionEnabled else { return }
+            isMotionEnabled = enabled
+            if enabled {
+                startMotion()
+            } else {
+                stopMotion()
+                SCNTransaction.begin()
+                SCNTransaction.animationDuration = 0.2
+                modelRoot.eulerAngles = SCNVector3Zero
+                cameraOrbit.eulerAngles = SCNVector3Zero
+                SCNTransaction.commit()
+            }
+        }
+
+        private func startMotion() {
+            guard motionManager.isDeviceMotionAvailable else { return }
+            motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
+            let handler: CMDeviceMotionHandler = { [weak self] motion, _ in
+                guard let self, let motion else { return }
+                self.apply(attitude: motion.attitude)
+            }
+
+            if let referenceFrame = ImmersiveDirectionSpace.preferredMotionReferenceFrame() {
+                motionManager.startDeviceMotionUpdates(using: referenceFrame, to: .main, withHandler: handler)
+            } else {
+                motionManager.startDeviceMotionUpdates(to: .main, withHandler: handler)
+            }
+        }
+
+        private func apply(attitude: CMAttitude) {
+            let yaw = Float(attitude.yaw)
+            let pitch = Float(attitude.pitch)
+            let roll = Float(attitude.roll)
+
+            SCNTransaction.begin()
+            SCNTransaction.animationDuration = 0.08
+            modelRoot.eulerAngles = SCNVector3(-pitch * 0.16, yaw * 0.36, roll * 0.08)
+            cameraOrbit.eulerAngles = SCNVector3(pitch * 0.08, -yaw * 0.2, 0)
+            SCNTransaction.commit()
+        }
+
+        private func rebuildModel(frames: [SpatialScanPlaybackFrame], atmosphere: AtmosphereStyle) {
+            modelRoot.childNodes.forEach { $0.removeFromParentNode() }
+            frameNodes = [:]
+
+            let accent = accentColor(for: atmosphere)
+            addFloor(accent: accent)
+
+            guard !frames.isEmpty else {
+                addEmptyProxy(accent: accent)
+                return
+            }
+
+            let rawPositions = frames.map { rawPosition(for: $0.sample) }
+            let normalizedPositions = normalizedPositions(from: rawPositions)
+            addPath(positions: normalizedPositions, accent: accent)
+
+            for (frame, position) in zip(frames, normalizedPositions) {
+                let node = makeFrameNode(frame: frame, position: position, accent: accent)
+                modelRoot.addChildNode(node)
+                frameNodes[frame.index] = node
+            }
+        }
+
+        private func addFloor(accent: UIColor) {
+            let floor = SCNPlane(width: 5, height: 5)
+            let material = SCNMaterial()
+            material.diffuse.contents = UIColor(white: 0.04, alpha: 1)
+            material.emission.contents = accent.withAlphaComponent(0.05)
+            floor.materials = [material]
+
+            let floorNode = SCNNode(geometry: floor)
+            floorNode.position.y = -0.55
+            floorNode.eulerAngles.x = -Float.pi / 2
+            modelRoot.addChildNode(floorNode)
+        }
+
+        private func addEmptyProxy(accent: UIColor) {
+            let box = SCNBox(width: 0.9, height: 0.42, length: 0.9, chamferRadius: 0.05)
+            let material = SCNMaterial()
+            material.diffuse.contents = accent.withAlphaComponent(0.24)
+            material.emission.contents = accent.withAlphaComponent(0.12)
+            box.materials = [material]
+
+            let node = SCNNode(geometry: box)
+            node.position = SCNVector3(0, 0, 0)
+            modelRoot.addChildNode(node)
+        }
+
+        private func makeFrameNode(
+            frame: SpatialScanPlaybackFrame,
+            position: SCNVector3,
+            accent: UIColor
+        ) -> SCNNode {
+            let aspect = max(CGFloat(frame.sample.imageWidth) / CGFloat(max(frame.sample.imageHeight, 1)), 0.25)
+            let height: CGFloat = 0.34
+            let plane = SCNPlane(width: height * aspect, height: height)
+            let material = SCNMaterial()
+            material.diffuse.contents = frame.thumbnail
+            material.emission.contents = UIColor.black
+            material.lightingModel = .constant
+            material.isDoubleSided = true
+            plane.materials = [material]
+
+            let node = SCNNode(geometry: plane)
+            node.name = "frame-\(frame.index)"
+            node.position = position
+            node.opacity = 0.74
+
+            let billboard = SCNBillboardConstraint()
+            billboard.freeAxes = .all
+            node.constraints = [billboard]
+
+            let marker = SCNSphere(radius: 0.026)
+            let markerMaterial = SCNMaterial()
+            markerMaterial.diffuse.contents = accent
+            markerMaterial.emission.contents = accent.withAlphaComponent(0.6)
+            marker.materials = [markerMaterial]
+            let markerNode = SCNNode(geometry: marker)
+            markerNode.position = SCNVector3(0, -0.24, 0)
+            node.addChildNode(markerNode)
+            return node
+        }
+
+        private func addPath(positions: [SCNVector3], accent: UIColor) {
+            guard positions.count > 1 else { return }
+            var indices: [Int32] = []
+            for index in 0..<(positions.count - 1) {
+                indices.append(Int32(index))
+                indices.append(Int32(index + 1))
+            }
+
+            let source = SCNGeometrySource(vertices: positions)
+            let data = indices.withUnsafeBytes { Data($0) }
+            let element = SCNGeometryElement(
+                data: data,
+                primitiveType: .line,
+                primitiveCount: indices.count / 2,
+                bytesPerIndex: MemoryLayout<Int32>.size
+            )
+            let geometry = SCNGeometry(sources: [source], elements: [element])
+            let material = SCNMaterial()
+            material.diffuse.contents = accent.withAlphaComponent(0.82)
+            material.emission.contents = accent.withAlphaComponent(0.45)
+            geometry.materials = [material]
+
+            let node = SCNNode(geometry: geometry)
+            modelRoot.addChildNode(node)
+        }
+
+        private func updateSelection(selectedFrameIndex: Int, atmosphere: AtmosphereStyle) {
+            let accent = accentColor(for: atmosphere)
+            for (index, node) in frameNodes {
+                let isSelected = index == selectedFrameIndex
+                SCNTransaction.begin()
+                SCNTransaction.animationDuration = 0.16
+                node.opacity = isSelected ? 1 : 0.62
+                node.scale = isSelected ? SCNVector3(1.18, 1.18, 1.18) : SCNVector3(1, 1, 1)
+                node.geometry?.firstMaterial?.emission.contents = isSelected ? accent.withAlphaComponent(0.24) : UIColor.black
+                SCNTransaction.commit()
+            }
+        }
+
+        private func rawPosition(for sample: SpatialScanFrameSample) -> SCNVector3 {
+            guard let translation = sample.translationVector else {
+                return SCNVector3(0, 0, 0)
+            }
+            return SCNVector3(Float(translation.x), Float(translation.y), Float(translation.z))
+        }
+
+        private func normalizedPositions(from positions: [SCNVector3]) -> [SCNVector3] {
+            guard !positions.isEmpty else { return [] }
+            let center = positions.reduce(SCNVector3Zero) { partial, position in
+                SCNVector3(partial.x + position.x, partial.y + position.y, partial.z + position.z)
+            } / Float(positions.count)
+            let centered = positions.map { $0 - center }
+            let maxExtent = max(
+                centered.map { abs($0.x) }.max() ?? 0,
+                centered.map { abs($0.y) }.max() ?? 0,
+                centered.map { abs($0.z) }.max() ?? 0,
+                0.1
+            )
+            let scale = min(1.0 / maxExtent, 4.0)
+            return centered.map { position in
+                SCNVector3(position.x * scale, (position.y * scale) + 0.06, position.z * scale)
+            }
+        }
+
+        private func accentColor(for atmosphere: AtmosphereStyle) -> UIColor {
+            switch atmosphere {
+            case .dawn:
+                return UIColor(red: 1.0, green: 0.55, blue: 0.48, alpha: 1)
+            case .day:
+                return UIColor(red: 0.18, green: 0.45, blue: 0.95, alpha: 1)
+            case .dusk:
+                return UIColor(red: 0.62, green: 0.34, blue: 0.92, alpha: 1)
+            case .night:
+                return UIColor(red: 0.34, green: 0.56, blue: 0.96, alpha: 1)
+            }
+        }
+    }
+}
+
+private func + (lhs: SCNVector3, rhs: SCNVector3) -> SCNVector3 {
+    SCNVector3(lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z)
+}
+
+private func - (lhs: SCNVector3, rhs: SCNVector3) -> SCNVector3 {
+    SCNVector3(lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z)
+}
+
+private func / (lhs: SCNVector3, rhs: Float) -> SCNVector3 {
+    guard rhs != 0 else { return lhs }
+    return SCNVector3(lhs.x / rhs, lhs.y / rhs, lhs.z / rhs)
 }
 
 private struct SpatialScanMetricRow: View {

@@ -752,8 +752,6 @@ final class CaptureFlowModel: ObservableObject {
 }
 
 struct CaptureView: View {
-    private static let spatialScanDurationRange: ClosedRange<Double> = 3...15
-
     let isActive: Bool
 
     @Environment(\.modelContext) private var modelContext
@@ -766,7 +764,6 @@ struct CaptureView: View {
     @AppStorage("delayRecordingUntilAfterShutter") private var delayRecordingUntilAfterShutter = true
     @AppStorage(ResonancePreferenceKey.defaultCaptionStyle) private var defaultCaptionStyle = PhotoCaptionStyle.poetic.rawValue
     @AppStorage("captureModeOption") private var captureModeRawValue = CaptureModeOption.ambient.rawValue
-    @AppStorage("spatialScanCaptureDurationSeconds") private var spatialScanCaptureDurationSeconds = 8.0
     @AppStorage(ResonancePreferenceKey.intervalCaptureSpacingSeconds) private var intervalCaptureSpacingSeconds = 30.0
     @AppStorage(ResonancePreferenceKey.intervalCapturePlannedCount) private var intervalCapturePlannedCount = 3
     @AppStorage(ResonancePreferenceKey.intervalCaptureSceneTitle) private var intervalCaptureSceneTitle = ""
@@ -787,10 +784,6 @@ struct CaptureView: View {
         ARWorldTrackingConfiguration.isSupported
     }
 
-    private var normalizedSpatialScanCaptureDurationSeconds: Double {
-        min(max(spatialScanCaptureDurationSeconds, Self.spatialScanDurationRange.lowerBound), Self.spatialScanDurationRange.upperBound)
-    }
-
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
     }
@@ -806,7 +799,7 @@ struct CaptureView: View {
         case .interval:
             return "Interval \(intervalCapturePlannedCount)x"
         case .scan:
-            return "3D Scan \(Int(normalizedSpatialScanCaptureDurationSeconds.rounded()))s"
+            return "3D Scan auto"
         }
     }
 
@@ -856,7 +849,6 @@ struct CaptureView: View {
         .animation(.easeInOut(duration: 0.25), value: needsStartupOverlay)
         .onAppear {
             normalizeCaptureModeIfNeeded()
-            normalizeSpatialScanDurationIfNeeded()
             if isActive {
                 model.captionStyle = PhotoCaptionStyle(rawValue: defaultCaptionStyle) ?? .poetic
                 model.prepare()
@@ -865,7 +857,6 @@ struct CaptureView: View {
         .onChange(of: isActive) { _, active in
             if active {
                 normalizeCaptureModeIfNeeded()
-                normalizeSpatialScanDurationIfNeeded()
             }
             if active {
                 model.captionStyle = PhotoCaptionStyle(rawValue: defaultCaptionStyle) ?? .poetic
@@ -927,7 +918,6 @@ struct CaptureView: View {
         }
         .fullScreenCover(isPresented: $showingSpatialScanCapture) {
             SpatialScanCaptureView(
-                duration: normalizedSpatialScanCaptureDurationSeconds,
                 onComplete: { draft in
                     model.receiveSpatialScanDraft(draft)
                     model.prepare()
@@ -964,7 +954,6 @@ struct CaptureView: View {
         .onChange(of: captureModeRawValue) { _, newValue in
             AudioPlaybackDiagnostics.shared.record("capture mode changed: \(newValue)", category: "capture")
             normalizeCaptureModeIfNeeded()
-            normalizeSpatialScanDurationIfNeeded()
             if newValue != CaptureModeOption.interval.rawValue,
                model.intervalSession != nil {
                 model.stopIntervalCapture(modelContext: modelContext)
@@ -1273,7 +1262,7 @@ struct CaptureView: View {
         case .interval:
             return "\(intervalCapturePlannedCount)x"
         case .scan:
-            return "\(Int(normalizedSpatialScanCaptureDurationSeconds.rounded()))s"
+            return "AUTO"
         }
     }
 
@@ -1284,7 +1273,7 @@ struct CaptureView: View {
         case .interval:
             return "\(Int(intervalCaptureSpacingSeconds.rounded()))s"
         case .scan:
-            return "guided"
+            return "quality"
         }
     }
 
@@ -1472,12 +1461,8 @@ struct CaptureView: View {
         case .interval:
             return "一定間隔で複数のシーンを残すモードです。主画面からも切り替えられ、ここでは間隔や枚数を調整できます。"
         case .scan:
-            return "短時間の guided sweep で視野中心の spatial bundle を収集します。capture 後に preview を作り、保存時に 3D scan metadata として保持します。"
+            return "秒数ではなく、AR tracking の安定・視差・回り込みが揃った時点で自動完了します。"
         }
-    }
-
-    private var selectedCaptureLength: Double {
-        captureMode == .scan ? normalizedSpatialScanCaptureDurationSeconds : captureDurationSeconds
     }
 
     private var captureSettingsSheet: some View {
@@ -1491,49 +1476,35 @@ struct CaptureView: View {
 
             captureModeSelectionButtons
 
-            let columns = [GridItem(.adaptive(minimum: 92), spacing: 10)]
+            if captureMode == .scan {
+                scanQualitySettings
+            } else {
+                let columns = [GridItem(.adaptive(minimum: 92), spacing: 10)]
 
-            LazyVGrid(columns: columns, spacing: 10) {
-                ForEach([3.0, 6.0, 10.0, 15.0], id: \.self) { duration in
-                    Button("\(Int(duration))秒") {
-                        if captureMode == .scan {
-                            spatialScanCaptureDurationSeconds = duration
-                        } else {
+                LazyVGrid(columns: columns, spacing: 10) {
+                    ForEach([3.0, 6.0, 10.0, 15.0], id: \.self) { duration in
+                        Button("\(Int(duration))秒") {
                             captureDurationSeconds = duration
                         }
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: 48)
-                    .background(selectedCaptureLength == duration ? palette.accent : palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .foregroundStyle(selectedCaptureLength == duration ? Color.white : palette.primaryText)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(captureMode == .scan ? "scan時間" : "長さ")
-                    Spacer()
-                    Text("\(Int(selectedCaptureLength.rounded()))秒")
-                        .fontWeight(.semibold)
-                }
-
-                Slider(
-                    value: captureMode == .scan ? $spatialScanCaptureDurationSeconds : $captureDurationSeconds,
-                    in: captureMode == .scan ? Self.spatialScanDurationRange : 3...20,
-                    step: 1
-                )
-                    .tint(palette.accent)
-            }
-
-            if captureMode == .scan {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("3D Scan の記録方法")
                         .font(.subheadline.weight(.semibold))
-                    Text("AR tracking と環境音を短時間で束ね、preview image / frame poses / world map を bundle 化します。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background(captureDurationSeconds == duration ? palette.accent : palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .foregroundStyle(captureDurationSeconds == duration ? Color.white : palette.primaryText)
+                    }
                 }
-            } else {
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("長さ")
+                        Spacer()
+                        Text("\(Int(captureDurationSeconds.rounded()))秒")
+                            .fontWeight(.semibold)
+                    }
+
+                    Slider(value: $captureDurationSeconds, in: 3...20, step: 1)
+                        .tint(palette.accent)
+                }
+
                 Toggle(isOn: $delayRecordingUntilAfterShutter) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("シャッター音を避けて録音を始める")
@@ -1543,7 +1514,7 @@ struct CaptureView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .tint(palette.accent)
+                    .tint(palette.accent)
             }
 
             if captureMode == .interval {
@@ -1573,6 +1544,54 @@ struct CaptureView: View {
         }
         .padding(24)
         .presentationBackground(.regularMaterial)
+    }
+
+    private var scanQualitySettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                scanQualityPill(title: "停止", value: "自動", symbol: "checkmark.seal")
+                scanQualityPill(title: "判定", value: "視差", symbol: "arrow.left.and.right")
+                scanQualityPill(title: "追跡", value: "安定", symbol: "scope")
+            }
+
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(palette.accent)
+                    .frame(width: 34)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("端末を対象へ向けたまま、半歩ぶん横へ動いてから、端から端へ浅く回り込むと精度が上がります。")
+                        .font(.subheadline)
+                        .foregroundStyle(palette.primaryText)
+                    Text("秒数指定は使わず、フレームの重なり・移動量・回頭レンジ・AR tracking の安定で完了します。")
+                        .font(.footnote)
+                        .foregroundStyle(palette.secondaryText)
+                }
+            }
+            .padding(14)
+            .background(palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+    }
+
+    private func scanQualityPill(title: String, value: String, symbol: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Image(systemName: symbol)
+                .foregroundStyle(palette.accent)
+            Text(value)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(palette.primaryText)
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(palette.secondaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(palette.stroke)
+        }
     }
 
     private var captureModeQuickSelector: some View {
@@ -1669,12 +1688,6 @@ struct CaptureView: View {
         captureModeRawValue = CaptureModeOption.ambient.rawValue
     }
 
-    private func normalizeSpatialScanDurationIfNeeded() {
-        let normalizedDuration = normalizedSpatialScanCaptureDurationSeconds
-        guard spatialScanCaptureDurationSeconds != normalizedDuration else { return }
-        spatialScanCaptureDurationSeconds = normalizedDuration
-    }
-
     private var idleCaptureDescription: String {
         if captureMode == .ambient {
             return delayRecordingUntilAfterShutter
@@ -1683,7 +1696,7 @@ struct CaptureView: View {
         }
 
         if captureMode == .scan {
-            return "\(Int(normalizedSpatialScanCaptureDurationSeconds.rounded()))秒の guided sweep で、視野中心の 3D spatial bundle と環境音を記録します"
+            return "精度が揃ったタイミングで自動停止し、3D spatial bundle と環境音を記録します"
         }
 
         if let session = model.intervalSession {

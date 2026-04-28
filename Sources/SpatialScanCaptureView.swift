@@ -11,10 +11,14 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         static let frameSamplingInterval: TimeInterval = 0.35
         static let minimumTranslationMeters: Float = 0.045
         static let minimumRotationRadians: Float = 0.09
-        static let minimumPreferredFrameCount = 4
-        static let minimumDuration: TimeInterval = 3
-        static let maximumDuration: TimeInterval = 15
-        static let maximumAutoExtension: TimeInterval = 2
+        static let minimumQualityEvaluationDuration: TimeInterval = 4
+        static let preferredFrameCount = 12
+        static let preferredTranslationMeters = 0.32
+        static let preferredHeadingSpanDegrees = 90.0
+        static let autoFinishScore = 0.78
+        static let fallbackFinishScore = 0.68
+        static let readyHoldDuration: TimeInterval = 0.75
+        static let qualitySafetyDuration: TimeInterval = 28
         static let sessionBindingPollCount = 20
         static let sessionBindingPollNanoseconds: UInt64 = 50_000_000
         static let sessionReadyTimeout: TimeInterval = 2.5
@@ -22,9 +26,14 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
     @Published private(set) var isScanning = false
     @Published private(set) var progress: Double = 0
-    @Published private(set) var remainingSeconds = 0
     @Published private(set) var sampledFrameCount = 0
     @Published private(set) var guidanceText = "空間をゆっくり見渡して、その場の輪郭を集めます。"
+    @Published private(set) var qualityPercent = 0
+    @Published private(set) var translationCoverage = 0.0
+    @Published private(set) var rotationCoverage = 0.0
+    @Published private(set) var trackingStability = 0.0
+    @Published private(set) var qualityStatusText = "精度を測定しています"
+    @Published private(set) var motionHintText = "対象を中心に入れて、ゆっくり構えてください。"
 
     private weak var arSession: ARSession?
     private let ciContext = CIContext()
@@ -35,8 +44,6 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     private var captureContinuation: CheckedContinuation<CapturedMemoryDraft, Error>?
     private var captureTimerTask: Task<Void, Never>?
     private var startedAt: Date?
-    private var targetDuration: TimeInterval = 8
-    private var maximumDuration: TimeInterval = 10
     private var bundleURL: URL?
     private var frameSamples: [SpatialScanFrameSample] = []
     private var firstFrameTimestamp: TimeInterval?
@@ -46,6 +53,17 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     private var previewImageFileName = "preview.jpg"
     private var worldMapFileName: String?
     private var captureResolved = false
+    private var readySince: Date?
+    private var isFinishingCapture = false
+
+    private struct CaptureQualityState {
+        let score: Double
+        let translationCoverage: Double
+        let rotationCoverage: Double
+        let trackingStability: Double
+        let isTrackingStable: Bool
+        let isReadyForAutoFinish: Bool
+    }
 
     deinit {
         if arSession?.delegate === self {
@@ -71,7 +89,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         arSession = nil
     }
 
-    func captureScan(duration: TimeInterval) async throws -> CapturedMemoryDraft {
+    func captureScan() async throws -> CapturedMemoryDraft {
         guard ARWorldTrackingConfiguration.isSupported else {
             throw CaptureError.spatialScanUnavailable
         }
@@ -91,11 +109,6 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             throw CaptureError.busy
         }
 
-        targetDuration = max(CaptureConstants.minimumDuration, min(duration, CaptureConstants.maximumDuration))
-        maximumDuration = min(
-            targetDuration + CaptureConstants.maximumAutoExtension,
-            CaptureConstants.maximumDuration + CaptureConstants.maximumAutoExtension
-        )
         prepareForNewCapture()
         bundleURL = try createBundleFolder()
 
@@ -118,7 +131,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
         startedAt = .now
         isScanning = true
-        guidanceText = guidanceText(for: arSession.currentFrame?.camera.trackingState)
+        _ = updateCaptureQuality(trackingState: arSession.currentFrame?.camera.trackingState, elapsed: 0)
 
         return try await withCheckedThrowingContinuation { continuation in
             self.captureResolved = false
@@ -130,14 +143,15 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
                     try? await Task.sleep(nanoseconds: 100_000_000)
                     guard let startedAt = self.startedAt else { continue }
                     let elapsed = Date().timeIntervalSince(startedAt)
-                    await MainActor.run {
-                        self.progress = min(elapsed / self.targetDuration, 1)
-                        self.remainingSeconds = max(Int((self.targetDuration - elapsed).rounded(.up)), 0)
-                        self.guidanceText = self.guidanceText(for: self.arSession?.currentFrame?.camera.trackingState)
+                    let shouldFinish = await MainActor.run {
+                        self.updateCaptureQuality(
+                            trackingState: self.arSession?.currentFrame?.camera.trackingState,
+                            elapsed: elapsed
+                        )
                     }
 
-                    if elapsed >= self.targetDuration {
-                        await self.finishCaptureIfNeeded(elapsed: elapsed)
+                    if shouldFinish {
+                        await self.finishCapture()
                         if self.captureResolved {
                             break
                         }
@@ -166,10 +180,16 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         guard isScanning, let bundleURL else { return }
 
         let elapsed = resolvedElapsed(for: frame)
-        guidanceText = guidanceText(for: frame.camera.trackingState)
-        guard shouldSample(frame: frame, elapsed: elapsed) else { return }
+        let shouldSampleFrame = shouldSample(frame: frame, elapsed: elapsed)
+        if shouldSampleFrame {
+            _ = appendFrameSample(from: frame, elapsed: elapsed, bundleURL: bundleURL)
+        }
 
-        _ = appendFrameSample(from: frame, elapsed: elapsed, bundleURL: bundleURL)
+        if updateCaptureQuality(trackingState: frame.camera.trackingState, elapsed: elapsed) {
+            Task { @MainActor [weak self] in
+                await self?.finishCapture()
+            }
+        }
     }
 
     private func shouldSample(frame: ARFrame, elapsed: TimeInterval) -> Bool {
@@ -188,22 +208,12 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             || rotationDelta >= CaptureConstants.minimumRotationRadians
     }
 
-    private func finishCaptureIfNeeded(elapsed: TimeInterval) async {
-        guard isScanning else { return }
-
-        if frameSamples.count < CaptureConstants.minimumPreferredFrameCount,
-           elapsed < maximumDuration {
-            targetDuration = min(max(targetDuration + 1, elapsed + 0.8), maximumDuration)
-            remainingSeconds = max(Int((targetDuration - elapsed).rounded(.up)), 0)
-            guidanceText = "あと少しだけ、ゆっくり端をなぞって重なりを増やしてください。"
-            return
-        }
-
-        await finishCapture()
-    }
-
     private func finishCapture() async {
-        guard isScanning, let bundleURL else { return }
+        guard isScanning, !isFinishingCapture, let bundleURL else { return }
+        isFinishingCapture = true
+        qualityStatusText = "空間を仕上げています"
+        guidanceText = "精度が揃いました。保存用の空間データをまとめています。"
+        motionHintText = "端末をそのまま安定させてください。"
 
         captureTimerTask?.cancel()
         captureTimerTask = nil
@@ -348,8 +358,13 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         captureContinuation = nil
         startedAt = nil
         progress = 0
-        remainingSeconds = Int(targetDuration.rounded(.up))
         guidanceText = "空間を滑らかになぞり、少しずつ向きを変えてください。"
+        qualityPercent = 0
+        translationCoverage = 0
+        rotationCoverage = 0
+        trackingStability = 0
+        qualityStatusText = "精度を測定しています"
+        motionHintText = "対象を中心に入れて、ゆっくり構えてください。"
         sampledFrameCount = 0
         frameSamples = []
         firstFrameTimestamp = nil
@@ -358,6 +373,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         previewImageData = nil
         previewImageFileName = "preview.jpg"
         worldMapFileName = nil
+        readySince = nil
+        isFinishingCapture = false
         captureResolved = false
         isScanning = false
     }
@@ -369,8 +386,13 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         startedAt = nil
         isScanning = false
         progress = 0
-        remainingSeconds = 0
         sampledFrameCount = 0
+        qualityPercent = 0
+        translationCoverage = 0
+        rotationCoverage = 0
+        trackingStability = 0
+        qualityStatusText = "精度を測定しています"
+        motionHintText = "対象を中心に入れて、ゆっくり構えてください。"
         guidanceText = "空間をゆっくり見渡して、その場の輪郭を集めます。"
         if audioSession.isRunning {
             audioSession.stopRunning()
@@ -384,6 +406,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         previewImageFileName = "preview.jpg"
         worldMapFileName = nil
         frameSamples = []
+        readySince = nil
+        isFinishingCapture = false
         captureResolved = true
     }
 
@@ -463,7 +487,83 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         return true
     }
 
-    private func guidanceText(for trackingState: ARCamera.TrackingState?) -> String {
+    @discardableResult
+    private func updateCaptureQuality(trackingState: ARCamera.TrackingState?, elapsed: TimeInterval) -> Bool {
+        let quality = captureQualityState(trackingState: trackingState, elapsed: elapsed)
+        progress = quality.score
+        qualityPercent = Int((quality.score * 100).rounded())
+        translationCoverage = quality.translationCoverage
+        rotationCoverage = quality.rotationCoverage
+        trackingStability = quality.trackingStability
+        guidanceText = guidanceText(for: trackingState, quality: quality)
+        motionHintText = motionHint(for: quality, trackingState: trackingState)
+
+        if quality.isReadyForAutoFinish {
+            if readySince == nil {
+                readySince = .now
+            }
+            qualityStatusText = "精度が揃いました"
+        } else {
+            readySince = nil
+            qualityStatusText = qualityStatus(for: quality)
+        }
+
+        if let readySince, Date().timeIntervalSince(readySince) >= CaptureConstants.readyHoldDuration {
+            return true
+        }
+
+        if elapsed >= CaptureConstants.qualitySafetyDuration,
+           quality.score >= CaptureConstants.fallbackFinishScore,
+           frameSamples.count >= 8,
+           quality.isTrackingStable {
+            qualityStatusText = "十分な精度に達しました"
+            return true
+        }
+
+        return false
+    }
+
+    private func captureQualityState(
+        trackingState: ARCamera.TrackingState?,
+        elapsed: TimeInterval
+    ) -> CaptureQualityState {
+        let frameScore = min(Double(frameSamples.count) / Double(CaptureConstants.preferredFrameCount), 1)
+        let translationExtent = translationExtentMeters(for: frameSamples)
+        let headingSpan = headingSpanDegrees(for: frameSamples.compactMap(\.headingDegrees))
+        let translationScore = min(translationExtent / CaptureConstants.preferredTranslationMeters, 1)
+        let headingScore = min(headingSpan / CaptureConstants.preferredHeadingSpanDegrees, 1)
+        let trackingScore = trackingScore(for: trackingState)
+        let durationScore = min(elapsed / CaptureConstants.minimumQualityEvaluationDuration, 1)
+        let score = min(
+            (frameScore * 0.3)
+                + (translationScore * 0.25)
+                + (headingScore * 0.25)
+                + (trackingScore * 0.14)
+                + (durationScore * 0.06),
+            1
+        )
+        let isTrackingStable = trackingScore >= 0.9
+        let isReady = elapsed >= CaptureConstants.minimumQualityEvaluationDuration
+            && frameSamples.count >= 8
+            && translationExtent >= 0.18
+            && headingSpan >= 55
+            && score >= CaptureConstants.autoFinishScore
+            && isTrackingStable
+
+        return CaptureQualityState(
+            score: score,
+            translationCoverage: translationScore,
+            rotationCoverage: headingScore,
+            trackingStability: trackingScore,
+            isTrackingStable: isTrackingStable,
+            isReadyForAutoFinish: isReady
+        )
+    }
+
+    private func guidanceText(
+        for trackingState: ARCamera.TrackingState?,
+        quality: CaptureQualityState? = nil
+    ) -> String {
         guard let trackingState else {
             return "空間の準備を整えています。端末を安定させて少しお待ちください。"
         }
@@ -480,13 +580,117 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         case .limited:
             return "追跡を整えています。端末を安定させて、輪郭が重なるように動かしてください。"
         case .normal:
-            if sampledFrameCount < CaptureConstants.minimumPreferredFrameCount {
+            guard let quality else {
                 return "その場で半歩ぶんだけ視線を動かし、重なりを保ちながら集めています。"
             }
-            return "良好です。端を一度なぞるように見渡すと精度が安定します。"
+            if quality.isReadyForAutoFinish {
+                return "必要な重なりと視差が揃いました。自動で完了します。"
+            }
+            if sampledFrameCount < 6 {
+                return "対象を中心に保ったまま、ゆっくり左右へ視線を広げてください。"
+            }
+            if quality.translationCoverage < 0.55 {
+                return "半歩ぶんだけ横へ動き、同じ対象を重ねて見てください。"
+            }
+            if quality.rotationCoverage < 0.65 {
+                return "対象の端から端へ、浅い弧を描くように向きを変えてください。"
+            }
+            return "良好です。動きを小さくして、輪郭の重なりを仕上げています。"
         case .notAvailable:
             return "空間の準備を整えています。端末を安定させて少しお待ちください。"
         }
+    }
+
+    private func qualityStatus(for quality: CaptureQualityState) -> String {
+        if quality.trackingStability < 0.5 {
+            return "追跡を整えています"
+        }
+        if sampledFrameCount < 6 {
+            return "輪郭を収集中"
+        }
+        if quality.translationCoverage < 0.55 {
+            return "視差を追加中"
+        }
+        if quality.rotationCoverage < 0.65 {
+            return "回り込みを追加中"
+        }
+        return "重なりを確認中"
+    }
+
+    private func motionHint(for quality: CaptureQualityState, trackingState: ARCamera.TrackingState?) -> String {
+        if case .limited(.excessiveMotion) = trackingState {
+            return "速すぎます。端末をなめらかに戻してください。"
+        }
+        if quality.translationCoverage < 0.55 {
+            return "横へ小さく移動"
+        }
+        if quality.rotationCoverage < 0.65 {
+            return "端から端へゆっくり"
+        }
+        if quality.trackingStability < 0.9 {
+            return "輪郭が多い場所へ"
+        }
+        return "そのまま安定"
+    }
+
+    private func trackingScore(for trackingState: ARCamera.TrackingState?) -> Double {
+        guard let trackingState else { return 0 }
+        switch trackingState {
+        case .normal:
+            return 1
+        case .limited(.insufficientFeatures):
+            return 0.42
+        case .limited(.excessiveMotion):
+            return 0.22
+        case .limited(.initializing):
+            return 0.18
+        case .limited(.relocalizing):
+            return 0.25
+        case .limited:
+            return 0.35
+        case .notAvailable:
+            return 0
+        }
+    }
+
+    private func translationExtentMeters(for samples: [SpatialScanFrameSample]) -> Double {
+        let translations = samples.compactMap(\.translationVector)
+        guard let first = translations.first else { return 0 }
+
+        var minX = first.x
+        var maxX = first.x
+        var minY = first.y
+        var maxY = first.y
+        var minZ = first.z
+        var maxZ = first.z
+
+        for translation in translations.dropFirst() {
+            minX = min(minX, translation.x)
+            maxX = max(maxX, translation.x)
+            minY = min(minY, translation.y)
+            maxY = max(maxY, translation.y)
+            minZ = min(minZ, translation.z)
+            maxZ = max(maxZ, translation.z)
+        }
+
+        let deltaX = maxX - minX
+        let deltaY = maxY - minY
+        let deltaZ = maxZ - minZ
+        return sqrt((deltaX * deltaX) + (deltaY * deltaY) + (deltaZ * deltaZ))
+    }
+
+    private func headingSpanDegrees(for headings: [Double]) -> Double {
+        guard headings.count > 1 else { return 0 }
+        let normalized = headings
+            .map(ImmersiveDirectionSpace.normalizedDegrees)
+            .sorted()
+
+        guard let first = normalized.first, let last = normalized.last else { return 0 }
+        var largestGap = first + 360 - last
+        for pair in zip(normalized, normalized.dropFirst()) {
+            largestGap = max(largestGap, pair.1 - pair.0)
+        }
+        return min(max(360 - largestGap, 0), 360)
     }
 
     private func captureHeadingDegrees(from transform: simd_float4x4?) -> Double? {
@@ -553,7 +757,6 @@ private extension simd_float4 {
 }
 
 struct SpatialScanCaptureView: View {
-    let duration: TimeInterval
     let onComplete: (CapturedMemoryDraft) -> Void
     let onCancel: () -> Void
 
@@ -584,7 +787,7 @@ struct SpatialScanCaptureView: View {
             guard !hasStarted else { return }
             hasStarted = true
             do {
-                let draft = try await model.captureScan(duration: duration)
+                let draft = try await model.captureScan()
                 dismiss()
                 onComplete(draft)
             } catch is CancellationError {
@@ -636,14 +839,14 @@ struct SpatialScanCaptureView: View {
                 Text("3D Scan")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(.white)
-                Text("\(model.sampledFrameCount) frames")
+                Text(model.qualityStatusText)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.white.opacity(0.8))
             }
 
             Spacer()
 
-            Text("\(model.remainingSeconds)秒")
+            Text("\(model.qualityPercent)%")
                 .font(.headline.weight(.bold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 14)
@@ -654,9 +857,7 @@ struct SpatialScanCaptureView: View {
 
     private var bottomPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("人の視野に近い短時間 sweep で、空間の輪郭と環境音を一緒に束ねます。")
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.84))
+            motionGuide
 
             ProgressView(value: model.progress)
                 .tint(.white)
@@ -666,9 +867,9 @@ struct SpatialScanCaptureView: View {
                 .foregroundStyle(.white.opacity(0.78))
 
             HStack(spacing: 12) {
-                scanHintChip(title: "短時間", value: "\(Int(duration.rounded()))秒")
-                scanHintChip(title: "方式", value: "on-device")
-                scanHintChip(title: "音声", value: "ambient")
+                scanHintChip(title: "横移動", value: "\(Int((model.translationCoverage * 100).rounded()))%")
+                scanHintChip(title: "回頭", value: "\(Int((model.rotationCoverage * 100).rounded()))%")
+                scanHintChip(title: "安定", value: "\(Int((model.trackingStability * 100).rounded()))%")
             }
         }
         .padding(18)
@@ -676,6 +877,40 @@ struct SpatialScanCaptureView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .strokeBorder(.white.opacity(0.14))
+        }
+    }
+
+    private var motionGuide: some View {
+        HStack(spacing: 16) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(.white.opacity(0.65), lineWidth: 2)
+                    .frame(width: 54, height: 82)
+                    .rotationEffect(.degrees(-8 + (model.rotationCoverage * 16)))
+
+                Capsule()
+                    .fill(.white.opacity(0.68))
+                    .frame(width: 72, height: 4)
+                    .offset(x: CGFloat((model.translationCoverage - 0.5) * 42), y: 46)
+
+                Image(systemName: "arrow.left.and.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .offset(y: 47)
+            }
+            .frame(width: 90, height: 96)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(model.motionHintText)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.84)
+
+                Text("対象を外さず、半歩ぶんの横移動と浅い回り込みで視差を集めます。")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.74))
+            }
         }
     }
 
