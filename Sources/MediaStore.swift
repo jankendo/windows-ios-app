@@ -57,55 +57,63 @@ enum MediaStore {
 
         let photoFileName = UUID().uuidString + ".jpg"
         let photoURL = photoURL(for: photoFileName)
-        try photoData.write(to: photoURL, options: .atomic)
+        var createdAssetURLs: [URL] = []
 
-        var audioFileName: String?
-        var analysisAudioFileName: String?
-        var audioDuration = 0.0
+        do {
+            try photoData.write(to: photoURL, options: .atomic)
+            createdAssetURLs.append(photoURL)
 
-        if let audioTempURL, FileManager.default.fileExists(atPath: audioTempURL.path) {
-            let audioExtension = audioTempURL.pathExtension.isEmpty ? "caf" : audioTempURL.pathExtension
-            audioFileName = UUID().uuidString + ".\(audioExtension)"
-            let destinationURL = audioURL(for: audioFileName!)
-            if FileManager.default.fileExists(atPath: destinationURL.path) {
-                try FileManager.default.removeItem(at: destinationURL)
-            }
-            try FileManager.default.copyItem(at: audioTempURL, to: destinationURL)
-            try? FileManager.default.removeItem(at: audioTempURL)
-            let asset = AVURLAsset(url: destinationURL)
-            audioDuration = asset.duration.seconds.isFinite ? asset.duration.seconds : 0
-        }
+            var audioFileName: String?
+            var analysisAudioFileName: String?
+            var audioDuration = 0.0
 
-        if let analysisAudioTempURL, FileManager.default.fileExists(atPath: analysisAudioTempURL.path) {
-            if analysisAudioTempURL == audioTempURL {
-                analysisAudioFileName = audioFileName
-            } else {
-                let analysisExtension = analysisAudioTempURL.pathExtension.isEmpty ? "caf" : analysisAudioTempURL.pathExtension
-                analysisAudioFileName = UUID().uuidString + ".\(analysisExtension)"
-                let analysisDestinationURL = audioURL(for: analysisAudioFileName!)
-                if FileManager.default.fileExists(atPath: analysisDestinationURL.path) {
-                    try FileManager.default.removeItem(at: analysisDestinationURL)
+            if let audioTempURL, FileManager.default.fileExists(atPath: audioTempURL.path) {
+                let audioExtension = audioTempURL.pathExtension.isEmpty ? "caf" : audioTempURL.pathExtension
+                audioFileName = UUID().uuidString + ".\(audioExtension)"
+                let destinationURL = audioURL(for: audioFileName!)
+                if FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try FileManager.default.removeItem(at: destinationURL)
                 }
-                try FileManager.default.copyItem(at: analysisAudioTempURL, to: analysisDestinationURL)
-                try? FileManager.default.removeItem(at: analysisAudioTempURL)
+                try FileManager.default.copyItem(at: audioTempURL, to: destinationURL)
+                createdAssetURLs.append(destinationURL)
+                let asset = AVURLAsset(url: destinationURL)
+                audioDuration = asset.duration.seconds.isFinite ? asset.duration.seconds : 0
             }
-        } else {
-            analysisAudioFileName = audioFileName
-        }
 
-        Task { @MainActor in
-            AudioPlaybackDiagnostics.shared.record(
-                "media save completed photo=\(photoFileName) audio=\(audioFileName ?? "none") analysis=\(analysisAudioFileName ?? "none") duration=\(String(format: "%.2fs", audioDuration))",
-                category: "storage"
+            if let analysisAudioTempURL, FileManager.default.fileExists(atPath: analysisAudioTempURL.path) {
+                if analysisAudioTempURL == audioTempURL {
+                    analysisAudioFileName = audioFileName
+                } else {
+                    let analysisExtension = analysisAudioTempURL.pathExtension.isEmpty ? "caf" : analysisAudioTempURL.pathExtension
+                    analysisAudioFileName = UUID().uuidString + ".\(analysisExtension)"
+                    let analysisDestinationURL = audioURL(for: analysisAudioFileName!)
+                    if FileManager.default.fileExists(atPath: analysisDestinationURL.path) {
+                        try FileManager.default.removeItem(at: analysisDestinationURL)
+                    }
+                    try FileManager.default.copyItem(at: analysisAudioTempURL, to: analysisDestinationURL)
+                    createdAssetURLs.append(analysisDestinationURL)
+                }
+            } else {
+                analysisAudioFileName = audioFileName
+            }
+
+            Task { @MainActor in
+                AudioPlaybackDiagnostics.shared.record(
+                    "media save completed photo=\(photoFileName) audio=\(audioFileName ?? "none") analysis=\(analysisAudioFileName ?? "none") duration=\(String(format: "%.2fs", audioDuration))",
+                    category: "storage"
+                )
+            }
+
+            return StoredMedia(
+                photoFileName: photoFileName,
+                audioFileName: audioFileName,
+                analysisAudioFileName: analysisAudioFileName,
+                audioDuration: audioDuration
             )
+        } catch {
+            createdAssetURLs.reversed().forEach { try? FileManager.default.removeItem(at: $0) }
+            throw error
         }
-
-        return StoredMedia(
-            photoFileName: photoFileName,
-            audioFileName: audioFileName,
-            analysisAudioFileName: analysisAudioFileName,
-            audioDuration: audioDuration
-        )
     }
 
     static func deleteAssets(for entry: MemoryEntry) {
@@ -246,7 +254,6 @@ enum MediaStore {
             try FileManager.default.removeItem(at: destinationURL)
         }
         try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
-        cleanupTemporarySpatialScanBundleIfNeeded(payload.bundleURL)
         let storedSpatialScan = try validatedStoredSpatialScan(
             bundleFolderName: destinationFolderName,
             manifestFileName: "manifest.json"
@@ -707,16 +714,6 @@ enum MediaStore {
             guard activityDate < cutoffDate else { continue }
             try? FileManager.default.removeItem(at: draftFolderURL)
         }
-    }
-
-    private static func cleanupTemporarySpatialScanBundleIfNeeded(_ bundleURL: URL) {
-        let draftsRootURL = temporarySpatialScanDraftsRootURL().standardizedFileURL
-        let standardizedBundleURL = bundleURL.standardizedFileURL
-        let draftsRootPath = draftsRootURL.path + "/"
-        guard standardizedBundleURL.path.hasPrefix(draftsRootPath) else {
-            return
-        }
-        try? FileManager.default.removeItem(at: standardizedBundleURL)
     }
 
     private static func temporarySpatialScanDraftsRootURL() -> URL {

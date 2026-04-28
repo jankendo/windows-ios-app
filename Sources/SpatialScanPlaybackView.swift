@@ -1,7 +1,14 @@
 import SwiftUI
 import UIKit
+import ImageIO
 
 struct SpatialScanPlaybackView: View {
+    private enum PlaybackImageSizing {
+        static let previewMaxDimension: CGFloat = 1_600
+        static let selectedFrameMaxDimension: CGFloat = 1_600
+        static let thumbnailMaxDimension: CGFloat = 240
+    }
+
     let entry: MemoryEntry
 
     @Environment(\.colorScheme) private var colorScheme
@@ -10,6 +17,7 @@ struct SpatialScanPlaybackView: View {
     @State private var previewImage: UIImage?
     @State private var frameItems: [SpatialScanPlaybackFrame] = []
     @State private var selectedFrameIndex = 0
+    @State private var selectedFrameImage: UIImage?
     @State private var isSequencePlaying = false
     @State private var framePlaybackTask: Task<Void, Never>?
 
@@ -35,7 +43,10 @@ struct SpatialScanPlaybackView: View {
     }
 
     private var displayedImage: UIImage? {
-        currentFrame?.image ?? previewImage
+        if let currentFrame {
+            return isSequencePlaying ? currentFrame.thumbnail : (selectedFrameImage ?? currentFrame.thumbnail)
+        }
+        return previewImage
     }
 
     private var sequencePlaybackInterval: TimeInterval {
@@ -77,6 +88,20 @@ struct SpatialScanPlaybackView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             loadScanResources()
+        }
+        .onChange(of: selectedFrameIndex) { _, _ in
+            if isSequencePlaying {
+                selectedFrameImage = nil
+            } else {
+                loadSelectedFrameImage()
+            }
+        }
+        .onChange(of: isSequencePlaying) { _, isPlaying in
+            if isPlaying {
+                selectedFrameImage = nil
+            } else {
+                loadSelectedFrameImage()
+            }
         }
         .onDisappear {
             stopPlayback()
@@ -288,7 +313,7 @@ struct SpatialScanPlaybackView: View {
                                 Button {
                                     selectedFrameIndex = frame.index
                                 } label: {
-                                    Image(uiImage: frame.image)
+                                    Image(uiImage: frame.thumbnail)
                                         .resizable()
                                         .scaledToFill()
                                         .frame(width: 88, height: 68)
@@ -449,6 +474,7 @@ struct SpatialScanPlaybackView: View {
         previewImage = loadPreviewImage()
         frameItems = loadFrameItems()
         selectedFrameIndex = min(selectedFrameIndex, max(frameItems.count - 1, 0))
+        loadSelectedFrameImage()
         player.setPlaybackEnvelope(waveformSamples)
         if let playbackURL {
             player.load(url: playbackURL, autoPlay: false, loop: false, volume: 0.82)
@@ -457,10 +483,10 @@ struct SpatialScanPlaybackView: View {
 
     private func loadPreviewImage() -> UIImage? {
         if let previewURL = entry.spatialScanPreviewURL,
-           let image = UIImage(contentsOfFile: previewURL.path) {
+           let image = loadImage(at: previewURL, maxDimension: PlaybackImageSizing.previewMaxDimension) {
             return image
         }
-        return UIImage(contentsOfFile: entry.photoURL.path)
+        return loadImage(at: entry.photoURL, maxDimension: PlaybackImageSizing.previewMaxDimension)
     }
 
     private func loadFrameItems() -> [SpatialScanPlaybackFrame] {
@@ -471,7 +497,7 @@ struct SpatialScanPlaybackView: View {
         return manifest.frameSamples.enumerated().compactMap { index, frameSample in
             guard
                 let frameURL = MediaStore.spatialScanAssetURL(relativePath: frameSample.imageFileName, for: storedSpatialScan),
-                let image = UIImage(contentsOfFile: frameURL.path)
+                let thumbnail = loadImage(at: frameURL, maxDimension: PlaybackImageSizing.thumbnailMaxDimension)
             else {
                 return nil
             }
@@ -480,9 +506,40 @@ struct SpatialScanPlaybackView: View {
                 index: index,
                 sample: frameSample,
                 fileURL: frameURL,
-                image: image
+                thumbnail: thumbnail
             )
         }
+    }
+
+    private func loadSelectedFrameImage() {
+        guard let currentFrame else {
+            selectedFrameImage = nil
+            return
+        }
+        selectedFrameImage = loadImage(
+            at: currentFrame.fileURL,
+            maxDimension: PlaybackImageSizing.selectedFrameMaxDimension
+        )
+    }
+
+    private func loadImage(at url: URL, maxDimension: CGFloat) -> UIImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
+            return nil
+        }
+
+        let maxPixelSize = max(Int(maxDimension), 1)
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ] as CFDictionary
+
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, thumbnailOptions) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage)
     }
 
     private func toggleSequencePlayback() {
@@ -536,7 +593,7 @@ private struct SpatialScanPlaybackFrame: Identifiable {
     let index: Int
     let sample: SpatialScanFrameSample
     let fileURL: URL
-    let image: UIImage
+    let thumbnail: UIImage
 
     var id: String {
         "\(index)-\(fileURL.lastPathComponent)"

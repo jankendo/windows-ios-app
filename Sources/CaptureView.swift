@@ -530,6 +530,7 @@ final class CaptureFlowModel: ObservableObject {
             modelContext.insert(entry)
             didInsertEntry = true
             try modelContext.save()
+            cleanupTemporaryAssets(for: draft)
             return entry
         } catch {
             if didInsertEntry {
@@ -542,6 +543,18 @@ final class CaptureFlowModel: ObservableObject {
                 MediaStore.deleteAssets(for: entry)
             }
             throw error
+        }
+    }
+
+    private func cleanupTemporaryAssets(for draft: CapturedMemoryDraft) {
+        if let audioURL = draft.audioTempURL {
+            try? FileManager.default.removeItem(at: audioURL)
+        }
+        if let analysisAudioURL = draft.analysisAudioTempURL, analysisAudioURL != draft.audioTempURL {
+            try? FileManager.default.removeItem(at: analysisAudioURL)
+        }
+        if let bundleURL = draft.spatialScanPayload?.bundleURL {
+            try? FileManager.default.removeItem(at: bundleURL)
         }
     }
 
@@ -739,6 +752,8 @@ final class CaptureFlowModel: ObservableObject {
 }
 
 struct CaptureView: View {
+    private static let spatialScanDurationRange: ClosedRange<Double> = 3...15
+
     let isActive: Bool
 
     @Environment(\.modelContext) private var modelContext
@@ -772,6 +787,10 @@ struct CaptureView: View {
         ARWorldTrackingConfiguration.isSupported
     }
 
+    private var normalizedSpatialScanCaptureDurationSeconds: Double {
+        min(max(spatialScanCaptureDurationSeconds, Self.spatialScanDurationRange.lowerBound), Self.spatialScanDurationRange.upperBound)
+    }
+
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
     }
@@ -787,7 +806,7 @@ struct CaptureView: View {
         case .interval:
             return "Interval \(intervalCapturePlannedCount)x"
         case .scan:
-            return "3D Scan \(Int(spatialScanCaptureDurationSeconds.rounded()))s"
+            return "3D Scan \(Int(normalizedSpatialScanCaptureDurationSeconds.rounded()))s"
         }
     }
 
@@ -837,6 +856,7 @@ struct CaptureView: View {
         .animation(.easeInOut(duration: 0.25), value: needsStartupOverlay)
         .onAppear {
             normalizeCaptureModeIfNeeded()
+            normalizeSpatialScanDurationIfNeeded()
             if isActive {
                 model.captionStyle = PhotoCaptionStyle(rawValue: defaultCaptionStyle) ?? .poetic
                 model.prepare()
@@ -845,6 +865,7 @@ struct CaptureView: View {
         .onChange(of: isActive) { _, active in
             if active {
                 normalizeCaptureModeIfNeeded()
+                normalizeSpatialScanDurationIfNeeded()
             }
             if active {
                 model.captionStyle = PhotoCaptionStyle(rawValue: defaultCaptionStyle) ?? .poetic
@@ -906,7 +927,7 @@ struct CaptureView: View {
         }
         .fullScreenCover(isPresented: $showingSpatialScanCapture) {
             SpatialScanCaptureView(
-                duration: spatialScanCaptureDurationSeconds,
+                duration: normalizedSpatialScanCaptureDurationSeconds,
                 onComplete: { draft in
                     model.receiveSpatialScanDraft(draft)
                     model.prepare()
@@ -943,6 +964,7 @@ struct CaptureView: View {
         .onChange(of: captureModeRawValue) { _, newValue in
             AudioPlaybackDiagnostics.shared.record("capture mode changed: \(newValue)", category: "capture")
             normalizeCaptureModeIfNeeded()
+            normalizeSpatialScanDurationIfNeeded()
             if newValue != CaptureModeOption.interval.rawValue,
                model.intervalSession != nil {
                 model.stopIntervalCapture(modelContext: modelContext)
@@ -1251,7 +1273,7 @@ struct CaptureView: View {
         case .interval:
             return "\(intervalCapturePlannedCount)x"
         case .scan:
-            return "\(Int(spatialScanCaptureDurationSeconds.rounded()))s"
+            return "\(Int(normalizedSpatialScanCaptureDurationSeconds.rounded()))s"
         }
     }
 
@@ -1455,7 +1477,7 @@ struct CaptureView: View {
     }
 
     private var selectedCaptureLength: Double {
-        captureMode == .scan ? spatialScanCaptureDurationSeconds : captureDurationSeconds
+        captureMode == .scan ? normalizedSpatialScanCaptureDurationSeconds : captureDurationSeconds
     }
 
     private var captureSettingsSheet: some View {
@@ -1495,7 +1517,11 @@ struct CaptureView: View {
                         .fontWeight(.semibold)
                 }
 
-                Slider(value: captureMode == .scan ? $spatialScanCaptureDurationSeconds : $captureDurationSeconds, in: 3...20, step: 1)
+                Slider(
+                    value: captureMode == .scan ? $spatialScanCaptureDurationSeconds : $captureDurationSeconds,
+                    in: captureMode == .scan ? Self.spatialScanDurationRange : 3...20,
+                    step: 1
+                )
                     .tint(palette.accent)
             }
 
@@ -1643,6 +1669,12 @@ struct CaptureView: View {
         captureModeRawValue = CaptureModeOption.ambient.rawValue
     }
 
+    private func normalizeSpatialScanDurationIfNeeded() {
+        let normalizedDuration = normalizedSpatialScanCaptureDurationSeconds
+        guard spatialScanCaptureDurationSeconds != normalizedDuration else { return }
+        spatialScanCaptureDurationSeconds = normalizedDuration
+    }
+
     private var idleCaptureDescription: String {
         if captureMode == .ambient {
             return delayRecordingUntilAfterShutter
@@ -1651,7 +1683,7 @@ struct CaptureView: View {
         }
 
         if captureMode == .scan {
-            return "\(Int(spatialScanCaptureDurationSeconds.rounded()))秒の guided sweep で、視野中心の 3D spatial bundle と環境音を記録します"
+            return "\(Int(normalizedSpatialScanCaptureDurationSeconds.rounded()))秒の guided sweep で、視野中心の 3D spatial bundle と環境音を記録します"
         }
 
         if let session = model.intervalSession {
