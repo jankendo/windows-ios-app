@@ -26,7 +26,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         static let minimumRotationRadians: Float = 0.045
         static let minimumQualityEvaluationDuration: TimeInterval = 10
         static let preferredFrameCount = 48
-        static let maximumFrameSampleCount = 144
+        static let maximumFrameSampleCount = 240
         static let headingCoverageBucketCount = 12
         static let verticalCoverageBandCount = 3
         static let preferredHeadingSpanDegrees = 330.0
@@ -37,8 +37,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         static let minimumHighQualityVerticalSpanDegrees = 52.0
         static let idealStationaryDriftMeters = 0.85
         static let maximumStationaryDriftMeters = 1.6
-        static let maximumPointSampleCount = 24_000
-        static let maximumPointSamplesPerFrame = 420
+        static let maximumPointSampleCount = 120_000
+        static let maximumPointSamplesPerFrame = 900
         static let pointIdentifierResampleInterval = 8
         static let preferredPointSampleCount = 4_800
         static let minimumHighQualityPointSampleCount = 2_400

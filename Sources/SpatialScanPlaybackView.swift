@@ -8,8 +8,8 @@ import CoreMotion
 struct SpatialScanPlaybackView: View {
     private enum PlaybackImageSizing {
         static let thumbnailMaxDimension: CGFloat = 420
-        static let maximumLoadedFrameCount = 10
-        static let maximumPointPreviewCount = 18_000
+        static let maximumLoadedFrameCount = 16
+        static let maximumPointPreviewCount = 60_000
     }
 
     let entry: MemoryEntry
@@ -891,13 +891,13 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             lastSelectedFrameIndex = nil
 
             let accent = accentColor(for: atmosphere)
-            addFloor(accent: accent)
 
             if !pointSamples.isEmpty {
-                addPhotoShell(frames: frames, accent: accent)
                 addSurfelCloud(pointSamples: pointSamples, accent: accent)
                 return
             }
+
+            addFloor(accent: accent)
 
             guard !frames.isEmpty else {
                 addEmptyProxy(accent: accent)
@@ -940,37 +940,6 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             let node = SCNNode(geometry: box)
             node.position = SCNVector3(0, 0, 0)
             modelRoot.addChildNode(node)
-        }
-
-        private func addPhotoShell(frames: [SpatialScanPlaybackFrame], accent: UIColor) {
-            guard !frames.isEmpty else { return }
-            let rawPositions = frames.enumerated().map { index, frame in
-                rawPosition(for: frame.sample, index: index, totalCount: frames.count)
-            }
-            let normalizedPositions = normalizedPositions(from: rawPositions)
-
-            for (frame, position) in zip(frames, normalizedPositions) {
-                let aspect = max(CGFloat(frame.sample.imageWidth) / CGFloat(max(frame.sample.imageHeight, 1)), 0.25)
-                let height: CGFloat = 1.15
-                let plane = SCNPlane(width: height * aspect, height: height)
-                let material = SCNMaterial()
-                material.diffuse.contents = frame.thumbnail
-                material.emission.contents = UIColor.white.withAlphaComponent(0.08)
-                material.lightingModel = .constant
-                material.isDoubleSided = true
-                material.readsFromDepthBuffer = false
-                material.writesToDepthBuffer = false
-                plane.materials = [material]
-
-                let shellPosition = normalized(position) * 1.58
-                let node = SCNNode(geometry: plane)
-                node.name = "photo-shell-\(frame.index)"
-                node.position = SCNVector3(shellPosition.x, shellPosition.y + 0.1, shellPosition.z)
-                node.opacity = 0.36
-                node.eulerAngles.y = atan2(node.position.x, node.position.z) + Float.pi
-                node.eulerAngles.x = -atan2(node.position.y, max(abs(node.position.z), 0.2)) * 0.35
-                modelRoot.addChildNode(node)
-            }
         }
 
         private func addSurfelCloud(pointSamples: [SpatialScanOptimizedPoint], accent: UIColor) {
@@ -1042,7 +1011,16 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             let material = SCNMaterial()
             material.lightingModel = .constant
             material.diffuse.contents = UIColor.white
-            material.emission.contents = accent.withAlphaComponent(0.08)
+            material.emission.contents = UIColor.black
+            material.shaderModifiers = [
+                .surface: """
+                #pragma body
+                _surface.diffuse = _geometry.color.rgb;
+                _surface.emission = _geometry.color.rgb * 0.04;
+                _surface.transparent = _geometry.color.a;
+                """
+            ]
+            material.blendMode = .alpha
             material.isDoubleSided = true
             material.writesToDepthBuffer = true
             material.readsFromDepthBuffer = true
@@ -1173,13 +1151,13 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             let sortedX = rawPositions.map(\.x).sorted()
             let sortedY = rawPositions.map(\.y).sorted()
             let sortedZ = rawPositions.map(\.z).sorted()
-            let lowerIndex = max(Int(Double(rawPositions.count - 1) * 0.03), 0)
-            let upperIndex = min(Int(Double(rawPositions.count - 1) * 0.97), rawPositions.count - 1)
+            let lowerIndex = max(Int(Double(rawPositions.count - 1) * 0.01), 0)
+            let upperIndex = min(Int(Double(rawPositions.count - 1) * 0.99), rawPositions.count - 1)
             let minPoint = SCNVector3(sortedX[lowerIndex], sortedY[lowerIndex], sortedZ[lowerIndex])
             let maxPoint = SCNVector3(sortedX[upperIndex], sortedY[upperIndex], sortedZ[upperIndex])
             let center = (minPoint + maxPoint) / 2
             let extent = max(maxPoint.x - minPoint.x, maxPoint.y - minPoint.y, maxPoint.z - minPoint.z, 0.3)
-            let scale = min(2.65 / extent, 3.8)
+            let scale = min(2.9 / extent, 4.2)
 
             var renderPoints: [RenderPoint] = []
             renderPoints.reserveCapacity(samples.count)
@@ -1208,10 +1186,10 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                             min(max(sample.r, 0), 1),
                             min(max(sample.g, 0), 1),
                             min(max(sample.b, 0), 1),
-                            1
+                            0.98
                         ),
                         normal: normalized(SCNVector3(sample.normalX, sample.normalY, sample.normalZ)),
-                        radius: max(sample.radius * scale, 0.012)
+                        radius: min(max(sample.radius * scale, 0.008), 0.11)
                     )
                 )
             }

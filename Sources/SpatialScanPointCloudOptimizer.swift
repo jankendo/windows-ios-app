@@ -165,9 +165,9 @@ enum SpatialScanOptimizedPointCloud {
 }
 
 enum SpatialScanPointCloudOptimizer {
-    private static let maximumOptimizedPointCount = 18_000
-    private static let minimumVoxelSize: Float = 0.008
-    private static let outlierTrimRatio = 0.02
+    private static let maximumOptimizedPointCount = 72_000
+    private static let minimumVoxelSize: Float = 0.005
+    private static let outlierTrimRatio = 0.015
 
     static func optimize(
         pointSamples: [SpatialScanPointSample],
@@ -178,7 +178,10 @@ enum SpatialScanPointCloudOptimizer {
             guard sample.x.isFinite, sample.y.isFinite, sample.z.isFinite else { return nil }
             return SourcePoint(
                 position: SIMD3<Float>(sample.x, sample.y, sample.z),
-                sourceFrameIndex: sample.sourceFrameIndex
+                sourceFrameIndex: sample.sourceFrameIndex,
+                color: nil,
+                normal: nil,
+                radius: nil
             )
         }
         guard !rawPoints.isEmpty else {
@@ -187,7 +190,8 @@ enum SpatialScanPointCloudOptimizer {
 
         let samplers = FrameColorSampler.loadSamplers(frameSamples: frameSamples, bundleURL: bundleURL)
         let samplersByIndex = Dictionary(uniqueKeysWithValues: samplers.map { ($0.frameIndex, $0) })
-        let trimmedPoints = trimOutliers(from: rawPoints)
+        let photoPoints = photoSplatPoints(from: rawPoints, samplers: samplers)
+        let trimmedPoints = trimOutliers(from: rawPoints + photoPoints)
         let targetCount = min(max(trimmedPoints.count, 1), maximumOptimizedPointCount)
         var voxelSize = initialVoxelSize(for: trimmedPoints.map(\.position), targetCount: targetCount)
         var optimizedPoints = voxelDownsample(trimmedPoints, voxelSize: voxelSize)
@@ -208,7 +212,7 @@ enum SpatialScanPointCloudOptimizer {
             from: optimizedPoints,
             samplers: samplers,
             samplersByIndex: samplersByIndex,
-            splatRadius: max(voxelSize * 1.15, 0.018)
+            splatRadius: max(voxelSize * 1.15, 0.012)
         )
         let outputURL = bundleURL.appendingPathComponent(SpatialScanOptimizedPointCloud.relativePath)
         try SpatialScanOptimizedPointCloud.write(points: colorizedPoints, to: outputURL)
@@ -218,9 +222,12 @@ enum SpatialScanPointCloudOptimizer {
         )
     }
 
-    private struct SourcePoint {
+    fileprivate struct SourcePoint {
         let position: SIMD3<Float>
         let sourceFrameIndex: Int?
+        let color: SIMD3<Float>?
+        let normal: SIMD3<Float>?
+        let radius: Float?
     }
 
     private struct Bounds {
@@ -236,22 +243,52 @@ enum SpatialScanPointCloudOptimizer {
 
     private struct VoxelAccumulator {
         var sum = SIMD3<Float>(repeating: 0)
+        var normalSum = SIMD3<Float>(repeating: 0)
+        var colorSum = SIMD3<Float>(repeating: 0)
+        var radiusSum: Float = 0
         var count = 0
+        var normalCount = 0
+        var colorCount = 0
+        var radiusCount = 0
         var sourceFrameIndex: Int?
 
         mutating func add(_ point: SourcePoint) {
             sum += point.position
             count += 1
-            if sourceFrameIndex == nil {
+            if let color = point.color {
+                colorSum += color
+                colorCount += 1
+            }
+            if let normal = point.normal {
+                normalSum += normal
+                normalCount += 1
+            }
+            if let radius = point.radius {
+                radiusSum += radius
+                radiusCount += 1
+            }
+            if sourceFrameIndex == nil || point.color != nil {
                 sourceFrameIndex = point.sourceFrameIndex
             }
         }
 
         var point: SourcePoint {
             guard count > 0 else {
-                return SourcePoint(position: sum, sourceFrameIndex: sourceFrameIndex)
+                return SourcePoint(
+                    position: sum,
+                    sourceFrameIndex: sourceFrameIndex,
+                    color: nil,
+                    normal: nil,
+                    radius: nil
+                )
             }
-            return SourcePoint(position: sum / Float(count), sourceFrameIndex: sourceFrameIndex)
+            return SourcePoint(
+                position: sum / Float(count),
+                sourceFrameIndex: sourceFrameIndex,
+                color: colorCount > 0 ? colorSum / Float(colorCount) : nil,
+                normal: normalCount > 0 ? normalized(normalSum / Float(normalCount), fallback: SIMD3<Float>(0, 1, 0)) : nil,
+                radius: radiusCount > 0 ? radiusSum / Float(radiusCount) : nil
+            )
         }
     }
 
@@ -324,6 +361,31 @@ enum SpatialScanPointCloudOptimizer {
         return sampled
     }
 
+    private static func photoSplatPoints(
+        from rawPoints: [SourcePoint],
+        samplers: [FrameColorSampler]
+    ) -> [SourcePoint] {
+        guard !rawPoints.isEmpty, !samplers.isEmpty else { return [] }
+
+        let perFrameBudget = max(maximumOptimizedPointCount / max(samplers.count, 1), 520)
+        var photoPoints: [SourcePoint] = []
+        photoPoints.reserveCapacity(min(maximumOptimizedPointCount, samplers.count * perFrameBudget))
+
+        for sampler in samplers {
+            guard photoPoints.count < maximumOptimizedPointCount else { break }
+            let remainingBudget = maximumOptimizedPointCount - photoPoints.count
+            let frameBudget = min(perFrameBudget, remainingBudget)
+            photoPoints.append(
+                contentsOf: sampler.photoSplatPoints(
+                    anchorPoints: rawPoints,
+                    maximumCount: frameBudget
+                )
+            )
+        }
+
+        return photoPoints
+    }
+
     private static func colorizedPoints(
         from points: [SourcePoint],
         samplers: [FrameColorSampler],
@@ -342,7 +404,7 @@ enum SpatialScanPointCloudOptimizer {
 
         for point in points {
             let position = point.position
-            let photoColor = sampledColor(
+            let sampledPhotoColor = sampledColor(
                 for: point,
                 samplers: samplers,
                 samplersByIndex: samplersByIndex
@@ -355,8 +417,8 @@ enum SpatialScanPointCloudOptimizer {
                 min(0.42 + ((1 - radial) * 0.28) + (height * 0.16), 1),
                 min(0.72 + ((1 - height) * 0.2) + (radial * 0.08), 1)
             )
-            let color = photoColor ?? fallbackColor
-            let normal = normalized(position - center, fallback: SIMD3<Float>(0, 1, 0))
+            let color = point.color ?? sampledPhotoColor ?? fallbackColor
+            let normal = point.normal ?? normalized(position - center, fallback: SIMD3<Float>(0, 1, 0))
             optimizedPoints.append(
                 SpatialScanOptimizedPoint(
                     x: position.x,
@@ -368,7 +430,7 @@ enum SpatialScanPointCloudOptimizer {
                     normalX: normal.x,
                     normalY: normal.y,
                     normalZ: normal.z,
-                    radius: splatRadius
+                    radius: point.radius ?? splatRadius
                 )
             )
         }
@@ -426,18 +488,21 @@ enum SpatialScanPointCloudOptimizer {
         return Bounds(min: minimum, max: maximum)
     }
 
-    private static func normalized(_ vector: SIMD3<Float>, fallback: SIMD3<Float>) -> SIMD3<Float> {
-        let length = simd_length(vector)
-        guard length > 0.0001 else { return fallback }
-        return vector / length
-    }
+}
+
+private func normalized(_ vector: SIMD3<Float>, fallback: SIMD3<Float>) -> SIMD3<Float> {
+    let length = simd_length(vector)
+    guard length > 0.0001 else { return fallback }
+    return vector / length
 }
 
 private final class FrameColorSampler {
-    private static let maximumLoadedFrameCount = 48
-    private static let maximumColorImageDimension = 1_024
+    private static let maximumLoadedFrameCount = 72
+    private static let maximumColorImageDimension = 960
+    private static let maximumProjectedAnchorCount = 18_000
 
     let frameIndex: Int
+    private let cameraTransform: simd_float4x4
     private let inverseCameraTransform: simd_float4x4
     private let fx: Float
     private let fy: Float
@@ -463,6 +528,7 @@ private final class FrameColorSampler {
         }
 
         self.frameIndex = frameIndex
+        self.cameraTransform = cameraTransform
         inverseCameraTransform = cameraTransform.inverse
         fx = intrinsics.fx
         fy = intrinsics.fy
@@ -486,7 +552,127 @@ private final class FrameColorSampler {
         }
     }
 
+    func photoSplatPoints(
+        anchorPoints: [SpatialScanPointCloudOptimizer.SourcePoint],
+        maximumCount: Int
+    ) -> [SpatialScanPointCloudOptimizer.SourcePoint] {
+        guard maximumCount > 0, !anchorPoints.isEmpty else { return [] }
+
+        let imageAspect = Float(width) / Float(max(height, 1))
+        let targetCellCount = min(max(maximumCount, 320), 1_600)
+        let gridColumns = min(max(Int(sqrt(Float(targetCellCount) * imageAspect)), 24), 54)
+        let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 18), 40)
+        let cellWidth = Float(width) / Float(gridColumns)
+        let cellHeight = Float(height) / Float(gridRows)
+        var cells = [DepthCell](repeating: DepthCell(), count: gridColumns * gridRows)
+
+        let anchorStride = max(anchorPoints.count / Self.maximumProjectedAnchorCount, 1)
+        for index in stride(from: 0, to: anchorPoints.count, by: anchorStride) {
+            let anchor = anchorPoints[index]
+            guard let projection = project(anchor.position),
+                  projection.depth >= 0.18,
+                  projection.depth <= 9.0 else {
+                continue
+            }
+            let column = min(max(Int(projection.pixel.x / cellWidth), 0), gridColumns - 1)
+            let row = min(max(Int(projection.pixel.y / cellHeight), 0), gridRows - 1)
+            cells[(row * gridColumns) + column].add(depth: projection.depth)
+        }
+
+        let cameraPosition = SIMD3<Float>(
+            cameraTransform.columns.3.x,
+            cameraTransform.columns.3.y,
+            cameraTransform.columns.3.z
+        )
+        var splats: [SpatialScanPointCloudOptimizer.SourcePoint] = []
+        splats.reserveCapacity(min(maximumCount, cells.count))
+
+        for row in 0..<gridRows {
+            for column in 0..<gridColumns {
+                guard splats.count < maximumCount,
+                      let depthSample = resolvedDepth(
+                        forColumn: column,
+                        row: row,
+                        cells: cells,
+                        columns: gridColumns,
+                        rows: gridRows
+                      ) else {
+                    continue
+                }
+
+                let pixel = SIMD2<Float>(
+                    (Float(column) + 0.5) * cellWidth,
+                    (Float(row) + 0.5) * cellHeight
+                )
+                guard let color = colorAt(pixel: pixel),
+                      let worldPosition = unproject(pixel: pixel, depth: depthSample.depth) else {
+                    continue
+                }
+
+                let worldCellWidth = depthSample.depth * (cellWidth / max(fx * intrinsicScaleX, 1))
+                let worldCellHeight = depthSample.depth * (cellHeight / max(fy * intrinsicScaleY, 1))
+                let confidence = min(max(depthSample.confidence, 0.38), 1)
+                let radiusScale = 0.72 + (confidence * 0.28)
+                let radius = min(max(max(worldCellWidth, worldCellHeight) * 0.95 * radiusScale, 0.012), 0.085)
+                let normal = normalized(cameraPosition - worldPosition, fallback: cameraForward)
+
+                splats.append(
+                    SpatialScanPointCloudOptimizer.SourcePoint(
+                        position: worldPosition,
+                        sourceFrameIndex: frameIndex,
+                        color: color,
+                        normal: normal,
+                        radius: radius
+                    )
+                )
+            }
+        }
+
+        return splats
+    }
+
     func color(for worldPosition: SIMD3<Float>) -> SIMD3<Float>? {
+        guard let projection = project(worldPosition) else { return nil }
+        return colorAt(pixel: projection.pixel)
+    }
+
+    private var cameraForward: SIMD3<Float> {
+        normalized(
+            SIMD3<Float>(
+                -cameraTransform.columns.2.x,
+                -cameraTransform.columns.2.y,
+                -cameraTransform.columns.2.z
+            ),
+            fallback: SIMD3<Float>(0, 0, -1)
+        )
+    }
+
+    private struct Projection {
+        let pixel: SIMD2<Float>
+        let depth: Float
+    }
+
+    private struct DepthSample {
+        let depth: Float
+        let confidence: Float
+    }
+
+    private struct DepthCell {
+        var depthSum: Float = 0
+        var count: Int = 0
+
+        mutating func add(depth: Float) {
+            depthSum += depth
+            count += 1
+        }
+
+        var averageDepth: Float? {
+            guard count > 0 else { return nil }
+            return depthSum / Float(count)
+        }
+    }
+
+    private func project(_ worldPosition: SIMD3<Float>) -> Projection? {
         let cameraPoint4 = inverseCameraTransform * SIMD4<Float>(
             worldPosition.x,
             worldPosition.y,
@@ -500,8 +686,29 @@ private final class FrameColorSampler {
         let projectedY = ((fy * (-cameraPoint4.y / depth)) + cy) * intrinsicScaleY
         guard projectedX.isFinite, projectedY.isFinite else { return nil }
 
-        let x = Int(projectedX.rounded())
-        let y = Int(projectedY.rounded())
+        guard projectedX >= 0, projectedX < Float(width),
+              projectedY >= 0, projectedY < Float(height) else {
+            return nil
+        }
+
+        return Projection(pixel: SIMD2<Float>(projectedX, projectedY), depth: depth)
+    }
+
+    private func unproject(pixel: SIMD2<Float>, depth: Float) -> SIMD3<Float>? {
+        guard depth.isFinite, depth > 0 else { return nil }
+        let originalX = pixel.x / max(intrinsicScaleX, 0.0001)
+        let originalY = pixel.y / max(intrinsicScaleY, 0.0001)
+        let cameraX = ((originalX - cx) / max(fx, 0.0001)) * depth
+        let cameraY = -((originalY - cy) / max(fy, 0.0001)) * depth
+        let cameraPoint = SIMD4<Float>(cameraX, cameraY, -depth, 1)
+        let worldPoint = cameraTransform * cameraPoint
+        guard worldPoint.x.isFinite, worldPoint.y.isFinite, worldPoint.z.isFinite else { return nil }
+        return SIMD3<Float>(worldPoint.x, worldPoint.y, worldPoint.z)
+    }
+
+    private func colorAt(pixel: SIMD2<Float>) -> SIMD3<Float>? {
+        let x = Int(pixel.x.rounded())
+        let y = Int(pixel.y.rounded())
         guard x >= 0, x < width, y >= 0, y < height else { return nil }
 
         let offset = ((y * width) + x) * 4
@@ -511,6 +718,53 @@ private final class FrameColorSampler {
             Float(pixels[offset + 1]) / 255,
             Float(pixels[offset + 2]) / 255
         )
+    }
+
+    private func resolvedDepth(
+        forColumn column: Int,
+        row: Int,
+        cells: [DepthCell],
+        columns: Int,
+        rows: Int
+    ) -> DepthSample? {
+        let directIndex = (row * columns) + column
+        if cells.indices.contains(directIndex),
+           let directDepth = cells[directIndex].averageDepth {
+            return DepthSample(depth: directDepth, confidence: 1)
+        }
+
+        for radius in 1...2 {
+            var weightedDepth: Float = 0
+            var weightSum: Float = 0
+
+            for yOffset in -radius...radius {
+                for xOffset in -radius...radius {
+                    let neighborColumn = column + xOffset
+                    let neighborRow = row + yOffset
+                    guard neighborColumn >= 0,
+                          neighborColumn < columns,
+                          neighborRow >= 0,
+                          neighborRow < rows else {
+                        continue
+                    }
+                    let neighborIndex = (neighborRow * columns) + neighborColumn
+                    guard cells.indices.contains(neighborIndex),
+                          let neighborDepth = cells[neighborIndex].averageDepth else {
+                        continue
+                    }
+                    let distance = max(Float(abs(xOffset) + abs(yOffset)), 1)
+                    let weight = 1 / distance
+                    weightedDepth += neighborDepth * weight
+                    weightSum += weight
+                }
+            }
+
+            if weightSum > 0 {
+                return DepthSample(depth: weightedDepth / weightSum, confidence: radius == 1 ? 0.72 : 0.48)
+            }
+        }
+
+        return nil
     }
 
     private struct RGBAImage {
