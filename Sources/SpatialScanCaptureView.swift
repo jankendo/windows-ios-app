@@ -543,7 +543,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         frameSamples = []
         poseSamples = []
         pointSamples = []
-        seenPointIdentifiers = []
+        seenPointIdentifiers = [:]
         savedFrameCoverageCells = []
         firstFrameTimestamp = nil
         lastFrameTimestamp = 0
@@ -600,7 +600,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         frameSamples = []
         poseSamples = []
         pointSamples = []
-        seenPointIdentifiers = []
+        seenPointIdentifiers = [:]
         savedFrameCoverageCells = []
         isFinishingCapture = false
         hasSentHighQualityFeedback = false
