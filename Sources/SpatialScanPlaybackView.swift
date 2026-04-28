@@ -7,9 +7,9 @@ import simd
 
 struct SpatialScanPlaybackView: View {
     private enum PlaybackImageSizing {
-        static let thumbnailMaxDimension: CGFloat = 960
-        static let maximumLoadedFrameCount = 16
-        static let maximumPointPreviewCount = 60_000
+        static let thumbnailMaxDimension: CGFloat = 1_280
+        static let maximumLoadedFrameCount = 24
+        static let maximumPointPreviewCount = 90_000
     }
 
     let entry: MemoryEntry
@@ -23,7 +23,9 @@ struct SpatialScanPlaybackView: View {
     @State private var pointItems: [SpatialScanOptimizedPoint] = []
     @State private var selectedFrameIndex = 0
     @State private var isSequencePlaying = false
+    @State private var isDetailsPresented = false
     @State private var framePlaybackTask: Task<Void, Never>?
+    @Environment(\.dismiss) private var dismiss
 
     init(entry: MemoryEntry) {
         self.entry = entry
@@ -115,26 +117,33 @@ struct SpatialScanPlaybackView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack {
-                ResonanceGradientBackground(atmosphere: entry.atmosphereStyle)
-
-                ScrollView {
-                    VStack(spacing: 18) {
-                        spatialModelHero(height: max(geometry.size.height + geometry.safeAreaInsets.top, 560))
-
-                        VStack(alignment: .leading, spacing: 18) {
-                            scrubberCard
-                            reconstructionCard
-                            assetCard
-                        }
-                        .padding(.horizontal, 20)
-                    }
-                    .padding(.bottom, 20)
-                }
-            }
+            spatialModelHero(
+                size: geometry.size,
+                safeAreaInsets: geometry.safeAreaInsets
+            )
         }
         .navigationTitle("3Dスキャン")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
+        .statusBarHidden(true)
+        .ignoresSafeArea()
+        .sheet(isPresented: $isDetailsPresented) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        scrubberCard
+                        reconstructionCard
+                        assetCard
+                    }
+                    .padding(20)
+                }
+                .background(ResonanceGradientBackground(atmosphere: entry.atmosphereStyle))
+                .navigationTitle("3Dスキャン詳細")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
         .onAppear {
             loadScanResources()
         }
@@ -143,7 +152,10 @@ struct SpatialScanPlaybackView: View {
         }
     }
 
-    private func spatialModelHero(height: CGFloat) -> some View {
+    private func spatialModelHero(
+        size: CGSize,
+        safeAreaInsets: EdgeInsets
+    ) -> some View {
         ZStack(alignment: .bottomLeading) {
             SpatialScanModelPreviewView(
                 frames: frameItems,
@@ -151,14 +163,48 @@ struct SpatialScanPlaybackView: View {
                 selectedFrameIndex: $selectedFrameIndex,
                 atmosphere: entry.atmosphereStyle
             )
-            .frame(height: height)
+            .frame(width: size.width, height: size.height)
             .background(Color.black)
+            .contentShape(Rectangle())
 
             LinearGradient(
                 colors: [Color.black.opacity(0.08), .clear, Color.black.opacity(0.78)],
                 startPoint: .top,
                 endPoint: .bottom
             )
+            .allowsHitTesting(false)
+
+            VStack {
+                HStack(spacing: 12) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.headline.weight(.bold))
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white)
+                    .background(.black.opacity(0.42), in: Circle())
+
+                    Spacer()
+
+                    Button {
+                        isDetailsPresented = true
+                    } label: {
+                        Image(systemName: "info.circle.fill")
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white)
+                    .background(.black.opacity(0.42), in: Circle())
+                }
+                .padding(.top, safeAreaInsets.top + 10)
+                .padding(.horizontal, 18)
+
+                Spacer()
+            }
 
             VStack(alignment: .leading, spacing: 12) {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -215,7 +261,7 @@ struct SpatialScanPlaybackView: View {
                 heroPlaybackControls
             }
             .padding(.horizontal, 20)
-            .padding(.bottom, 22)
+            .padding(.bottom, safeAreaInsets.bottom + 20)
         }
     }
 
@@ -734,8 +780,8 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
         private let minimumPreviewScale: Float = 0.55
         private let maximumPreviewScale: Float = 2.6
-        private let maximumProjectedTextureFrameCount = 14
-        private let maximumProjectedTextureAnchorCount = 14_000
+        private let maximumProjectedTextureFrameCount = 20
+        private let maximumProjectedTextureAnchorCount = 22_000
 
         private struct RenderPoint {
             let position: SCNVector3
@@ -1140,9 +1186,9 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             guard let calibration = cameraCalibration(for: frame.sample) else { return nil }
 
             let imageAspect = max(calibration.imageWidth / max(calibration.imageHeight, 1), 0.25)
-            let targetCellCount: Float = 1_080
-            let gridColumns = min(max(Int(sqrt(targetCellCount * imageAspect)), 28), 48)
-            let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 18), 38)
+            let targetCellCount: Float = 1_800
+            let gridColumns = min(max(Int(sqrt(targetCellCount * imageAspect)), 32), 64)
+            let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 20), 48)
             let cellWidth = calibration.imageWidth / Float(gridColumns)
             let cellHeight = calibration.imageHeight / Float(gridRows)
             var cells = [DepthCell](repeating: DepthCell(), count: gridColumns * gridRows)
@@ -1262,7 +1308,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             material.emission.contents = UIColor.black
             material.isDoubleSided = true
             material.blendMode = .alpha
-            material.transparency = CGFloat(min(max(0.86 + (averageConfidence * 0.12), 0.84), 0.98))
+            material.transparency = CGFloat(min(max(0.9 + (averageConfidence * 0.1), 0.88), 1.0))
             material.writesToDepthBuffer = true
             material.readsFromDepthBuffer = true
             geometry.materials = [material]

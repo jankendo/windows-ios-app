@@ -19,31 +19,31 @@ private enum SpatialScanCaptureFinalizationError: LocalizedError {
 @MainActor
 final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency ARSessionDelegate {
     private enum CaptureConstants {
-        static let frameSamplingInterval: TimeInterval = 0.22
-        static let frameImageSamplingInterval: TimeInterval = 0.55
-        static let coverageFrameImageSamplingInterval: TimeInterval = 0.28
-        static let minimumTranslationMeters: Float = 0.018
-        static let minimumRotationRadians: Float = 0.045
+        static let frameSamplingInterval: TimeInterval = 0.14
+        static let frameImageSamplingInterval: TimeInterval = 0.42
+        static let coverageFrameImageSamplingInterval: TimeInterval = 0.2
+        static let minimumTranslationMeters: Float = 0.012
+        static let minimumRotationRadians: Float = 0.03
         static let minimumQualityEvaluationDuration: TimeInterval = 10
-        static let preferredFrameCount = 48
-        static let maximumFrameSampleCount = 240
+        static let preferredFrameCount = 72
+        static let maximumFrameSampleCount = 360
         static let headingCoverageBucketCount = 12
         static let verticalCoverageBandCount = 3
-        static let preferredHeadingSpanDegrees = 330.0
-        static let preferredVerticalSpanDegrees = 70.0
-        static let highQualityScore = 0.92
-        static let minimumHighQualityFrameCount = 34
-        static let minimumHighQualityHeadingSpanDegrees = 300.0
-        static let minimumHighQualityVerticalSpanDegrees = 52.0
+        static let preferredHeadingSpanDegrees = 345.0
+        static let preferredVerticalSpanDegrees = 82.0
+        static let highQualityScore = 0.94
+        static let minimumHighQualityFrameCount = 48
+        static let minimumHighQualityHeadingSpanDegrees = 318.0
+        static let minimumHighQualityVerticalSpanDegrees = 58.0
         static let idealStationaryDriftMeters = 0.85
         static let maximumStationaryDriftMeters = 1.6
-        static let maximumPointSampleCount = 120_000
-        static let maximumPointSamplesPerFrame = 900
-        static let pointIdentifierResampleInterval = 8
-        static let preferredPointSampleCount = 4_800
-        static let minimumHighQualityPointSampleCount = 2_400
-        static let minimumFeaturePointDistanceMeters: Float = 0.25
-        static let maximumFeaturePointDistanceMeters: Float = 7.0
+        static let maximumPointSampleCount = 220_000
+        static let maximumPointSamplesPerFrame = 1_300
+        static let pointIdentifierResampleInterval = 5
+        static let preferredPointSampleCount = 10_000
+        static let minimumHighQualityPointSampleCount = 4_500
+        static let minimumFeaturePointDistanceMeters: Float = 0.18
+        static let maximumFeaturePointDistanceMeters: Float = 8.5
         static let sessionBindingPollCount = 20
         static let sessionBindingPollNanoseconds: UInt64 = 50_000_000
         static let sessionReadyTimeout: TimeInterval = 2.5
@@ -200,6 +200,16 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             let configuration = ARWorldTrackingConfiguration()
             configuration.worldAlignment = .gravityAndHeading
             configuration.environmentTexturing = .automatic
+            configuration.planeDetection = [.horizontal, .vertical]
+            if let videoFormat = preferredVideoFormat() {
+                configuration.videoFormat = videoFormat
+            }
+            if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+                configuration.frameSemantics.insert(.sceneDepth)
+            }
+            if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+                configuration.frameSemantics.insert(.smoothedSceneDepth)
+            }
             arSession.run(configuration, options: [.resetTracking, .removeExistingAnchors])
             try await waitForSessionReadiness()
             _ = try ambientAudioCapture.startRecording()
@@ -557,6 +567,19 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         hasSentHighQualityFeedback = false
         captureResolved = false
         isScanning = false
+    }
+
+    private func preferredVideoFormat() -> ARConfiguration.VideoFormat? {
+        ARWorldTrackingConfiguration.supportedVideoFormats
+            .filter { $0.framesPerSecond >= 30 }
+            .max { lhs, rhs in
+                let lhsArea = lhs.imageResolution.width * lhs.imageResolution.height
+                let rhsArea = rhs.imageResolution.width * rhs.imageResolution.height
+                if lhsArea == rhsArea {
+                    return lhs.framesPerSecond < rhs.framesPerSecond
+                }
+                return lhsArea < rhsArea
+            }
     }
 
     private func resetCaptureState() {
@@ -1181,7 +1204,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     private func jpegData(from pixelBuffer: CVPixelBuffer) -> Data? {
         let image = CIImage(cvPixelBuffer: pixelBuffer)
         guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return nil }
-        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.82)
+        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.94)
     }
 
     private func previewJPEGData(from pixelBuffer: CVPixelBuffer) -> Data? {
@@ -1191,7 +1214,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             cgImage: cgImage,
             scale: 1,
             orientation: previewImageOrientation
-        ).jpegData(compressionQuality: 0.86)
+        ).jpegData(compressionQuality: 0.92)
     }
 
     private var previewImageOrientation: UIImage.Orientation {
