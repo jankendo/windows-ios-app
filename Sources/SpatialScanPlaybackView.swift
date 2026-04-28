@@ -7,9 +7,9 @@ import CoreMotion
 
 struct SpatialScanPlaybackView: View {
     private enum PlaybackImageSizing {
-        static let thumbnailMaxDimension: CGFloat = 96
+        static let thumbnailMaxDimension: CGFloat = 420
         static let maximumLoadedFrameCount = 10
-        static let maximumPointPreviewCount = 8_500
+        static let maximumPointPreviewCount = 18_000
     }
 
     let entry: MemoryEntry
@@ -115,21 +115,23 @@ struct SpatialScanPlaybackView: View {
     }
 
     var body: some View {
-        ZStack {
-            ResonanceGradientBackground(atmosphere: entry.atmosphereStyle)
+        GeometryReader { geometry in
+            ZStack {
+                ResonanceGradientBackground(atmosphere: entry.atmosphereStyle)
 
-            ScrollView {
-                VStack(spacing: 18) {
-                    spatialModelHero
+                ScrollView {
+                    VStack(spacing: 18) {
+                        spatialModelHero(height: max(geometry.size.height + geometry.safeAreaInsets.top, 560))
 
-                    VStack(alignment: .leading, spacing: 18) {
-                        scrubberCard
-                        reconstructionCard
-                        assetCard
+                        VStack(alignment: .leading, spacing: 18) {
+                            scrubberCard
+                            reconstructionCard
+                            assetCard
+                        }
+                        .padding(.horizontal, 20)
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
                 }
-                .padding(.bottom, 20)
             }
         }
         .navigationTitle("3Dスキャン")
@@ -142,7 +144,7 @@ struct SpatialScanPlaybackView: View {
         }
     }
 
-    private var spatialModelHero: some View {
+    private func spatialModelHero(height: CGFloat) -> some View {
         ZStack(alignment: .bottomLeading) {
             SpatialScanModelPreviewView(
                 frames: frameItems,
@@ -151,7 +153,7 @@ struct SpatialScanPlaybackView: View {
                 motionEnabled: !reduceMotion,
                 atmosphere: entry.atmosphereStyle
             )
-            .frame(height: 430)
+            .frame(height: height)
             .background(Color.black)
 
             LinearGradient(
@@ -185,7 +187,7 @@ struct SpatialScanPlaybackView: View {
                         }
                         if !pointItems.isEmpty {
                             ResonanceBadge(
-                                title: "\(pointItems.count) points",
+                                title: "\(pointItems.count) photo splats",
                                 systemImage: "sparkle.magnifyingglass",
                                 tint: .white,
                                 atmosphere: entry.atmosphereStyle
@@ -372,7 +374,7 @@ struct SpatialScanPlaybackView: View {
                 SpatialScanMetricRow(title: "状態", value: reconstructionStateLabel)
                 SpatialScanMetricRow(title: "フレーム数", value: "\(spatialScanFrameCount) 枚")
                 if !pointItems.isEmpty {
-                    SpatialScanMetricRow(title: "最適化3D", value: "\(pointItems.count) surfels")
+                    SpatialScanMetricRow(title: "写真3D", value: "\(pointItems.count) splats")
                 }
 
                 if let duration = spatialScanCaptureDuration {
@@ -738,6 +740,8 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
         private struct RenderPoint {
             let position: SCNVector3
             let color: SIMD4<Float>
+            let normal: SCNVector3
+            let radius: Float
         }
 
         func makeView() -> SCNView {
@@ -890,6 +894,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             addFloor(accent: accent)
 
             if !pointSamples.isEmpty {
+                addPhotoShell(frames: frames, accent: accent)
                 addSurfelCloud(pointSamples: pointSamples, accent: accent)
                 return
             }
@@ -937,11 +942,41 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             modelRoot.addChildNode(node)
         }
 
+        private func addPhotoShell(frames: [SpatialScanPlaybackFrame], accent: UIColor) {
+            guard !frames.isEmpty else { return }
+            let rawPositions = frames.enumerated().map { index, frame in
+                rawPosition(for: frame.sample, index: index, totalCount: frames.count)
+            }
+            let normalizedPositions = normalizedPositions(from: rawPositions)
+
+            for (frame, position) in zip(frames, normalizedPositions) {
+                let aspect = max(CGFloat(frame.sample.imageWidth) / CGFloat(max(frame.sample.imageHeight, 1)), 0.25)
+                let height: CGFloat = 1.15
+                let plane = SCNPlane(width: height * aspect, height: height)
+                let material = SCNMaterial()
+                material.diffuse.contents = frame.thumbnail
+                material.emission.contents = UIColor.white.withAlphaComponent(0.08)
+                material.lightingModel = .constant
+                material.isDoubleSided = true
+                material.readsFromDepthBuffer = false
+                material.writesToDepthBuffer = false
+                plane.materials = [material]
+
+                let shellPosition = normalized(position) * 1.58
+                let node = SCNNode(geometry: plane)
+                node.name = "photo-shell-\(frame.index)"
+                node.position = SCNVector3(shellPosition.x, shellPosition.y + 0.1, shellPosition.z)
+                node.opacity = 0.36
+                node.eulerAngles.y = atan2(node.position.x, node.position.z) + Float.pi
+                node.eulerAngles.x = -atan2(node.position.y, max(abs(node.position.z), 0.2)) * 0.35
+                modelRoot.addChildNode(node)
+            }
+        }
+
         private func addSurfelCloud(pointSamples: [SpatialScanOptimizedPoint], accent: UIColor) {
             let renderPoints = normalizedPointPositions(from: pointSamples)
             guard !renderPoints.isEmpty else { return }
 
-            let surfelRadius = max(0.012, min(0.032, 0.095 / sqrt(Float(renderPoints.count))))
             var vertices: [SCNVector3] = []
             var colors: [SIMD4<Float>] = []
             var indices: [Int32] = []
@@ -951,9 +986,11 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
             for renderPoint in renderPoints {
                 let position = renderPoint.position
+                let surfelRadius = min(max(renderPoint.radius, 0.014), 0.065)
                 let radialNormal = normalized(position)
-                let fallbackNormal = SCNVector3(0, 0, 1)
-                let normal = vectorLength(radialNormal) > 0.001 ? radialNormal : fallbackNormal
+                let normal = vectorLength(renderPoint.normal) > 0.001
+                    ? renderPoint.normal
+                    : (vectorLength(radialNormal) > 0.001 ? radialNormal : SCNVector3(0, 0, 1))
                 var tangent = cross(normal, SCNVector3(0, 1, 0))
                 if vectorLength(tangent) < 0.001 {
                     tangent = cross(normal, SCNVector3(1, 0, 0))
@@ -1172,7 +1209,9 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                             min(max(sample.g, 0), 1),
                             min(max(sample.b, 0), 1),
                             1
-                        )
+                        ),
+                        normal: normalized(SCNVector3(sample.normalX, sample.normalY, sample.normalZ)),
+                        radius: max(sample.radius * scale, 0.012)
                     )
                 )
             }

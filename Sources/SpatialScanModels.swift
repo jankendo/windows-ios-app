@@ -675,7 +675,7 @@ enum SpatialScanReconstructionPipeline {
         let durationScore = min(manifest.normalizedCaptureDuration / 14, 1)
         let headingScore = min(headingSpan / 320, 1)
         let verticalScore = min(verticalSpan / 60, 1)
-        let pointScore = min(Double(pointCount) / 4_800, 1)
+        let pointScore = min(Double(pointCount) / 9_000, 1)
         let stationaryScore = stationaryScore(forTranslationExtent: translationExtent)
         var coverageScore = (headingScore * 0.28)
             + (frameScore * 0.2)
@@ -693,7 +693,7 @@ enum SpatialScanReconstructionPipeline {
         } else if frameCount >= 28
             && headingSpan >= 260
             && verticalSpan >= 42
-            && pointCount >= 1_200
+            && pointCount >= 3_000
             && coverageScore >= 0.72
             && stationaryScore >= 0.45 {
             qualityTier = .readyForHighQuality

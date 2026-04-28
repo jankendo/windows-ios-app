@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import simd
 
 struct SpatialScanOptimizedPoint: Hashable, Sendable {
@@ -8,6 +10,34 @@ struct SpatialScanOptimizedPoint: Hashable, Sendable {
     let r: Float
     let g: Float
     let b: Float
+    let normalX: Float
+    let normalY: Float
+    let normalZ: Float
+    let radius: Float
+
+    init(
+        x: Float,
+        y: Float,
+        z: Float,
+        r: Float,
+        g: Float,
+        b: Float,
+        normalX: Float = 0,
+        normalY: Float = 1,
+        normalZ: Float = 0,
+        radius: Float = 0.022
+    ) {
+        self.x = x
+        self.y = y
+        self.z = z
+        self.r = r
+        self.g = g
+        self.b = b
+        self.normalX = normalX
+        self.normalY = normalY
+        self.normalZ = normalZ
+        self.radius = radius
+    }
 }
 
 struct SpatialScanPointCloudOptimizationResult: Hashable, Sendable {
@@ -25,9 +55,10 @@ enum SpatialScanOptimizedPointCloud {
     static let relativePath = "derived/reconstruction/optimized-point-cloud.rspc"
 
     private static let magic: UInt32 = 0x4350_5352
-    private static let version: UInt32 = 1
+    private static let version: UInt32 = 2
     private static let headerByteCount = 12
-    private static let bytesPerPoint = 24
+    private static let legacyBytesPerPoint = 24
+    private static let bytesPerPoint = 40
 
     static func write(points: [SpatialScanOptimizedPoint], to url: URL) throws {
         try FileManager.default.createDirectory(
@@ -48,6 +79,10 @@ enum SpatialScanOptimizedPointCloud {
             data.appendLittleEndianFloat(point.r)
             data.appendLittleEndianFloat(point.g)
             data.appendLittleEndianFloat(point.b)
+            data.appendLittleEndianFloat(point.normalX)
+            data.appendLittleEndianFloat(point.normalY)
+            data.appendLittleEndianFloat(point.normalZ)
+            data.appendLittleEndianFloat(point.radius)
         }
 
         try data.write(to: url, options: .atomic)
@@ -59,7 +94,8 @@ enum SpatialScanOptimizedPointCloud {
               data.littleEndianUInt32(at: 0) == magic else {
             throw SpatialScanOptimizedPointCloudError.invalidData
         }
-        guard data.littleEndianUInt32(at: 4) == version else {
+        guard let fileVersion = data.littleEndianUInt32(at: 4),
+              fileVersion == 1 || fileVersion == version else {
             throw SpatialScanOptimizedPointCloudError.unsupportedVersion
         }
         guard let declaredCount = data.littleEndianUInt32(at: 8) else {
@@ -67,7 +103,8 @@ enum SpatialScanOptimizedPointCloud {
         }
 
         let pointCount = Int(declaredCount)
-        let expectedByteCount = headerByteCount + (pointCount * bytesPerPoint)
+        let pointStride = fileVersion == 1 ? legacyBytesPerPoint : bytesPerPoint
+        let expectedByteCount = headerByteCount + (pointCount * pointStride)
         guard data.count >= expectedByteCount else {
             throw SpatialScanOptimizedPointCloudError.invalidData
         }
@@ -86,54 +123,104 @@ enum SpatialScanOptimizedPointCloud {
             else {
                 throw SpatialScanOptimizedPointCloudError.invalidData
             }
-            points.append(SpatialScanOptimizedPoint(x: x, y: y, z: z, r: r, g: g, b: b))
-            offset += bytesPerPoint
+            let normalX: Float
+            let normalY: Float
+            let normalZ: Float
+            let radius: Float
+            if fileVersion == 1 {
+                normalX = 0
+                normalY = 1
+                normalZ = 0
+                radius = 0.022
+            } else {
+                guard let decodedNormalX = data.littleEndianFloat(at: offset + 24),
+                      let decodedNormalY = data.littleEndianFloat(at: offset + 28),
+                      let decodedNormalZ = data.littleEndianFloat(at: offset + 32),
+                      let decodedRadius = data.littleEndianFloat(at: offset + 36) else {
+                    throw SpatialScanOptimizedPointCloudError.invalidData
+                }
+                normalX = decodedNormalX
+                normalY = decodedNormalY
+                normalZ = decodedNormalZ
+                radius = decodedRadius
+            }
+            points.append(
+                SpatialScanOptimizedPoint(
+                    x: x,
+                    y: y,
+                    z: z,
+                    r: r,
+                    g: g,
+                    b: b,
+                    normalX: normalX,
+                    normalY: normalY,
+                    normalZ: normalZ,
+                    radius: radius
+                )
+            )
+            offset += pointStride
         }
         return points
     }
 }
 
 enum SpatialScanPointCloudOptimizer {
-    private static let maximumOptimizedPointCount = 8_500
-    private static let minimumVoxelSize: Float = 0.012
+    private static let maximumOptimizedPointCount = 18_000
+    private static let minimumVoxelSize: Float = 0.008
     private static let outlierTrimRatio = 0.02
 
     static func optimize(
         pointSamples: [SpatialScanPointSample],
+        frameSamples: [SpatialScanFrameSample],
         bundleURL: URL
     ) throws -> SpatialScanPointCloudOptimizationResult {
-        let rawPositions = pointSamples.compactMap { sample -> SIMD3<Float>? in
+        let rawPoints = pointSamples.compactMap { sample -> SourcePoint? in
             guard sample.x.isFinite, sample.y.isFinite, sample.z.isFinite else { return nil }
-            return SIMD3<Float>(sample.x, sample.y, sample.z)
+            return SourcePoint(
+                position: SIMD3<Float>(sample.x, sample.y, sample.z),
+                sourceFrameIndex: sample.sourceFrameIndex
+            )
         }
-        guard !rawPositions.isEmpty else {
+        guard !rawPoints.isEmpty else {
             throw SpatialScanOptimizedPointCloudError.noUsablePoints
         }
 
-        let trimmedPositions = trimOutliers(from: rawPositions)
-        let targetCount = min(max(trimmedPositions.count, 1), maximumOptimizedPointCount)
-        var voxelSize = initialVoxelSize(for: trimmedPositions, targetCount: targetCount)
-        var optimizedPositions = voxelDownsample(trimmedPositions, voxelSize: voxelSize)
+        let samplers = FrameColorSampler.loadSamplers(frameSamples: frameSamples, bundleURL: bundleURL)
+        let samplersByIndex = Dictionary(uniqueKeysWithValues: samplers.map { ($0.frameIndex, $0) })
+        let trimmedPoints = trimOutliers(from: rawPoints)
+        let targetCount = min(max(trimmedPoints.count, 1), maximumOptimizedPointCount)
+        var voxelSize = initialVoxelSize(for: trimmedPoints.map(\.position), targetCount: targetCount)
+        var optimizedPoints = voxelDownsample(trimmedPoints, voxelSize: voxelSize)
 
-        while optimizedPositions.count > maximumOptimizedPointCount {
+        while optimizedPoints.count > maximumOptimizedPointCount {
             voxelSize *= 1.16
-            optimizedPositions = voxelDownsample(trimmedPositions, voxelSize: voxelSize)
+            optimizedPoints = voxelDownsample(trimmedPoints, voxelSize: voxelSize)
         }
 
-        if optimizedPositions.count > maximumOptimizedPointCount {
-            optimizedPositions = representativePositions(
-                optimizedPositions,
+        if optimizedPoints.count > maximumOptimizedPointCount {
+            optimizedPoints = representativePoints(
+                optimizedPoints,
                 targetCount: maximumOptimizedPointCount
             )
         }
 
-        let optimizedPoints = colorizedPoints(from: optimizedPositions)
+        let colorizedPoints = colorizedPoints(
+            from: optimizedPoints,
+            samplers: samplers,
+            samplersByIndex: samplersByIndex,
+            splatRadius: max(voxelSize * 1.15, 0.018)
+        )
         let outputURL = bundleURL.appendingPathComponent(SpatialScanOptimizedPointCloud.relativePath)
-        try SpatialScanOptimizedPointCloud.write(points: optimizedPoints, to: outputURL)
+        try SpatialScanOptimizedPointCloud.write(points: colorizedPoints, to: outputURL)
         return SpatialScanPointCloudOptimizationResult(
             relativePath: SpatialScanOptimizedPointCloud.relativePath,
-            pointCount: optimizedPoints.count
+            pointCount: colorizedPoints.count
         )
+    }
+
+    private struct SourcePoint {
+        let position: SIMD3<Float>
+        let sourceFrameIndex: Int?
     }
 
     private struct Bounds {
@@ -150,20 +237,27 @@ enum SpatialScanPointCloudOptimizer {
     private struct VoxelAccumulator {
         var sum = SIMD3<Float>(repeating: 0)
         var count = 0
+        var sourceFrameIndex: Int?
 
-        mutating func add(_ position: SIMD3<Float>) {
-            sum += position
+        mutating func add(_ point: SourcePoint) {
+            sum += point.position
             count += 1
+            if sourceFrameIndex == nil {
+                sourceFrameIndex = point.sourceFrameIndex
+            }
         }
 
-        var average: SIMD3<Float> {
-            guard count > 0 else { return sum }
-            return sum / Float(count)
+        var point: SourcePoint {
+            guard count > 0 else {
+                return SourcePoint(position: sum, sourceFrameIndex: sourceFrameIndex)
+            }
+            return SourcePoint(position: sum / Float(count), sourceFrameIndex: sourceFrameIndex)
         }
     }
 
-    private static func trimOutliers(from positions: [SIMD3<Float>]) -> [SIMD3<Float>] {
-        guard positions.count >= 80 else { return positions }
+    private static func trimOutliers(from points: [SourcePoint]) -> [SourcePoint] {
+        guard points.count >= 80 else { return points }
+        let positions = points.map(\.position)
 
         let sortedX = positions.map(\.x).sorted()
         let sortedY = positions.map(\.y).sorted()
@@ -173,8 +267,9 @@ enum SpatialScanPointCloudOptimizer {
         let lower = SIMD3<Float>(sortedX[lowerIndex], sortedY[lowerIndex], sortedZ[lowerIndex])
         let upper = SIMD3<Float>(sortedX[upperIndex], sortedY[upperIndex], sortedZ[upperIndex])
 
-        return positions.filter { position in
-            position.x >= lower.x && position.x <= upper.x
+        return points.filter { point in
+            let position = point.position
+            return position.x >= lower.x && position.x <= upper.x
                 && position.y >= lower.y && position.y <= upper.y
                 && position.z >= lower.z && position.z <= upper.z
         }
@@ -194,70 +289,119 @@ enum SpatialScanPointCloudOptimizer {
         return max(edge * 0.78, minimumVoxelSize)
     }
 
-    private static func voxelDownsample(_ positions: [SIMD3<Float>], voxelSize: Float) -> [SIMD3<Float>] {
-        guard voxelSize > 0 else { return positions }
+    private static func voxelDownsample(_ points: [SourcePoint], voxelSize: Float) -> [SourcePoint] {
+        guard voxelSize > 0 else { return points }
         var voxels: [VoxelKey: VoxelAccumulator] = [:]
-        voxels.reserveCapacity(min(positions.count, maximumOptimizedPointCount))
+        voxels.reserveCapacity(min(points.count, maximumOptimizedPointCount))
 
-        for position in positions {
+        for point in points {
+            let position = point.position
             let key = VoxelKey(
                 x: Int(floor(position.x / voxelSize)),
                 y: Int(floor(position.y / voxelSize)),
                 z: Int(floor(position.z / voxelSize))
             )
             var accumulator = voxels[key] ?? VoxelAccumulator()
-            accumulator.add(position)
+            accumulator.add(point)
             voxels[key] = accumulator
         }
 
-        return voxels.values.map(\.average)
+        return voxels.values.map(\.point)
     }
 
-    private static func representativePositions(
-        _ positions: [SIMD3<Float>],
+    private static func representativePoints(
+        _ points: [SourcePoint],
         targetCount: Int
-    ) -> [SIMD3<Float>] {
-        guard positions.count > targetCount, targetCount > 0 else { return positions }
+    ) -> [SourcePoint] {
+        guard points.count > targetCount, targetCount > 0 else { return points }
         let denominator = max(targetCount - 1, 1)
-        var sampled: [SIMD3<Float>] = []
+        var sampled: [SourcePoint] = []
         sampled.reserveCapacity(targetCount)
         for offset in 0..<targetCount {
-            let index = Int(round((Double(offset) / Double(denominator)) * Double(positions.count - 1)))
-            sampled.append(positions[min(max(index, 0), positions.count - 1)])
+            let index = Int(round((Double(offset) / Double(denominator)) * Double(points.count - 1)))
+            sampled.append(points[min(max(index, 0), points.count - 1)])
         }
         return sampled
     }
 
-    private static func colorizedPoints(from positions: [SIMD3<Float>]) -> [SpatialScanOptimizedPoint] {
-        guard !positions.isEmpty else { return [] }
+    private static func colorizedPoints(
+        from points: [SourcePoint],
+        samplers: [FrameColorSampler],
+        samplersByIndex: [Int: FrameColorSampler],
+        splatRadius: Float
+    ) -> [SpatialScanOptimizedPoint] {
+        guard !points.isEmpty else { return [] }
+        let positions = points.map(\.position)
         let bounds = bounds(for: positions)
         let center = (bounds.min + bounds.max) / 2
         let heightRange = max(bounds.max.y - bounds.min.y, 0.01)
         let radius = max(positions.map { simd_length($0 - center) }.max() ?? 0.01, 0.01)
 
-        var points: [SpatialScanOptimizedPoint] = []
-        points.reserveCapacity(positions.count)
+        var optimizedPoints: [SpatialScanOptimizedPoint] = []
+        optimizedPoints.reserveCapacity(points.count)
 
-        for position in positions {
+        for point in points {
+            let position = point.position
+            let photoColor = sampledColor(
+                for: point,
+                samplers: samplers,
+                samplersByIndex: samplersByIndex
+            )
             let height = min(max((position.y - bounds.min.y) / heightRange, 0), 1)
             let radial = min(max(simd_length(position - center) / radius, 0), 1)
             let edgeContrast = 1 - abs(radial - 0.55)
-            let red = min(0.26 + (height * 0.5) + (edgeContrast * 0.12), 1)
-            let green = min(0.42 + ((1 - radial) * 0.28) + (height * 0.16), 1)
-            let blue = min(0.72 + ((1 - height) * 0.2) + (radial * 0.08), 1)
-            points.append(
+            let fallbackColor = SIMD3<Float>(
+                min(0.26 + (height * 0.5) + (edgeContrast * 0.12), 1),
+                min(0.42 + ((1 - radial) * 0.28) + (height * 0.16), 1),
+                min(0.72 + ((1 - height) * 0.2) + (radial * 0.08), 1)
+            )
+            let color = photoColor ?? fallbackColor
+            let normal = normalized(position - center, fallback: SIMD3<Float>(0, 1, 0))
+            optimizedPoints.append(
                 SpatialScanOptimizedPoint(
                     x: position.x,
                     y: position.y,
                     z: position.z,
-                    r: red,
-                    g: green,
-                    b: blue
+                    r: color.x,
+                    g: color.y,
+                    b: color.z,
+                    normalX: normal.x,
+                    normalY: normal.y,
+                    normalZ: normal.z,
+                    radius: splatRadius
                 )
             )
         }
 
-        return points
+        return optimizedPoints
+    }
+
+    private static func sampledColor(
+        for point: SourcePoint,
+        samplers: [FrameColorSampler],
+        samplersByIndex: [Int: FrameColorSampler]
+    ) -> SIMD3<Float>? {
+        if let sourceFrameIndex = point.sourceFrameIndex,
+           let sampler = samplersByIndex[sourceFrameIndex],
+           let color = sampler.color(for: point.position) {
+            return color
+        }
+
+        let candidateSamplers: ArraySlice<FrameColorSampler>
+        if let sourceFrameIndex = point.sourceFrameIndex {
+            candidateSamplers = samplers
+                .sorted { abs($0.frameIndex - sourceFrameIndex) < abs($1.frameIndex - sourceFrameIndex) }
+                .prefix(12)
+        } else {
+            candidateSamplers = samplers.prefix(12)
+        }
+
+        for sampler in candidateSamplers {
+            if let color = sampler.color(for: point.position) {
+                return color
+            }
+        }
+        return nil
     }
 
     private static func bounds(for positions: [SIMD3<Float>]) -> Bounds {
@@ -280,6 +424,194 @@ enum SpatialScanPointCloudOptimizer {
         }
 
         return Bounds(min: minimum, max: maximum)
+    }
+
+    private static func normalized(_ vector: SIMD3<Float>, fallback: SIMD3<Float>) -> SIMD3<Float> {
+        let length = simd_length(vector)
+        guard length > 0.0001 else { return fallback }
+        return vector / length
+    }
+}
+
+private final class FrameColorSampler {
+    private static let maximumLoadedFrameCount = 48
+    private static let maximumColorImageDimension = 1_024
+
+    let frameIndex: Int
+    private let inverseCameraTransform: simd_float4x4
+    private let fx: Float
+    private let fy: Float
+    private let cx: Float
+    private let cy: Float
+    private let intrinsicScaleX: Float
+    private let intrinsicScaleY: Float
+    private let width: Int
+    private let height: Int
+    private let pixels: [UInt8]
+
+    private init?(
+        frameIndex: Int,
+        frameSample: SpatialScanFrameSample,
+        imageURL: URL
+    ) {
+        guard
+            let cameraTransform = Self.matrix4x4(from: frameSample.cameraTransform),
+            let intrinsics = Self.cameraIntrinsics(from: frameSample.cameraIntrinsics),
+            let image = Self.loadRGBAImage(at: imageURL)
+        else {
+            return nil
+        }
+
+        self.frameIndex = frameIndex
+        inverseCameraTransform = cameraTransform.inverse
+        fx = intrinsics.fx
+        fy = intrinsics.fy
+        cx = intrinsics.cx
+        cy = intrinsics.cy
+        width = image.width
+        height = image.height
+        pixels = image.pixels
+        intrinsicScaleX = Float(image.width) / Float(max(frameSample.imageWidth, 1))
+        intrinsicScaleY = Float(image.height) / Float(max(frameSample.imageHeight, 1))
+    }
+
+    static func loadSamplers(frameSamples: [SpatialScanFrameSample], bundleURL: URL) -> [FrameColorSampler] {
+        representativeFrameIndices(totalCount: frameSamples.count, targetCount: maximumLoadedFrameCount).compactMap { index in
+            guard frameSamples.indices.contains(index) else { return nil }
+            let sample = frameSamples[index]
+            guard let imageURL = SpatialScanAssetResolver.assetURL(relativePath: sample.imageFileName, in: bundleURL) else {
+                return nil
+            }
+            return FrameColorSampler(frameIndex: index, frameSample: sample, imageURL: imageURL)
+        }
+    }
+
+    func color(for worldPosition: SIMD3<Float>) -> SIMD3<Float>? {
+        let cameraPoint4 = inverseCameraTransform * SIMD4<Float>(
+            worldPosition.x,
+            worldPosition.y,
+            worldPosition.z,
+            1
+        )
+        let depth = -cameraPoint4.z
+        guard depth > 0.05 else { return nil }
+
+        let projectedX = ((fx * (cameraPoint4.x / depth)) + cx) * intrinsicScaleX
+        let projectedY = ((fy * (-cameraPoint4.y / depth)) + cy) * intrinsicScaleY
+        guard projectedX.isFinite, projectedY.isFinite else { return nil }
+
+        let x = Int(projectedX.rounded())
+        let y = Int(projectedY.rounded())
+        guard x >= 0, x < width, y >= 0, y < height else { return nil }
+
+        let offset = ((y * width) + x) * 4
+        guard offset + 2 < pixels.count else { return nil }
+        return SIMD3<Float>(
+            Float(pixels[offset]) / 255,
+            Float(pixels[offset + 1]) / 255,
+            Float(pixels[offset + 2]) / 255
+        )
+    }
+
+    private struct RGBAImage {
+        let width: Int
+        let height: Int
+        let pixels: [UInt8]
+    }
+
+    private static func matrix4x4(from values: [Float]) -> simd_float4x4? {
+        guard values.count >= 16 else { return nil }
+        return simd_float4x4(
+            SIMD4<Float>(values[0], values[1], values[2], values[3]),
+            SIMD4<Float>(values[4], values[5], values[6], values[7]),
+            SIMD4<Float>(values[8], values[9], values[10], values[11]),
+            SIMD4<Float>(values[12], values[13], values[14], values[15])
+        )
+    }
+
+    private static func cameraIntrinsics(from values: [Float]) -> (fx: Float, fy: Float, cx: Float, cy: Float)? {
+        guard values.count >= 9 else { return nil }
+        return (fx: values[0], fy: values[4], cx: values[6], cy: values[7])
+    }
+
+    private static func loadRGBAImage(at url: URL) -> RGBAImage? {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard
+            let imageSource = CGImageSourceCreateWithURL(url as CFURL, options)
+        else {
+            return nil
+        }
+
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumColorImageDimension
+        ] as CFDictionary
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, thumbnailOptions)
+            ?? CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            return nil
+        }
+
+        let width = cgImage.width
+        let height = cgImage.height
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var pixels = [UInt8](repeating: 0, count: height * bytesPerRow)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+
+        let didDraw = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let baseAddress = buffer.baseAddress,
+                  let context = CGContext(
+                    data: baseAddress,
+                    width: width,
+                    height: height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: bytesPerRow,
+                    space: colorSpace,
+                    bitmapInfo: bitmapInfo
+                  ) else {
+                return false
+            }
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard didDraw else {
+            return nil
+        }
+
+        return RGBAImage(width: width, height: height, pixels: pixels)
+    }
+
+    private static func representativeFrameIndices(totalCount: Int, targetCount: Int) -> [Int] {
+        guard totalCount > 0, targetCount > 0 else { return [] }
+        guard totalCount > targetCount else { return Array(0..<totalCount) }
+
+        let denominator = max(targetCount - 1, 1)
+        return Array(
+            Set(
+                (0..<targetCount).map { offset in
+                    Int(round((Double(offset) / Double(denominator)) * Double(totalCount - 1)))
+                }
+            )
+        )
+        .sorted()
+    }
+}
+
+private enum SpatialScanAssetResolver {
+    static func assetURL(relativePath: String, in bundleURL: URL) -> URL? {
+        guard let normalizedRelativePath = StoredSpatialScan.normalizedRelativeAssetPath(relativePath) else {
+            return nil
+        }
+        let candidateURL = bundleURL.appendingPathComponent(normalizedRelativePath)
+        let standardizedBundlePath = bundleURL.standardizedFileURL.path + "/"
+        let standardizedCandidatePath = candidateURL.standardizedFileURL.path
+        guard standardizedCandidatePath.hasPrefix(standardizedBundlePath) else {
+            return nil
+        }
+        return candidateURL
     }
 }
 

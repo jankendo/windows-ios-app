@@ -19,11 +19,12 @@ private enum SpatialScanCaptureFinalizationError: LocalizedError {
 @MainActor
 final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency ARSessionDelegate {
     private enum CaptureConstants {
-        static let frameSamplingInterval: TimeInterval = 0.28
+        static let frameSamplingInterval: TimeInterval = 0.22
         static let minimumTranslationMeters: Float = 0.018
         static let minimumRotationRadians: Float = 0.045
         static let minimumQualityEvaluationDuration: TimeInterval = 10
         static let preferredFrameCount = 48
+        static let maximumFrameSampleCount = 96
         static let preferredHeadingSpanDegrees = 330.0
         static let preferredVerticalSpanDegrees = 70.0
         static let highQualityScore = 0.92
@@ -32,10 +33,10 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         static let minimumHighQualityVerticalSpanDegrees = 52.0
         static let idealStationaryDriftMeters = 0.85
         static let maximumStationaryDriftMeters = 1.6
-        static let maximumPointSampleCount = 9_000
-        static let maximumPointSamplesPerFrame = 220
-        static let preferredPointSampleCount = 4_800
-        static let minimumHighQualityPointSampleCount = 1_800
+        static let maximumPointSampleCount = 24_000
+        static let maximumPointSamplesPerFrame = 420
+        static let preferredPointSampleCount = 9_000
+        static let minimumHighQualityPointSampleCount = 3_000
         static let minimumFeaturePointDistanceMeters: Float = 0.25
         static let maximumFeaturePointDistanceMeters: Float = 7.0
         static let sessionBindingPollCount = 20
@@ -318,7 +319,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
         isOptimizingScan = true
         optimizationProgress = 0.12
-        optimizationStatusText = "点群を整理しています"
+        optimizationStatusText = "写真色付きの3D空間を解析しています"
         qualityStatusText = "3D最適化中"
         guidanceText = "最適化済みの3Dデータを生成しています。完了するまでそのままお待ちください。"
         motionHintText = "処理中"
@@ -335,12 +336,13 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             let optimizationResult = try await Task.detached(priority: .userInitiated) {
                 try SpatialScanPointCloudOptimizer.optimize(
                     pointSamples: capturedPointSamples,
+                    frameSamples: capturedFrameSamples,
                     bundleURL: bundleURL
                 )
             }.value
 
             optimizationProgress = 0.68
-            optimizationStatusText = "3Dプレビュー用モデルを構築しています"
+            optimizationStatusText = "画像を3Dスプラットへ焼き付けています"
 
             let manifest = SpatialScanManifest(
                 capturedAt: capturedAt,
@@ -569,6 +571,10 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
     @discardableResult
     private func appendFrameSample(from frame: ARFrame, elapsed: TimeInterval, bundleURL: URL) -> Bool {
+        guard frameSamples.count < CaptureConstants.maximumFrameSampleCount else {
+            return false
+        }
+
         let framesFolderURL = bundleURL.appendingPathComponent("frames", isDirectory: true)
         try? FileManager.default.createDirectory(at: framesFolderURL, withIntermediateDirectories: true)
 
