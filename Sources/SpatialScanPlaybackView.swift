@@ -9,7 +9,7 @@ struct SpatialScanPlaybackView: View {
     private enum PlaybackImageSizing {
         static let thumbnailMaxDimension: CGFloat = 96
         static let maximumLoadedFrameCount = 10
-        static let maximumPointPreviewCount = 7_500
+        static let maximumPointPreviewCount = 8_500
     }
 
     let entry: MemoryEntry
@@ -21,16 +21,15 @@ struct SpatialScanPlaybackView: View {
     @StateObject private var player = AudioPlayerController()
     @State private var waveformSamples: [CGFloat] = Array(repeating: 0.25, count: 40)
     @State private var frameItems: [SpatialScanPlaybackFrame] = []
-    @State private var pointItems: [SpatialScanPointSample] = []
+    @State private var pointItems: [SpatialScanOptimizedPoint] = []
     @State private var selectedFrameIndex = 0
     @State private var isSequencePlaying = false
     @State private var framePlaybackTask: Task<Void, Never>?
 
     init(entry: MemoryEntry) {
         self.entry = entry
-        let storedSpatialScan = entry.storedSpatialScan
+        let storedSpatialScan = entry.atmosphereMetadata?.storedSpatialScan
         _cachedStoredSpatialScan = State(initialValue: storedSpatialScan)
-        _cachedManifest = State(initialValue: storedSpatialScan.flatMap { MediaStore.loadSpatialScanManifest(for: $0) })
     }
 
     private var palette: ResonancePalette {
@@ -62,7 +61,7 @@ struct SpatialScanPlaybackView: View {
     private var sequencePlaybackInterval: TimeInterval {
         guard frameItems.count > 1 else { return 0.45 }
         let referenceDuration = max(
-            entry.spatialScanCaptureDuration ?? manifest?.normalizedCaptureDuration ?? Double(frameItems.count) * 0.35,
+            spatialScanCaptureDuration ?? manifest?.normalizedCaptureDuration ?? Double(frameItems.count) * 0.35,
             Double(frameItems.count) * 0.12
         )
         return min(max(referenceDuration / Double(frameItems.count), 0.16), 0.65)
@@ -73,11 +72,46 @@ struct SpatialScanPlaybackView: View {
     }
 
     private var syncableBytesText: String {
-        formattedByteCount(for: entry.spatialScanSyncMetadata?.syncableAssets ?? [])
+        formattedByteCount(for: spatialScanSyncMetadata?.syncableAssets ?? [])
     }
 
     private var localOnlyBytesText: String {
-        formattedByteCount(for: entry.spatialScanSyncMetadata?.localOnlyAssets ?? [])
+        formattedByteCount(for: spatialScanSyncMetadata?.localOnlyAssets ?? [])
+    }
+
+    private var spatialScanSyncMetadata: SpatialScanSyncMetadata? {
+        entry.atmosphereMetadata?.spatialScanSync
+    }
+
+    private var spatialScanFrameCount: Int {
+        storedSpatialScan?.frameCount ?? entry.atmosphereMetadata?.storedSpatialScan?.frameCount ?? 0
+    }
+
+    private var spatialScanCaptureDuration: TimeInterval? {
+        storedSpatialScan?.captureDuration ?? entry.atmosphereMetadata?.storedSpatialScan?.captureDuration
+    }
+
+    private var spatialScanReconstructionState: SpatialScanReconstructionState? {
+        storedSpatialScan?.reconstructionState ?? entry.atmosphereMetadata?.storedSpatialScan?.reconstructionState
+    }
+
+    private var spatialScanDerivedAssets: [SpatialScanSyncAsset] {
+        spatialScanSyncMetadata?.assets.filter { $0.kind == .derived } ?? []
+    }
+
+    private var spatialScanDisplayLabel: String {
+        switch spatialScanReconstructionState {
+        case .proxyReady:
+            return "Preview対応"
+        case .queuedForHighQuality:
+            return "HQ準備"
+        case .ready:
+            return "再生対応"
+        case .failed:
+            return "再処理待ち"
+        case .captured, nil:
+            return "3D Scan"
+        }
     }
 
     var body: some View {
@@ -130,7 +164,7 @@ struct SpatialScanPlaybackView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ResonanceBadge(
-                            title: entry.spatialScanDisplayLabel,
+                            title: spatialScanDisplayLabel,
                             systemImage: "cube",
                             tint: .white,
                             atmosphere: entry.atmosphereStyle
@@ -336,16 +370,16 @@ struct SpatialScanPlaybackView: View {
                     .foregroundStyle(palette.primaryText)
 
                 SpatialScanMetricRow(title: "状態", value: reconstructionStateLabel)
-                SpatialScanMetricRow(title: "フレーム数", value: "\(entry.spatialScanFrameCount) 枚")
+                SpatialScanMetricRow(title: "フレーム数", value: "\(spatialScanFrameCount) 枚")
                 if !pointItems.isEmpty {
-                    SpatialScanMetricRow(title: "3D点群", value: "\(pointItems.count) 点")
+                    SpatialScanMetricRow(title: "最適化3D", value: "\(pointItems.count) surfels")
                 }
 
-                if let duration = entry.spatialScanCaptureDuration {
+                if let duration = spatialScanCaptureDuration {
                     SpatialScanMetricRow(title: "収集時間", value: String(format: "%.1f 秒", duration))
                 }
 
-                if let summary = entry.spatialScanPreparationSummary {
+                if let summary = manifest?.preparationSummary {
                     SpatialScanMetricRow(title: "Coverage", value: "\(Int((summary.coverageScore * 100).rounded()))%")
                     SpatialScanMetricRow(title: "Proxy keyframes", value: "\(summary.selectedProxyFrameCount) 枚")
                     SpatialScanMetricRow(title: "静止ドリフト", value: String(format: "%.2f m", summary.translationExtentMeters))
@@ -357,21 +391,21 @@ struct SpatialScanPlaybackView: View {
 
                 SpatialScanMetricRow(title: "空間アンカー", value: worldMapURL == nil ? "未保存" : "World Map 保存済み")
 
-                if let processedAt = entry.spatialScanLastProcessedAt {
+                if let processedAt = manifest?.reconstructionJob?.lastProcessedAt {
                     SpatialScanMetricRow(title: "最終処理", value: processedAt.formatted(date: .abbreviated, time: .shortened))
                 }
 
-                if let finalReadyAt = entry.spatialScanFinalReadyAt {
+                if let finalReadyAt = manifest?.reconstructionJob?.finalReadyAt {
                     SpatialScanMetricRow(title: "Final ready", value: finalReadyAt.formatted(date: .abbreviated, time: .shortened))
                 }
 
-                if let statusMessage = entry.spatialScanReconstructionJob?.lastStatusMessage {
+                if let statusMessage = manifest?.reconstructionJob?.lastStatusMessage {
                     Text(statusMessage)
                         .font(.caption)
                         .foregroundStyle(palette.secondaryText)
                 }
 
-                if let failure = entry.spatialScanReconstructionJob?.lastFailure {
+                if let failure = manifest?.reconstructionJob?.lastFailure {
                     Text(failure.message)
                         .font(.caption)
                         .foregroundStyle(.red.opacity(0.82))
@@ -387,7 +421,7 @@ struct SpatialScanPlaybackView: View {
                     .font(.headline)
                     .foregroundStyle(palette.primaryText)
 
-                if let syncMetadata = entry.spatialScanSyncMetadata {
+                if let syncMetadata = spatialScanSyncMetadata {
                     SpatialScanMetricRow(
                         title: "同期対象",
                         value: "\(syncMetadata.syncableAssets.count) files • \(syncableBytesText)"
@@ -402,20 +436,20 @@ struct SpatialScanPlaybackView: View {
                         .foregroundStyle(palette.secondaryText)
                 }
 
-                if let proxyRequestFileName = entry.spatialScanProxyRequestFileName {
+                if let proxyRequestFileName = manifest?.reconstructionJob?.proxyRequestFileName {
                     SpatialScanAssetRow(relativePath: proxyRequestFileName, byteCount: assetByteCount(for: proxyRequestFileName))
                 }
 
-                if let highQualityRequestFileName = entry.spatialScanHighQualityRequestFileName {
+                if let highQualityRequestFileName = manifest?.reconstructionJob?.highQualityRequestFileName {
                     SpatialScanAssetRow(relativePath: highQualityRequestFileName, byteCount: assetByteCount(for: highQualityRequestFileName))
                 }
 
-                if entry.spatialScanDerivedAssets.isEmpty {
-                    Text("derived asset はまだありません。現在は preview / frame sequence / reconstruction request を future renderer への接続面として保持しています。")
+                if spatialScanDerivedAssets.isEmpty {
+                    Text("最適化済み3Dアセットはまだありません。新しいスキャンでは記録終了前に生成されます。")
                         .font(.caption)
                         .foregroundStyle(palette.secondaryText)
                 } else {
-                    ForEach(entry.spatialScanDerivedAssets) { asset in
+                    ForEach(spatialScanDerivedAssets) { asset in
                         SpatialScanAssetRow(relativePath: asset.relativePath, byteCount: asset.byteCount)
                     }
                 }
@@ -424,9 +458,9 @@ struct SpatialScanPlaybackView: View {
     }
 
     private var frameOverlaySubtitle: String {
-        let frameLabel = "\(entry.spatialScanFrameCount) 枚"
+        let frameLabel = "\(spatialScanFrameCount) 枚"
         let durationLabel: String
-        if let duration = entry.spatialScanCaptureDuration {
+        if let duration = spatialScanCaptureDuration {
             durationLabel = String(format: "%.1f 秒", duration)
         } else {
             durationLabel = "時間情報なし"
@@ -439,7 +473,7 @@ struct SpatialScanPlaybackView: View {
     }
 
     private var reconstructionStateLabel: String {
-        switch entry.spatialScanReconstructionState {
+        switch spatialScanReconstructionState {
         case .captured:
             return "収集完了"
         case .proxyReady:
@@ -458,6 +492,10 @@ struct SpatialScanPlaybackView: View {
     private func loadScanResources() {
         stopSequencePlayback()
         waveformSamples = entry.waveformFingerprint
+        cachedStoredSpatialScan = entry.atmosphereMetadata?.storedSpatialScan
+        if let cachedStoredSpatialScan {
+            cachedManifest = MediaStore.loadSpatialScanManifest(for: cachedStoredSpatialScan)
+        }
         pointItems = loadPointItems()
         frameItems = loadFrameItems()
         selectedFrameIndex = min(selectedFrameIndex, max(frameItems.count - 1, 0))
@@ -490,9 +528,13 @@ struct SpatialScanPlaybackView: View {
         }
     }
 
-    private func loadPointItems() -> [SpatialScanPointSample] {
-        if let manifest, !manifest.pointSamples.isEmpty {
-            return representativePointSamples(from: manifest.pointSamples)
+    private func loadPointItems() -> [SpatialScanOptimizedPoint] {
+        if let storedSpatialScan,
+           let optimizedFileName = manifest?.optimizedPointCloudFileName,
+           let optimizedURL = MediaStore.spatialScanAssetURL(relativePath: optimizedFileName, for: storedSpatialScan),
+           let optimizedPoints = try? SpatialScanOptimizedPointCloud.read(from: optimizedURL),
+           !optimizedPoints.isEmpty {
+            return representativePointSamples(from: optimizedPoints)
         }
 
         guard let worldMapURL,
@@ -504,7 +546,7 @@ struct SpatialScanPlaybackView: View {
         return representativePointSamples(from: worldMap.rawFeaturePoints)
     }
 
-    private func representativePointSamples(from samples: [SpatialScanPointSample]) -> [SpatialScanPointSample] {
+    private func representativePointSamples(from samples: [SpatialScanOptimizedPoint]) -> [SpatialScanOptimizedPoint] {
         guard samples.count > PlaybackImageSizing.maximumPointPreviewCount else {
             return samples
         }
@@ -518,11 +560,10 @@ struct SpatialScanPlaybackView: View {
         }
     }
 
-    private func representativePointSamples(from pointCloud: ARPointCloud) -> [SpatialScanPointSample] {
+    private func representativePointSamples(from pointCloud: ARPointCloud) -> [SpatialScanOptimizedPoint] {
         let points = pointCloud.points
         guard !points.isEmpty else { return [] }
 
-        let identifiers = pointCloud.identifiers
         let indices = evenlyDistributedIndices(
             totalCount: points.count,
             targetCount: min(points.count, PlaybackImageSizing.maximumPointPreviewCount)
@@ -531,11 +572,13 @@ struct SpatialScanPlaybackView: View {
         return indices.compactMap { index in
             guard points.indices.contains(index) else { return nil }
             let point = points[index]
-            return SpatialScanPointSample(
-                identifier: identifiers.indices.contains(index) ? identifiers[index] : nil,
+            return SpatialScanOptimizedPoint(
                 x: point.x,
                 y: point.y,
-                z: point.z
+                z: point.z,
+                r: 0.44,
+                g: 0.68,
+                b: 0.98
             )
         }
     }
@@ -649,7 +692,7 @@ private struct SpatialScanPlaybackFrame: Identifiable {
 
 private struct SpatialScanModelPreviewView: UIViewRepresentable {
     let frames: [SpatialScanPlaybackFrame]
-    let pointSamples: [SpatialScanPointSample]
+    let pointSamples: [SpatialScanOptimizedPoint]
     @Binding var selectedFrameIndex: Int
     let motionEnabled: Bool
     let atmosphere: AtmosphereStyle
@@ -691,6 +734,11 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
         private var lastSelectedFrameIndex: Int?
         private var lastMotionUpdateAt = Date.distantPast
         private var lastMotionEuler = SCNVector3Zero
+
+        private struct RenderPoint {
+            let position: SCNVector3
+            let color: SIMD4<Float>
+        }
 
         func makeView() -> SCNView {
             scene.background.contents = UIColor.black
@@ -737,12 +785,15 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
         func update(
             view: SCNView,
             frames: [SpatialScanPlaybackFrame],
-            pointSamples: [SpatialScanPointSample],
+            pointSamples: [SpatialScanOptimizedPoint],
             selectedFrameIndex: Int,
             motionEnabled: Bool,
             atmosphere: AtmosphereStyle
         ) {
-            let signature = "\(pointSamples.count):\(pointSamples.first?.id.uuidString ?? "-"):\(pointSamples.last?.id.uuidString ?? "-")|" + frames.map(\.id).joined(separator: "|")
+            let firstPoint = pointSamples.first
+            let lastPoint = pointSamples.last
+            let pointSignature = "\(pointSamples.count):\(firstPoint?.x ?? 0):\(firstPoint?.y ?? 0):\(lastPoint?.z ?? 0)"
+            let signature = pointSignature + "|" + frames.map(\.id).joined(separator: "|")
             if signature != renderedSignature {
                 renderedSignature = signature
                 rebuildModel(frames: frames, pointSamples: pointSamples, atmosphere: atmosphere)
@@ -828,7 +879,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
         private func rebuildModel(
             frames: [SpatialScanPlaybackFrame],
-            pointSamples: [SpatialScanPointSample],
+            pointSamples: [SpatialScanOptimizedPoint],
             atmosphere: AtmosphereStyle
         ) {
             modelRoot.childNodes.forEach { $0.removeFromParentNode() }
@@ -839,7 +890,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             addFloor(accent: accent)
 
             if !pointSamples.isEmpty {
-                addPointCloud(pointSamples: pointSamples, accent: accent)
+                addSurfelCloud(pointSamples: pointSamples, accent: accent)
                 return
             }
 
@@ -886,12 +937,50 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             modelRoot.addChildNode(node)
         }
 
-        private func addPointCloud(pointSamples: [SpatialScanPointSample], accent: UIColor) {
-            let positions = normalizedPointPositions(from: pointSamples)
-            guard !positions.isEmpty else { return }
+        private func addSurfelCloud(pointSamples: [SpatialScanOptimizedPoint], accent: UIColor) {
+            let renderPoints = normalizedPointPositions(from: pointSamples)
+            guard !renderPoints.isEmpty else { return }
 
-            let vertexSource = SCNGeometrySource(vertices: positions)
-            let colors = colors(for: positions, accent: accent)
+            let surfelRadius = max(0.012, min(0.032, 0.095 / sqrt(Float(renderPoints.count))))
+            var vertices: [SCNVector3] = []
+            var colors: [SIMD4<Float>] = []
+            var indices: [Int32] = []
+            vertices.reserveCapacity(renderPoints.count * 4)
+            colors.reserveCapacity(renderPoints.count * 4)
+            indices.reserveCapacity(renderPoints.count * 6)
+
+            for renderPoint in renderPoints {
+                let position = renderPoint.position
+                let radialNormal = normalized(position)
+                let fallbackNormal = SCNVector3(0, 0, 1)
+                let normal = vectorLength(radialNormal) > 0.001 ? radialNormal : fallbackNormal
+                var tangent = cross(normal, SCNVector3(0, 1, 0))
+                if vectorLength(tangent) < 0.001 {
+                    tangent = cross(normal, SCNVector3(1, 0, 0))
+                }
+                tangent = normalized(tangent)
+                let bitangent = normalized(cross(normal, tangent))
+                let baseIndex = Int32(vertices.count)
+
+                vertices.append(position + (tangent * surfelRadius) + (bitangent * surfelRadius))
+                vertices.append(position - (tangent * surfelRadius) + (bitangent * surfelRadius))
+                vertices.append(position - (tangent * surfelRadius) - (bitangent * surfelRadius))
+                vertices.append(position + (tangent * surfelRadius) - (bitangent * surfelRadius))
+
+                colors.append(renderPoint.color)
+                colors.append(renderPoint.color)
+                colors.append(renderPoint.color)
+                colors.append(renderPoint.color)
+
+                indices.append(baseIndex)
+                indices.append(baseIndex + 1)
+                indices.append(baseIndex + 2)
+                indices.append(baseIndex)
+                indices.append(baseIndex + 2)
+                indices.append(baseIndex + 3)
+            }
+
+            let vertexSource = SCNGeometrySource(vertices: vertices)
             let colorData = colors.withUnsafeBytes { Data($0) }
             let colorSource = SCNGeometrySource(
                 data: colorData,
@@ -904,28 +993,26 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                 dataStride: MemoryLayout<SIMD4<Float>>.stride
             )
 
-            let indices = positions.indices.map(Int32.init)
             let indexData = indices.withUnsafeBytes { Data($0) }
             let element = SCNGeometryElement(
                 data: indexData,
-                primitiveType: .point,
-                primitiveCount: positions.count,
+                primitiveType: .triangles,
+                primitiveCount: indices.count / 3,
                 bytesPerIndex: MemoryLayout<Int32>.size
             )
-            element.pointSize = 5
-            element.minimumPointScreenSpaceRadius = 1
-            element.maximumPointScreenSpaceRadius = 7
 
             let geometry = SCNGeometry(sources: [vertexSource, colorSource], elements: [element])
             let material = SCNMaterial()
             material.lightingModel = .constant
             material.diffuse.contents = UIColor.white
-            material.emission.contents = accent.withAlphaComponent(0.22)
+            material.emission.contents = accent.withAlphaComponent(0.08)
             material.isDoubleSided = true
+            material.writesToDepthBuffer = true
+            material.readsFromDepthBuffer = true
             geometry.materials = [material]
 
             let node = SCNNode(geometry: geometry)
-            node.name = "point-cloud"
+            node.name = "optimized-surfel-cloud"
             modelRoot.addChildNode(node)
         }
 
@@ -1040,7 +1127,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             }
         }
 
-        private func normalizedPointPositions(from samples: [SpatialScanPointSample]) -> [SCNVector3] {
+        private func normalizedPointPositions(from samples: [SpatialScanOptimizedPoint]) -> [RenderPoint] {
             let rawPositions = samples.map { sample in
                 SCNVector3(sample.x, sample.y, sample.z)
             }
@@ -1049,60 +1136,48 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             let sortedX = rawPositions.map(\.x).sorted()
             let sortedY = rawPositions.map(\.y).sorted()
             let sortedZ = rawPositions.map(\.z).sorted()
-            let lowerIndex = max(Int(Double(rawPositions.count - 1) * 0.04), 0)
-            let upperIndex = min(Int(Double(rawPositions.count - 1) * 0.96), rawPositions.count - 1)
+            let lowerIndex = max(Int(Double(rawPositions.count - 1) * 0.03), 0)
+            let upperIndex = min(Int(Double(rawPositions.count - 1) * 0.97), rawPositions.count - 1)
             let minPoint = SCNVector3(sortedX[lowerIndex], sortedY[lowerIndex], sortedZ[lowerIndex])
             let maxPoint = SCNVector3(sortedX[upperIndex], sortedY[upperIndex], sortedZ[upperIndex])
             let center = (minPoint + maxPoint) / 2
             let extent = max(maxPoint.x - minPoint.x, maxPoint.y - minPoint.y, maxPoint.z - minPoint.z, 0.3)
-            let scale = min(2.55 / extent, 3.8)
+            let scale = min(2.65 / extent, 3.8)
 
-            return rawPositions.compactMap { position in
+            var renderPoints: [RenderPoint] = []
+            renderPoints.reserveCapacity(samples.count)
+
+            for sample in samples {
+                let position = SCNVector3(sample.x, sample.y, sample.z)
                 guard position.x >= minPoint.x,
                       position.x <= maxPoint.x,
                       position.y >= minPoint.y,
                       position.y <= maxPoint.y,
                       position.z >= minPoint.z,
                       position.z <= maxPoint.z else {
-                    return nil
+                    continue
                 }
 
-                let normalized = position - center
-                return SCNVector3(normalized.x * scale, (normalized.y * scale) + 0.08, normalized.z * scale)
-            }
-        }
-
-        private func colors(for positions: [SCNVector3], accent: UIColor) -> [SIMD4<Float>] {
-            var red: CGFloat = 1
-            var green: CGFloat = 1
-            var blue: CGFloat = 1
-            var alpha: CGFloat = 1
-            accent.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-            let minimumY = positions.map(\.y).min() ?? 0
-            let maximumY = positions.map(\.y).max() ?? 1
-            let heightRange = max(maximumY - minimumY, 0.01)
-
-            var resolvedColors: [SIMD4<Float>] = []
-            resolvedColors.reserveCapacity(positions.count)
-
-            for position in positions {
-                let normalizedHeight = CGFloat((position.y - minimumY) / heightRange)
-                let warm = min(max(normalizedHeight, 0), 1)
-                let centerGlow = 1 - abs(warm - 0.5)
-                let redValue = (red * 0.45) + (0.95 * warm) + 0.12
-                let greenValue = (green * 0.55) + (0.78 * centerGlow) + 0.1
-                let blueValue = (blue * 0.6) + (1.0 * (1 - warm)) + 0.08
-                resolvedColors.append(
-                    SIMD4<Float>(
-                        Float(min(redValue, 1)),
-                        Float(min(greenValue, 1)),
-                        Float(min(blueValue, 1)),
-                        1
+                let normalizedPosition = position - center
+                let renderedPosition = SCNVector3(
+                    normalizedPosition.x * scale,
+                    (normalizedPosition.y * scale) + 0.08,
+                    normalizedPosition.z * scale
+                )
+                renderPoints.append(
+                    RenderPoint(
+                        position: renderedPosition,
+                        color: SIMD4<Float>(
+                            min(max(sample.r, 0), 1),
+                            min(max(sample.g, 0), 1),
+                            min(max(sample.b, 0), 1),
+                            1
+                        )
                     )
                 )
             }
 
-            return resolvedColors
+            return renderPoints
         }
 
         private func accentColor(for atmosphere: AtmosphereStyle) -> UIColor {
@@ -1131,6 +1206,28 @@ private func - (lhs: SCNVector3, rhs: SCNVector3) -> SCNVector3 {
 private func / (lhs: SCNVector3, rhs: Float) -> SCNVector3 {
     guard rhs != 0 else { return lhs }
     return SCNVector3(lhs.x / rhs, lhs.y / rhs, lhs.z / rhs)
+}
+
+private func * (lhs: SCNVector3, rhs: Float) -> SCNVector3 {
+    SCNVector3(lhs.x * rhs, lhs.y * rhs, lhs.z * rhs)
+}
+
+private func cross(_ lhs: SCNVector3, _ rhs: SCNVector3) -> SCNVector3 {
+    SCNVector3(
+        (lhs.y * rhs.z) - (lhs.z * rhs.y),
+        (lhs.z * rhs.x) - (lhs.x * rhs.z),
+        (lhs.x * rhs.y) - (lhs.y * rhs.x)
+    )
+}
+
+private func vectorLength(_ vector: SCNVector3) -> Float {
+    sqrt((vector.x * vector.x) + (vector.y * vector.y) + (vector.z * vector.z))
+}
+
+private func normalized(_ vector: SCNVector3) -> SCNVector3 {
+    let length = vectorLength(vector)
+    guard length > 0 else { return SCNVector3Zero }
+    return vector / length
 }
 
 private struct SpatialScanMetricRow: View {

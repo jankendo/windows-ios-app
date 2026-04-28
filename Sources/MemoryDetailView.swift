@@ -22,6 +22,7 @@ struct MemoryDetailView: View {
     @State private var isRegeneratingCaption = false
     @State private var relatedEntriesSnapshot: [MemoryEntry] = []
     @State private var relatedEntriesRefreshTask: Task<Void, Never>?
+    @State private var spatialScanManifestSnapshot: SpatialScanManifest?
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
@@ -112,7 +113,7 @@ struct MemoryDetailView: View {
                                 if let duration = entry.spatialScanCaptureDuration {
                                     SensorDetailRow(title: "収集時間", value: String(format: "%.1f 秒", duration))
                                 }
-                                if entry.spatialScanWorldMapURL != nil {
+                                if entry.atmosphereMetadata?.storedSpatialScan?.worldMapFileName != nil {
                                     SensorDetailRow(title: "空間アンカー", value: "World Map 保存済み")
                                 }
                                 if let syncMetadata = entry.spatialScanSyncMetadata {
@@ -124,13 +125,13 @@ struct MemoryDetailView: View {
                                 SensorDetailRow(title: "方式", value: "オンデバイス優先の空間記録 bundle")
                                 SensorDetailRow(title: "実行戦略", value: spatialScanExecutionLabel)
                                 SensorDetailRow(title: "フォールバック", value: spatialScanFallbackLabel)
-                                if let processedAt = entry.spatialScanLastProcessedAt {
+                                if let processedAt = spatialScanManifestSnapshot?.reconstructionJob?.lastProcessedAt {
                                     SensorDetailRow(title: "最終処理", value: processedAt.formatted(date: .abbreviated, time: .shortened))
                                 }
-                                if let finalReadyAt = entry.spatialScanFinalReadyAt {
+                                if let finalReadyAt = spatialScanManifestSnapshot?.reconstructionJob?.finalReadyAt {
                                     SensorDetailRow(title: "最終 ready", value: finalReadyAt.formatted(date: .abbreviated, time: .shortened))
                                 }
-                                if let summary = entry.spatialScanPreparationSummary {
+                                if let summary = spatialScanManifestSnapshot?.preparationSummary {
                                     SensorDetailRow(title: "準備品質", value: spatialScanQualityLabel(for: summary.qualityTier))
                                     SensorDetailRow(title: "Coverage", value: "\(Int((summary.coverageScore * 100).rounded()))%")
                                     SensorDetailRow(title: "Proxy keyframes", value: "\(summary.selectedProxyFrameCount) 枚")
@@ -139,18 +140,21 @@ struct MemoryDetailView: View {
                                         SensorDetailRow(title: "上下レンジ", value: String(format: "%.0f°", verticalSpan))
                                     }
                                 }
-                                if entry.spatialScanProxyRequestFileName != nil {
+                                if spatialScanManifestSnapshot?.reconstructionJob?.proxyRequestFileName != nil {
                                     SensorDetailRow(title: "Proxy job", value: "request 保存済み")
                                 }
-                                if entry.spatialScanHighQualityRequestFileName != nil {
+                                if spatialScanManifestSnapshot?.reconstructionJob?.highQualityRequestFileName != nil {
                                     SensorDetailRow(title: "高品質 handoff", value: "hybrid request 準備済み")
                                 }
-                                if let statusMessage = entry.spatialScanReconstructionJob?.lastStatusMessage {
+                                if let optimizedPointCount = spatialScanManifestSnapshot?.optimizedPointCloudPointCount {
+                                    SensorDetailRow(title: "最適化3D", value: "\(optimizedPointCount) surfels")
+                                }
+                                if let statusMessage = spatialScanManifestSnapshot?.reconstructionJob?.lastStatusMessage {
                                     Text(statusMessage)
                                         .font(.caption)
                                         .foregroundStyle(palette.secondaryText)
                                 }
-                                if let failure = entry.spatialScanReconstructionJob?.lastFailure {
+                                if let failure = spatialScanManifestSnapshot?.reconstructionJob?.lastFailure {
                                     Text(failure.message)
                                         .font(.caption)
                                         .foregroundStyle(.red.opacity(0.82))
@@ -279,6 +283,7 @@ struct MemoryDetailView: View {
             if let playbackURL {
                 player.load(url: playbackURL)
             }
+            refreshSpatialScanSnapshot()
             Task {
                 await backfillPhotoCaptionIfNeeded()
             }
@@ -320,19 +325,27 @@ struct MemoryDetailView: View {
     }
 
     private var spatialScanExecutionLabel: String {
-        switch entry.spatialScanReconstructionJob?.preferredExecution {
+        switch spatialScanManifestSnapshot?.reconstructionJob?.preferredExecution {
         case .onDeviceFirst, nil:
             return "オンデバイス優先"
         }
     }
 
     private var spatialScanFallbackLabel: String {
-        switch entry.spatialScanReconstructionJob?.fallbackPolicy {
+        switch spatialScanManifestSnapshot?.reconstructionJob?.fallbackPolicy {
         case .stayOnDevice:
             return "ローカルのみ"
         case .allowHybridProcessing, nil:
             return "必要時に hybrid"
         }
+    }
+
+    private func refreshSpatialScanSnapshot() {
+        guard let storedSpatialScan = entry.atmosphereMetadata?.storedSpatialScan else {
+            spatialScanManifestSnapshot = nil
+            return
+        }
+        spatialScanManifestSnapshot = MediaStore.loadSpatialScanManifest(for: storedSpatialScan)
     }
 
     private func spatialScanQualityLabel(for qualityTier: SpatialScanPreparationQualityTier) -> String {

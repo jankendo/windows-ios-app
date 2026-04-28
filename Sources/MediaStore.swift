@@ -489,6 +489,14 @@ enum MediaStore {
             shouldRewriteManifest = true
         }
 
+        if let optimizedPointCloudFileName = resolvedManifest.optimizedPointCloudFileName,
+           let optimizedPointCloudURL = try? spatialScanAssetURL(relativePath: optimizedPointCloudFileName, in: bundleURL),
+           !FileManager.default.fileExists(atPath: optimizedPointCloudURL.path) {
+            resolvedManifest.optimizedPointCloudFileName = nil
+            resolvedManifest.optimizedPointCloudPointCount = nil
+            shouldRewriteManifest = true
+        }
+
         let preparedManifest = try SpatialScanReconstructionPipeline.prepare(manifest: resolvedManifest, in: bundleURL)
         if preparedManifest != resolvedManifest {
             resolvedManifest = preparedManifest
@@ -522,6 +530,7 @@ enum MediaStore {
         var normalizedManifest = manifest
         normalizedManifest.previewImageFileName = "preview.\(fileExtension(for: manifest.previewImageFileName, fallback: "jpg"))"
         normalizedManifest.captureDuration = manifest.normalizedCaptureDuration
+        normalizedManifest.pointSamples = []
         normalizedManifest.frameSamples = try manifest.frameSamples.enumerated().map { index, frameSample in
             let frameURL = try spatialScanAssetURL(relativePath: frameSample.imageFileName, in: sourceBundleURL)
             guard FileManager.default.fileExists(atPath: frameURL.path) else {
@@ -552,6 +561,14 @@ enum MediaStore {
             ].joined(separator: "/")
         } else {
             normalizedManifest.worldMapFileName = nil
+        }
+
+        if let optimizedPointCloudFileName = manifest.optimizedPointCloudFileName,
+           (try? spatialScanAssetURL(relativePath: optimizedPointCloudFileName, in: sourceBundleURL)) != nil {
+            normalizedManifest.optimizedPointCloudFileName = optimizedPointCloudFileName
+        } else {
+            normalizedManifest.optimizedPointCloudFileName = nil
+            normalizedManifest.optimizedPointCloudPointCount = nil
         }
 
         return normalizedManifest

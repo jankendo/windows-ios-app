@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 enum SpatialScanReconstructionState: String, Codable, Hashable, CaseIterable {
     case captured
@@ -33,7 +34,7 @@ enum SpatialScanPreparationQualityTier: String, Codable, Hashable, CaseIterable 
     case readyForHighQuality
 }
 
-struct SpatialScanFrameSample: Codable, Hashable, Identifiable {
+struct SpatialScanFrameSample: Codable, Hashable, Identifiable, Sendable {
     let id: UUID
     let imageFileName: String
     let timeOffset: TimeInterval
@@ -61,7 +62,7 @@ struct SpatialScanFrameSample: Codable, Hashable, Identifiable {
     }
 }
 
-struct SpatialScanPointSample: Codable, Hashable, Identifiable {
+struct SpatialScanPointSample: Codable, Hashable, Identifiable, Sendable {
     let id: UUID
     let identifier: UInt64?
     let sourceFrameIndex: Int?
@@ -200,7 +201,7 @@ struct SpatialScanReconstructionJob: Codable, Hashable {
 }
 
 struct SpatialScanReconstructionRequest: Codable, Hashable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     var schemaVersion: Int
     var kind: SpatialScanReconstructionRequestKind
@@ -213,6 +214,8 @@ struct SpatialScanReconstructionRequest: Codable, Hashable {
     var anchorHeadingDegrees: Double?
     var captureDuration: TimeInterval
     var coverageScore: Double
+    var optimizedPointCloudFileName: String?
+    var optimizedPointCloudPointCount: Int?
     var pointSamples: [SpatialScanPointSample]
     var frameSamples: [SpatialScanFrameSample]
 
@@ -228,6 +231,8 @@ struct SpatialScanReconstructionRequest: Codable, Hashable {
         anchorHeadingDegrees: Double?,
         captureDuration: TimeInterval,
         coverageScore: Double,
+        optimizedPointCloudFileName: String? = nil,
+        optimizedPointCloudPointCount: Int? = nil,
         pointSamples: [SpatialScanPointSample] = [],
         frameSamples: [SpatialScanFrameSample]
     ) {
@@ -242,13 +247,15 @@ struct SpatialScanReconstructionRequest: Codable, Hashable {
         self.anchorHeadingDegrees = anchorHeadingDegrees
         self.captureDuration = captureDuration.isFinite ? max(captureDuration, 0) : 0
         self.coverageScore = coverageScore.isFinite ? min(max(coverageScore, 0), 1) : 0
+        self.optimizedPointCloudFileName = optimizedPointCloudFileName
+        self.optimizedPointCloudPointCount = optimizedPointCloudPointCount.map { max($0, 0) }
         self.pointSamples = pointSamples
         self.frameSamples = frameSamples
     }
 }
 
 struct SpatialScanManifest: Codable, Hashable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     var schemaVersion: Int?
     var capturedAt: Date
@@ -261,6 +268,8 @@ struct SpatialScanManifest: Codable, Hashable {
     var reconstructionState: SpatialScanReconstructionState
     var reconstructionJob: SpatialScanReconstructionJob?
     var preparationSummary: SpatialScanPreparationSummary?
+    var optimizedPointCloudFileName: String?
+    var optimizedPointCloudPointCount: Int?
     var pointSamples: [SpatialScanPointSample]
     var frameSamples: [SpatialScanFrameSample]
 
@@ -276,6 +285,8 @@ struct SpatialScanManifest: Codable, Hashable {
         reconstructionState: SpatialScanReconstructionState,
         reconstructionJob: SpatialScanReconstructionJob? = nil,
         preparationSummary: SpatialScanPreparationSummary? = nil,
+        optimizedPointCloudFileName: String? = nil,
+        optimizedPointCloudPointCount: Int? = nil,
         pointSamples: [SpatialScanPointSample] = [],
         frameSamples: [SpatialScanFrameSample]
     ) {
@@ -290,6 +301,8 @@ struct SpatialScanManifest: Codable, Hashable {
         self.reconstructionState = reconstructionState
         self.reconstructionJob = reconstructionJob
         self.preparationSummary = preparationSummary
+        self.optimizedPointCloudFileName = StoredSpatialScan.normalizedRelativeAssetPath(optimizedPointCloudFileName)
+        self.optimizedPointCloudPointCount = optimizedPointCloudPointCount.map { max($0, 0) }
         self.pointSamples = pointSamples
         self.frameSamples = frameSamples
     }
@@ -306,6 +319,8 @@ struct SpatialScanManifest: Codable, Hashable {
         case reconstructionState
         case reconstructionJob
         case preparationSummary
+        case optimizedPointCloudFileName
+        case optimizedPointCloudPointCount
         case pointSamples
         case frameSamples
     }
@@ -323,7 +338,14 @@ struct SpatialScanManifest: Codable, Hashable {
         self.reconstructionState = try container.decode(SpatialScanReconstructionState.self, forKey: .reconstructionState)
         self.reconstructionJob = try container.decodeIfPresent(SpatialScanReconstructionJob.self, forKey: .reconstructionJob)
         self.preparationSummary = try container.decodeIfPresent(SpatialScanPreparationSummary.self, forKey: .preparationSummary)
-        self.pointSamples = try container.decodeIfPresent([SpatialScanPointSample].self, forKey: .pointSamples) ?? []
+        self.optimizedPointCloudFileName = StoredSpatialScan.normalizedRelativeAssetPath(
+            try container.decodeIfPresent(String.self, forKey: .optimizedPointCloudFileName)
+        )
+        self.optimizedPointCloudPointCount = try container.decodeIfPresent(Int.self, forKey: .optimizedPointCloudPointCount)
+            .map { max($0, 0) }
+        // Legacy manifests embedded thousands of points in JSON. Skipping that payload keeps library/detail
+        // navigation responsive; optimized binary point clouds or ARWorldMap provide preview geometry.
+        self.pointSamples = []
         self.frameSamples = try container.decode([SpatialScanFrameSample].self, forKey: .frameSamples)
     }
 }
@@ -545,6 +567,8 @@ enum SpatialScanReconstructionPipeline {
                 anchorHeadingDegrees: resolvedManifest.anchorHeadingDegrees,
                 captureDuration: resolvedManifest.normalizedCaptureDuration,
                 coverageScore: summary.coverageScore,
+                optimizedPointCloudFileName: resolvedManifest.optimizedPointCloudFileName,
+                optimizedPointCloudPointCount: resolvedManifest.optimizedPointCloudPointCount,
                 pointSamples: resolvedManifest.pointSamples,
                 frameSamples: selectProxyFrameSamples(from: resolvedManifest.frameSamples)
             )
@@ -570,6 +594,8 @@ enum SpatialScanReconstructionPipeline {
                 anchorHeadingDegrees: resolvedManifest.anchorHeadingDegrees,
                 captureDuration: resolvedManifest.normalizedCaptureDuration,
                 coverageScore: summary.coverageScore,
+                optimizedPointCloudFileName: resolvedManifest.optimizedPointCloudFileName,
+                optimizedPointCloudPointCount: resolvedManifest.optimizedPointCloudPointCount,
                 pointSamples: resolvedManifest.pointSamples,
                 frameSamples: selectProxyFrameSamples(from: resolvedManifest.frameSamples)
             )
@@ -584,6 +610,8 @@ enum SpatialScanReconstructionPipeline {
                 anchorHeadingDegrees: resolvedManifest.anchorHeadingDegrees,
                 captureDuration: resolvedManifest.normalizedCaptureDuration,
                 coverageScore: summary.coverageScore,
+                optimizedPointCloudFileName: resolvedManifest.optimizedPointCloudFileName,
+                optimizedPointCloudPointCount: resolvedManifest.optimizedPointCloudPointCount,
                 pointSamples: resolvedManifest.pointSamples,
                 frameSamples: resolvedManifest.frameSamples
             )
@@ -592,9 +620,15 @@ enum SpatialScanReconstructionPipeline {
             job.proxyRequestFileName = proxyRequestPath
             job.highQualityRequestFileName = highQualityRequestPath
             job.proxyPreparedAt = now
-            job.finalReadyAt = nil
-            job.lastStatusMessage = "オンデバイス proxy と高品質 handoff を準備しました。"
-            resolvedManifest.reconstructionState = .queuedForHighQuality
+            if optimizedPointCloudExists(for: resolvedManifest, bundleURL: bundleURL) {
+                job.finalReadyAt = now
+                job.lastStatusMessage = "最適化済み3Dプレビューを生成しました。"
+                resolvedManifest.reconstructionState = .ready
+            } else {
+                job.finalReadyAt = nil
+                job.lastStatusMessage = "オンデバイス proxy と高品質 handoff を準備しました。"
+                resolvedManifest.reconstructionState = .queuedForHighQuality
+            }
         }
 
         resolvedManifest.reconstructionJob = job
@@ -608,6 +642,10 @@ enum SpatialScanReconstructionPipeline {
         }
         if job.lastProcessedAt == nil {
             return true
+        }
+        if manifest.reconstructionState == .ready,
+           optimizedPointCloudExists(for: manifest, bundleURL: bundleURL) {
+            return false
         }
         if let proxyRequestFileName = job.proxyRequestFileName {
             let proxyURL = bundleURL.appendingPathComponent(proxyRequestFileName)
@@ -631,7 +669,7 @@ enum SpatialScanReconstructionPipeline {
         let translationExtent = translationExtentMeters(for: manifest.frameSamples)
         let headingSpan = headingSpanDegrees(for: manifest.frameSamples.compactMap(\.headingDegrees))
         let verticalSpan = linearSpanDegrees(for: manifest.frameSamples.compactMap(\.pitchDegrees))
-        let pointCount = manifest.pointSamples.count
+        let pointCount = manifest.optimizedPointCloudPointCount ?? manifest.pointSamples.count
 
         let frameScore = min(Double(frameCount) / 36, 1)
         let durationScore = min(manifest.normalizedCaptureDuration / 14, 1)
@@ -763,6 +801,12 @@ enum SpatialScanReconstructionPipeline {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(request)
         try data.write(to: url, options: .atomic)
+    }
+
+    private static func optimizedPointCloudExists(for manifest: SpatialScanManifest, bundleURL: URL) -> Bool {
+        guard let fileName = manifest.optimizedPointCloudFileName else { return false }
+        let url = bundleURL.appendingPathComponent(fileName)
+        return FileManager.default.fileExists(atPath: url.path)
     }
 
     private static func removeFileIfPresent(at url: URL) {

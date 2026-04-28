@@ -5,6 +5,17 @@ import SceneKit
 import SwiftUI
 import UIKit
 
+private enum SpatialScanCaptureFinalizationError: LocalizedError {
+    case optimizedAssetUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .optimizedAssetUnavailable:
+            return "3Dスキャンを最適化できませんでした。もう一度、同じ地点から360度をゆっくりスキャンしてください。"
+        }
+    }
+}
+
 @MainActor
 final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency ARSessionDelegate {
     private enum CaptureConstants {
@@ -46,6 +57,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     @Published private(set) var motionHintText = "端末を胸の前で構え、足を止めてください。"
     @Published private(set) var isHighQualityReady = false
     @Published private(set) var isImprovingAfterReady = false
+    @Published private(set) var isOptimizingScan = false
+    @Published private(set) var optimizationProgress = 0.0
+    @Published private(set) var optimizationStatusText = "3Dデータを最適化しています"
 
     private weak var arSession: ARSession?
     private let ciContext = CIContext()
@@ -171,6 +185,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     }
 
     func cancelCapture() {
+        guard !isOptimizingScan else { return }
         ambientAudioCapture.cancelRecording()
         let discardedBundleURL = bundleURL
         resolveCapture(.failure(CancellationError()))
@@ -240,6 +255,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         qualityStatusText = "空間を仕上げています"
         guidanceText = "高精度の360度スキャンを保存用の空間データへまとめています。"
         motionHintText = "端末をそのまま安定させてください。"
+        isOptimizingScan = true
+        optimizationProgress = 0.05
+        optimizationStatusText = "スキャンデータを固定しています"
 
         captureTimerTask?.cancel()
         captureTimerTask = nil
@@ -251,6 +269,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         }
 
         arSession?.pause()
+        isScanning = false
 
         let worldMap = await currentWorldMap()
         if let worldMap,
@@ -277,46 +296,101 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
         switch result {
         case .success(let audioResult):
-            let manifest = SpatialScanManifest(
-                capturedAt: startedAt ?? .now,
-                captureDuration: max(audioResult.duration, lastFrameTimestamp),
-                frameCount: frameSamples.count,
-                fieldOfViewLimited: true,
-                anchorHeadingDegrees: captureHeadingDegrees(from: lastCameraTransform),
-                previewImageFileName: previewImageFileName,
-                worldMapFileName: worldMapFileName,
-                reconstructionState: .captured,
-                pointSamples: pointSamples,
-                frameSamples: frameSamples
-            )
-
-            let manifestURL = bundleURL.appendingPathComponent("manifest.json")
-            do {
-                let data = try JSONEncoder().encode(manifest)
-                try data.write(to: manifestURL, options: .atomic)
-                let draft = CapturedMemoryDraft(
-                    photoData: previewImageData,
-                    audioTempURL: audioResult.primaryURL,
-                    analysisAudioTempURL: audioResult.analysisURL ?? audioResult.primaryURL,
-                    spatialScanPayload: SpatialScanCapturePayload(bundleURL: bundleURL, manifest: manifest),
-                    capturedAt: manifest.capturedAt,
-                    audioDuration: audioResult.duration,
-                    isSpatialAudio: audioResult.isSpatialAudio,
-                    recoveryState: .none,
-                    placeLabel: nil,
-                    photoCaption: nil,
-                    photoCaptionSource: nil,
-                    photoCaptionStyle: nil,
-                    sensorSnapshot: nil,
-                    minimumDecibels: nil,
-                    maximumDecibels: nil
+            Task { @MainActor [weak self] in
+                await self?.finalizeOptimizedCapture(
+                    audioResult: audioResult,
+                    bundleURL: bundleURL,
+                    previewImageData: previewImageData
                 )
-                resolveCapture(.success(draft))
-            } catch {
-                try? FileManager.default.removeItem(at: bundleURL)
-                resolveCapture(.failure(error))
             }
         case .failure(let error):
+            try? FileManager.default.removeItem(at: bundleURL)
+            resolveCapture(.failure(error))
+        }
+    }
+
+    private func finalizeOptimizedCapture(
+        audioResult: AmbientAudioCaptureResult,
+        bundleURL: URL,
+        previewImageData: Data
+    ) async {
+        guard !captureResolved else { return }
+
+        isOptimizingScan = true
+        optimizationProgress = 0.12
+        optimizationStatusText = "点群を整理しています"
+        qualityStatusText = "3D最適化中"
+        guidanceText = "最適化済みの3Dデータを生成しています。完了するまでそのままお待ちください。"
+        motionHintText = "処理中"
+
+        let capturedPointSamples = pointSamples
+        let capturedFrameSamples = frameSamples
+        let capturedAt = startedAt ?? .now
+        let capturedDuration = max(audioResult.duration, lastFrameTimestamp)
+        let capturedHeading = captureHeadingDegrees(from: lastCameraTransform)
+        let capturedWorldMapFileName = worldMapFileName
+        let capturedPreviewFileName = previewImageFileName
+
+        do {
+            let optimizationResult = try await Task.detached(priority: .userInitiated) {
+                try SpatialScanPointCloudOptimizer.optimize(
+                    pointSamples: capturedPointSamples,
+                    bundleURL: bundleURL
+                )
+            }.value
+
+            optimizationProgress = 0.68
+            optimizationStatusText = "3Dプレビュー用モデルを構築しています"
+
+            let manifest = SpatialScanManifest(
+                capturedAt: capturedAt,
+                captureDuration: capturedDuration,
+                frameCount: capturedFrameSamples.count,
+                fieldOfViewLimited: true,
+                anchorHeadingDegrees: capturedHeading,
+                previewImageFileName: capturedPreviewFileName,
+                worldMapFileName: capturedWorldMapFileName,
+                reconstructionState: .captured,
+                optimizedPointCloudFileName: optimizationResult.relativePath,
+                optimizedPointCloudPointCount: optimizationResult.pointCount,
+                pointSamples: [],
+                frameSamples: capturedFrameSamples
+            )
+            let preparedManifest = try SpatialScanReconstructionPipeline.prepare(manifest: manifest, in: bundleURL)
+            guard preparedManifest.reconstructionState == .ready else {
+                throw SpatialScanCaptureFinalizationError.optimizedAssetUnavailable
+            }
+
+            optimizationProgress = 0.9
+            optimizationStatusText = "最適化済みデータを保存しています"
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(preparedManifest)
+            try data.write(to: bundleURL.appendingPathComponent("manifest.json"), options: .atomic)
+
+            optimizationProgress = 1
+            optimizationStatusText = "3Dスキャンの最適化が完了しました"
+
+            let draft = CapturedMemoryDraft(
+                photoData: previewImageData,
+                audioTempURL: audioResult.primaryURL,
+                analysisAudioTempURL: audioResult.analysisURL ?? audioResult.primaryURL,
+                spatialScanPayload: SpatialScanCapturePayload(bundleURL: bundleURL, manifest: preparedManifest),
+                capturedAt: preparedManifest.capturedAt,
+                audioDuration: audioResult.duration,
+                isSpatialAudio: audioResult.isSpatialAudio,
+                recoveryState: .none,
+                placeLabel: nil,
+                photoCaption: nil,
+                photoCaptionSource: nil,
+                photoCaptionStyle: nil,
+                sensorSnapshot: nil,
+                minimumDecibels: nil,
+                maximumDecibels: nil
+            )
+            resolveCapture(.success(draft))
+        } catch {
             try? FileManager.default.removeItem(at: bundleURL)
             resolveCapture(.failure(error))
         }
@@ -396,6 +470,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         motionHintText = "端末を胸の前で構え、足を止めてください。"
         isHighQualityReady = false
         isImprovingAfterReady = false
+        isOptimizingScan = false
+        optimizationProgress = 0
+        optimizationStatusText = "3Dデータを最適化しています"
         sampledFrameCount = 0
         frameSamples = []
         pointSamples = []
@@ -431,6 +508,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         guidanceText = "足を止めたまま、その場で360度の輪郭を集めます。"
         isHighQualityReady = false
         isImprovingAfterReady = false
+        isOptimizingScan = false
+        optimizationProgress = 0
+        optimizationStatusText = "3Dデータを最適化しています"
         if audioSession.isRunning {
             audioSession.stopRunning()
         }
@@ -908,13 +988,21 @@ struct SpatialScanCaptureView: View {
             LinearGradient(colors: [.black.opacity(0.6), .clear, .black.opacity(0.72)], startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                topBar
-                Spacer()
-                bottomPanel
+            if model.isOptimizingScan {
+                SpatialScanOptimizationStage(
+                    progress: model.optimizationProgress,
+                    statusText: model.optimizationStatusText
+                )
+                .transition(.opacity)
+            } else {
+                VStack(spacing: 0) {
+                    topBar
+                    Spacer()
+                    bottomPanel
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 18)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 18)
         }
         .task {
             guard !hasStarted else { return }
@@ -945,7 +1033,7 @@ struct SpatialScanCaptureView: View {
         } message: {
             Text(errorMessage ?? "")
         }
-        .interactiveDismissDisabled(model.isScanning)
+        .interactiveDismissDisabled(model.isScanning || model.isOptimizingScan)
         .onDisappear {
             if model.isScanning {
                 model.cancelCapture()
@@ -1144,6 +1232,55 @@ struct SpatialScanCaptureView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct SpatialScanOptimizationStage: View {
+    let progress: Double
+    let statusText: String
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            ZStack {
+                Circle()
+                    .stroke(.white.opacity(0.16), lineWidth: 13)
+                    .frame(width: 132, height: 132)
+                Circle()
+                    .trim(from: 0, to: min(max(progress, 0), 1))
+                    .stroke(.white, style: StrokeStyle(lineWidth: 13, lineCap: .round))
+                    .frame(width: 132, height: 132)
+                    .rotationEffect(.degrees(-90))
+                Image(systemName: "cube.transparent")
+                    .font(.system(size: 46, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+
+            VStack(spacing: 10) {
+                Text("3Dを最適化中")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.white)
+                Text(statusText)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.86))
+                Text("点群を軽量な3Dプレビュー用データへ変換しています。完了後に記録画面へ進みます。")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(maxWidth: 310)
+            }
+
+            ProgressView(value: min(max(progress, 0), 1))
+                .tint(.white)
+                .frame(maxWidth: 260)
+
+            Spacer()
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+        .background(.black.opacity(0.42))
     }
 }
 

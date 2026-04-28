@@ -666,13 +666,7 @@ final class MemoryEntry: Identifiable {
     }
 
     var storedSpatialScan: StoredSpatialScan? {
-        guard let scanReference = atmosphereMetadata?.storedSpatialScan else {
-            return nil
-        }
-        return MediaStore.loadStoredSpatialScan(
-            bundleFolderName: scanReference.bundleFolderName,
-            manifestFileName: scanReference.manifestFileName
-        )
+        atmosphereMetadata?.storedSpatialScan
     }
 
     var spatialScanBundleURL: URL? {
