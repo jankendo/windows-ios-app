@@ -3,11 +3,11 @@ import UIKit
 import ARKit
 import ImageIO
 import SceneKit
-import CoreMotion
+import simd
 
 struct SpatialScanPlaybackView: View {
     private enum PlaybackImageSizing {
-        static let thumbnailMaxDimension: CGFloat = 420
+        static let thumbnailMaxDimension: CGFloat = 960
         static let maximumLoadedFrameCount = 16
         static let maximumPointPreviewCount = 60_000
     }
@@ -17,7 +17,6 @@ struct SpatialScanPlaybackView: View {
     @State private var cachedStoredSpatialScan: StoredSpatialScan?
     @State private var cachedManifest: SpatialScanManifest?
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var player = AudioPlayerController()
     @State private var waveformSamples: [CGFloat] = Array(repeating: 0.25, count: 40)
     @State private var frameItems: [SpatialScanPlaybackFrame] = []
@@ -150,7 +149,6 @@ struct SpatialScanPlaybackView: View {
                 frames: frameItems,
                 pointSamples: pointItems,
                 selectedFrameIndex: $selectedFrameIndex,
-                motionEnabled: !reduceMotion,
                 atmosphere: entry.atmosphereStyle
             )
             .frame(height: height)
@@ -172,8 +170,8 @@ struct SpatialScanPlaybackView: View {
                             atmosphere: entry.atmosphereStyle
                         )
                         ResonanceBadge(
-                            title: reduceMotion ? "固定視点" : "端末で360確認",
-                            systemImage: reduceMotion ? "viewfinder" : "gyroscope",
+                            title: "指で3D操作",
+                            systemImage: "hand.point.up.left.fill",
                             tint: .white,
                             atmosphere: entry.atmosphereStyle
                         )
@@ -187,8 +185,8 @@ struct SpatialScanPlaybackView: View {
                         }
                         if !pointItems.isEmpty {
                             ResonanceBadge(
-                                title: "\(pointItems.count) photo splats",
-                                systemImage: "sparkle.magnifyingglass",
+                                title: "\(pointItems.count) 写真3D",
+                                systemImage: "camera.aperture",
                                 tint: .white,
                                 atmosphere: entry.atmosphereStyle
                             )
@@ -282,7 +280,7 @@ struct SpatialScanPlaybackView: View {
                         .foregroundStyle(palette.secondaryText)
                 }
 
-                Text("撮影時の方位と上下角から frame を360度に配置し、端末の向きに合わせて見返せます。")
+                Text("実際の写真を点群の奥行きへ投影し、ドラッグとピンチでその場の内側から見返せます。")
                     .font(.caption)
                     .foregroundStyle(palette.secondaryText)
 
@@ -696,7 +694,6 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
     let frames: [SpatialScanPlaybackFrame]
     let pointSamples: [SpatialScanOptimizedPoint]
     @Binding var selectedFrameIndex: Int
-    let motionEnabled: Bool
     let atmosphere: AtmosphereStyle
 
     func makeCoordinator() -> Coordinator {
@@ -713,35 +710,99 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             frames: frames,
             pointSamples: pointSamples,
             selectedFrameIndex: selectedFrameIndex,
-            motionEnabled: motionEnabled,
             atmosphere: atmosphere
         )
     }
 
     static func dismantleUIView(_ uiView: SCNView, coordinator: Coordinator) {
-        coordinator.stopMotion()
+        coordinator.teardown()
     }
 
-    final class Coordinator {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         private let scene = SCNScene()
         private let modelRoot = SCNNode()
         private let cameraOrbit = SCNNode()
         private let cameraNode = SCNNode()
-        private let motionManager = CMMotionManager()
         private weak var previewView: SCNView?
         private var frameNodes: [Int: SCNNode] = [:]
         private var renderedSignature = ""
-        private var isMotionEnabled = false
-        private var referenceAttitude: CMAttitude?
         private var lastSelectedFrameIndex: Int?
-        private var lastMotionUpdateAt = Date.distantPast
-        private var lastMotionEuler = SCNVector3Zero
+        private var manualYaw: Float = 0
+        private var manualPitch: Float = 0
+        private var manualScale: Float = 1
+        private var lastPanTranslation = CGPoint.zero
+
+        private let minimumPreviewScale: Float = 0.55
+        private let maximumPreviewScale: Float = 2.6
+        private let maximumProjectedTextureFrameCount = 14
+        private let maximumProjectedTextureAnchorCount = 14_000
 
         private struct RenderPoint {
             let position: SCNVector3
             let color: SIMD4<Float>
             let normal: SCNVector3
             let radius: Float
+        }
+
+        private struct PointNormalization {
+            let minPoint: SCNVector3
+            let maxPoint: SCNVector3
+            let center: SCNVector3
+            let scale: Float
+
+            func contains(_ position: SCNVector3, margin: Float = 0) -> Bool {
+                position.x >= minPoint.x - margin
+                    && position.x <= maxPoint.x + margin
+                    && position.y >= minPoint.y - margin
+                    && position.y <= maxPoint.y + margin
+                    && position.z >= minPoint.z - margin
+                    && position.z <= maxPoint.z + margin
+            }
+
+            func renderPosition(for position: SCNVector3) -> SCNVector3 {
+                let normalizedPosition = position - center
+                return SCNVector3(
+                    normalizedPosition.x * scale,
+                    (normalizedPosition.y * scale) + 0.08,
+                    normalizedPosition.z * scale
+                )
+            }
+        }
+
+        private struct CameraCalibration {
+            let cameraTransform: simd_float4x4
+            let inverseCameraTransform: simd_float4x4
+            let fx: Float
+            let fy: Float
+            let cx: Float
+            let cy: Float
+            let imageWidth: Float
+            let imageHeight: Float
+        }
+
+        private struct ProjectionSample {
+            let pixel: SIMD2<Float>
+            let depth: Float
+        }
+
+        private struct DepthSample {
+            let depth: Float
+            let confidence: Float
+        }
+
+        private struct DepthCell {
+            var depthSum: Float = 0
+            var count: Int = 0
+
+            mutating func add(depth: Float) {
+                depthSum += depth
+                count += 1
+            }
+
+            var averageDepth: Float? {
+                guard count > 0 else { return nil }
+                return depthSum / Float(count)
+            }
         }
 
         func makeView() -> SCNView {
@@ -782,6 +843,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             view.preferredFramesPerSecond = 30
             view.antialiasingMode = .none
             view.allowsCameraControl = false
+            installGestures(on: view)
             previewView = view
             return view
         }
@@ -791,7 +853,6 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             frames: [SpatialScanPlaybackFrame],
             pointSamples: [SpatialScanOptimizedPoint],
             selectedFrameIndex: Int,
-            motionEnabled: Bool,
             atmosphere: AtmosphereStyle
         ) {
             let firstPoint = pointSamples.first
@@ -803,81 +864,77 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                 rebuildModel(frames: frames, pointSamples: pointSamples, atmosphere: atmosphere)
             }
             updateSelection(selectedFrameIndex: selectedFrameIndex, atmosphere: atmosphere)
-            setMotionEnabled(motionEnabled)
         }
 
-        func stopMotion() {
-            if motionManager.isDeviceMotionActive {
-                motionManager.stopDeviceMotionUpdates()
-            }
-            referenceAttitude = nil
-            isMotionEnabled = false
+        func teardown() {
+            previewView = nil
         }
 
-        private func setMotionEnabled(_ enabled: Bool) {
-            guard enabled != isMotionEnabled else { return }
-            isMotionEnabled = enabled
-            if enabled {
-                startMotion()
-            } else {
-                stopMotion()
-                SCNTransaction.begin()
-                SCNTransaction.animationDuration = 0.2
-                modelRoot.eulerAngles = SCNVector3Zero
-                cameraOrbit.eulerAngles = SCNVector3Zero
-                cameraNode.position = SCNVector3(0, 0.08, 0)
-                SCNTransaction.commit()
-                previewView?.setNeedsDisplay()
-            }
+        private func installGestures(on view: SCNView) {
+            let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+            panGesture.maximumNumberOfTouches = 1
+            panGesture.delegate = self
+            panGesture.cancelsTouchesInView = false
+            view.addGestureRecognizer(panGesture)
+
+            let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+            pinchGesture.delegate = self
+            pinchGesture.cancelsTouchesInView = false
+            view.addGestureRecognizer(pinchGesture)
+
+            let resetGesture = UITapGestureRecognizer(target: self, action: #selector(resetPreviewTransform))
+            resetGesture.numberOfTapsRequired = 2
+            resetGesture.cancelsTouchesInView = false
+            view.addGestureRecognizer(resetGesture)
         }
 
-        private func startMotion() {
-            guard motionManager.isDeviceMotionAvailable else { return }
-            referenceAttitude = nil
-            lastMotionUpdateAt = .distantPast
-            motionManager.deviceMotionUpdateInterval = 1.0 / 24.0
-            let handler: CMDeviceMotionHandler = { [weak self] motion, _ in
-                guard let self, let motion else { return }
-                self.apply(attitude: motion.attitude)
-            }
-
-            if let referenceFrame = ImmersiveDirectionSpace.preferredMotionReferenceFrame() {
-                motionManager.startDeviceMotionUpdates(using: referenceFrame, to: .main, withHandler: handler)
-            } else {
-                motionManager.startDeviceMotionUpdates(to: .main, withHandler: handler)
-            }
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
         }
 
-        private func apply(attitude: CMAttitude) {
-            if referenceAttitude == nil {
-                referenceAttitude = attitude.copy() as? CMAttitude
-            }
-            guard let referenceAttitude,
-                  let relativeAttitude = attitude.copy() as? CMAttitude else {
+        @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
+            let translation = gesture.translation(in: gesture.view)
+            if gesture.state == .began {
+                lastPanTranslation = translation
                 return
             }
-            relativeAttitude.multiply(byInverseOf: referenceAttitude)
 
-            let yaw = Float(relativeAttitude.yaw)
-            let pitch = Float(relativeAttitude.pitch)
-            let roll = Float(relativeAttitude.roll)
-            let clampedPitch = min(max(pitch, -0.95), 0.95)
-            let now = Date()
-            let nextEuler = SCNVector3(clampedPitch * 0.55, -yaw, roll * 0.04)
+            let deltaX = Float(translation.x - lastPanTranslation.x)
+            let deltaY = Float(translation.y - lastPanTranslation.y)
+            lastPanTranslation = translation
 
-            guard now.timeIntervalSince(lastMotionUpdateAt) >= (1.0 / 24.0)
-                || abs(nextEuler.x - lastMotionEuler.x) > 0.01
-                || abs(nextEuler.y - lastMotionEuler.y) > 0.01
-                || abs(nextEuler.z - lastMotionEuler.z) > 0.01 else {
-                return
+            manualYaw -= deltaX * 0.006
+            manualPitch = min(max(manualPitch - (deltaY * 0.005), -1.12), 1.12)
+            applyManualCamera(animated: false)
+
+            if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+                lastPanTranslation = .zero
             }
-            lastMotionUpdateAt = now
-            lastMotionEuler = nextEuler
+        }
 
+        @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            manualScale = min(max(manualScale * Float(gesture.scale), minimumPreviewScale), maximumPreviewScale)
+            gesture.scale = 1
+            applyManualCamera(animated: false)
+        }
+
+        @objc private func resetPreviewTransform() {
+            manualYaw = 0
+            manualPitch = 0
+            manualScale = 1
+            applyManualCamera(animated: true)
+        }
+
+        private func applyManualCamera(animated: Bool) {
             SCNTransaction.begin()
-            SCNTransaction.disableActions = true
-            modelRoot.eulerAngles = SCNVector3Zero
-            cameraOrbit.eulerAngles = SCNVector3(nextEuler.x, nextEuler.y, nextEuler.z)
+            SCNTransaction.animationDuration = animated ? 0.18 : 0
+            SCNTransaction.disableActions = !animated
+            cameraOrbit.eulerAngles = SCNVector3(manualPitch, manualYaw, 0)
+            modelRoot.scale = SCNVector3(manualScale, manualScale, manualScale)
+            cameraNode.position = SCNVector3(0, 0.08, 0)
             SCNTransaction.commit()
             previewView?.setNeedsDisplay()
         }
@@ -894,7 +951,19 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             let accent = accentColor(for: atmosphere)
 
             if !pointSamples.isEmpty {
-                addSurfelCloud(pointSamples: pointSamples, accent: accent)
+                if let normalization = pointNormalization(from: pointSamples) {
+                    addProjectedPhotoMeshes(
+                        frames: frames,
+                        pointSamples: pointSamples,
+                        normalization: normalization
+                    )
+                    addSurfelCloud(
+                        pointSamples: pointSamples,
+                        accent: accent,
+                        normalization: normalization
+                    )
+                    applyManualCamera(animated: false)
+                }
                 return
             }
 
@@ -916,6 +985,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                 modelRoot.addChildNode(node)
                 frameNodes[frame.index] = node
             }
+            applyManualCamera(animated: false)
         }
 
         private func addFloor(accent: UIColor) {
@@ -943,8 +1013,12 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             modelRoot.addChildNode(node)
         }
 
-        private func addSurfelCloud(pointSamples: [SpatialScanOptimizedPoint], accent: UIColor) {
-            let renderPoints = normalizedPointPositions(from: pointSamples)
+        private func addSurfelCloud(
+            pointSamples: [SpatialScanOptimizedPoint],
+            accent: UIColor,
+            normalization: PointNormalization
+        ) {
+            let renderPoints = normalizedPointPositions(from: pointSamples, normalization: normalization)
             guard !renderPoints.isEmpty else { return }
 
             var vertices: [SCNVector3] = []
@@ -1022,6 +1096,180 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             let node = SCNNode(geometry: geometry)
             node.name = "optimized-surfel-cloud"
             modelRoot.addChildNode(node)
+        }
+
+        private func addProjectedPhotoMeshes(
+            frames: [SpatialScanPlaybackFrame],
+            pointSamples: [SpatialScanOptimizedPoint],
+            normalization: PointNormalization
+        ) {
+            guard !frames.isEmpty, !pointSamples.isEmpty else { return }
+
+            for frame in representativeTextureFrames(from: frames) {
+                guard let node = makeProjectedPhotoMesh(
+                    frame: frame,
+                    pointSamples: pointSamples,
+                    normalization: normalization
+                ) else {
+                    continue
+                }
+                modelRoot.addChildNode(node)
+            }
+        }
+
+        private func representativeTextureFrames(from frames: [SpatialScanPlaybackFrame]) -> [SpatialScanPlaybackFrame] {
+            guard frames.count > maximumProjectedTextureFrameCount else { return frames }
+
+            let denominator = max(maximumProjectedTextureFrameCount - 1, 1)
+            let indices = Set(
+                (0..<maximumProjectedTextureFrameCount).map { offset in
+                    Int(round((Double(offset) / Double(denominator)) * Double(frames.count - 1)))
+                }
+            )
+            return indices.sorted().compactMap { index in
+                guard frames.indices.contains(index) else { return nil }
+                return frames[index]
+            }
+        }
+
+        private func makeProjectedPhotoMesh(
+            frame: SpatialScanPlaybackFrame,
+            pointSamples: [SpatialScanOptimizedPoint],
+            normalization: PointNormalization
+        ) -> SCNNode? {
+            guard let calibration = cameraCalibration(for: frame.sample) else { return nil }
+
+            let imageAspect = max(calibration.imageWidth / max(calibration.imageHeight, 1), 0.25)
+            let targetCellCount: Float = 1_080
+            let gridColumns = min(max(Int(sqrt(targetCellCount * imageAspect)), 28), 48)
+            let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 18), 38)
+            let cellWidth = calibration.imageWidth / Float(gridColumns)
+            let cellHeight = calibration.imageHeight / Float(gridRows)
+            var cells = [DepthCell](repeating: DepthCell(), count: gridColumns * gridRows)
+
+            let anchorStride = max(pointSamples.count / maximumProjectedTextureAnchorCount, 1)
+            for index in stride(from: 0, to: pointSamples.count, by: anchorStride) {
+                let sample = pointSamples[index]
+                let rawPosition = SCNVector3(sample.x, sample.y, sample.z)
+                guard normalization.contains(rawPosition),
+                      let projection = project(
+                        worldPosition: SIMD3<Float>(sample.x, sample.y, sample.z),
+                        calibration: calibration
+                      ),
+                      projection.depth >= 0.14,
+                      projection.depth <= 12.0 else {
+                    continue
+                }
+
+                let column = min(max(Int(projection.pixel.x / cellWidth), 0), gridColumns - 1)
+                let row = min(max(Int(projection.pixel.y / cellHeight), 0), gridRows - 1)
+                cells[(row * gridColumns) + column].add(depth: projection.depth)
+            }
+
+            var vertices: [SCNVector3] = []
+            var textureCoordinates: [CGPoint] = []
+            var indices: [Int32] = []
+            vertices.reserveCapacity(gridColumns * gridRows * 4)
+            textureCoordinates.reserveCapacity(gridColumns * gridRows * 4)
+            indices.reserveCapacity(gridColumns * gridRows * 6)
+
+            var confidenceSum: Float = 0
+            var texturedCellCount = 0
+
+            for row in 0..<gridRows {
+                for column in 0..<gridColumns {
+                    guard let depthSample = resolvedDepth(
+                        forColumn: column,
+                        row: row,
+                        cells: cells,
+                        columns: gridColumns,
+                        rows: gridRows
+                    ) else {
+                        continue
+                    }
+
+                    let minX = Float(column) * cellWidth
+                    let maxX = min(Float(column + 1) * cellWidth, calibration.imageWidth - 1)
+                    let minY = Float(row) * cellHeight
+                    let maxY = min(Float(row + 1) * cellHeight, calibration.imageHeight - 1)
+                    let pixels = [
+                        SIMD2<Float>(minX, minY),
+                        SIMD2<Float>(maxX, minY),
+                        SIMD2<Float>(maxX, maxY),
+                        SIMD2<Float>(minX, maxY)
+                    ]
+
+                    var cellVertices: [SCNVector3] = []
+                    cellVertices.reserveCapacity(4)
+                    var cellIsUsable = true
+                    for pixel in pixels {
+                        guard let worldPosition = unproject(
+                            pixel: pixel,
+                            depth: depthSample.depth,
+                            calibration: calibration
+                        ) else {
+                            cellIsUsable = false
+                            break
+                        }
+
+                        let rawPosition = SCNVector3(worldPosition.x, worldPosition.y, worldPosition.z)
+                        guard normalization.contains(rawPosition, margin: 0.22) else {
+                            cellIsUsable = false
+                            break
+                        }
+                        cellVertices.append(normalization.renderPosition(for: rawPosition))
+                    }
+                    guard cellIsUsable, cellVertices.count == 4 else { continue }
+
+                    let baseIndex = Int32(vertices.count)
+                    vertices.append(contentsOf: cellVertices)
+                    textureCoordinates.append(
+                        contentsOf: pixels.map { pixel in
+                            CGPoint(
+                                x: CGFloat(min(max(pixel.x / calibration.imageWidth, 0), 1)),
+                                y: CGFloat(1 - min(max(pixel.y / calibration.imageHeight, 0), 1))
+                            )
+                        }
+                    )
+                    indices.append(baseIndex)
+                    indices.append(baseIndex + 1)
+                    indices.append(baseIndex + 2)
+                    indices.append(baseIndex)
+                    indices.append(baseIndex + 2)
+                    indices.append(baseIndex + 3)
+                    confidenceSum += depthSample.confidence
+                    texturedCellCount += 1
+                }
+            }
+
+            guard texturedCellCount >= 12, indices.count >= 36 else { return nil }
+
+            let vertexSource = SCNGeometrySource(vertices: vertices)
+            let textureSource = SCNGeometrySource(textureCoordinates: textureCoordinates)
+            let indexData = indices.withUnsafeBytes { Data($0) }
+            let element = SCNGeometryElement(
+                data: indexData,
+                primitiveType: .triangles,
+                primitiveCount: indices.count / 3,
+                bytesPerIndex: MemoryLayout<Int32>.size
+            )
+            let geometry = SCNGeometry(sources: [vertexSource, textureSource], elements: [element])
+
+            let averageConfidence = confidenceSum / Float(max(texturedCellCount, 1))
+            let material = SCNMaterial()
+            material.lightingModel = .constant
+            material.diffuse.contents = frame.thumbnail
+            material.emission.contents = UIColor.black
+            material.isDoubleSided = true
+            material.blendMode = .alpha
+            material.transparency = CGFloat(min(max(0.86 + (averageConfidence * 0.12), 0.84), 0.98))
+            material.writesToDepthBuffer = true
+            material.readsFromDepthBuffer = true
+            geometry.materials = [material]
+
+            let node = SCNNode(geometry: geometry)
+            node.name = "projected-photo-texture-\(frame.index)"
+            return node
         }
 
         private func makeFrameNode(
@@ -1135,11 +1383,11 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             }
         }
 
-        private func normalizedPointPositions(from samples: [SpatialScanOptimizedPoint]) -> [RenderPoint] {
+        private func pointNormalization(from samples: [SpatialScanOptimizedPoint]) -> PointNormalization? {
             let rawPositions = samples.map { sample in
                 SCNVector3(sample.x, sample.y, sample.z)
             }
-            guard !rawPositions.isEmpty else { return [] }
+            guard !rawPositions.isEmpty else { return nil }
 
             let sortedX = rawPositions.map(\.x).sorted()
             let sortedY = rawPositions.map(\.y).sorted()
@@ -1151,27 +1399,23 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             let center = (minPoint + maxPoint) / 2
             let extent = max(maxPoint.x - minPoint.x, maxPoint.y - minPoint.y, maxPoint.z - minPoint.z, 0.3)
             let scale = min(2.9 / extent, 4.2)
+            return PointNormalization(minPoint: minPoint, maxPoint: maxPoint, center: center, scale: scale)
+        }
 
+        private func normalizedPointPositions(
+            from samples: [SpatialScanOptimizedPoint],
+            normalization: PointNormalization
+        ) -> [RenderPoint] {
             var renderPoints: [RenderPoint] = []
             renderPoints.reserveCapacity(samples.count)
 
             for sample in samples {
                 let position = SCNVector3(sample.x, sample.y, sample.z)
-                guard position.x >= minPoint.x,
-                      position.x <= maxPoint.x,
-                      position.y >= minPoint.y,
-                      position.y <= maxPoint.y,
-                      position.z >= minPoint.z,
-                      position.z <= maxPoint.z else {
+                guard normalization.contains(position) else {
                     continue
                 }
 
-                let normalizedPosition = position - center
-                let renderedPosition = SCNVector3(
-                    normalizedPosition.x * scale,
-                    (normalizedPosition.y * scale) + 0.08,
-                    normalizedPosition.z * scale
-                )
+                let renderedPosition = normalization.renderPosition(for: position)
                 renderPoints.append(
                     RenderPoint(
                         position: renderedPosition,
@@ -1182,12 +1426,134 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                             1
                         ),
                         normal: normalized(SCNVector3(sample.normalX, sample.normalY, sample.normalZ)),
-                        radius: min(max(sample.radius * scale, 0.008), 0.11)
+                        radius: min(max(sample.radius * normalization.scale, 0.008), 0.11)
                     )
                 )
             }
 
             return renderPoints
+        }
+
+        private func cameraCalibration(for sample: SpatialScanFrameSample) -> CameraCalibration? {
+            guard let cameraTransform = matrix4x4(from: sample.cameraTransform),
+                  let intrinsics = cameraIntrinsics(from: sample.cameraIntrinsics) else {
+                return nil
+            }
+
+            return CameraCalibration(
+                cameraTransform: cameraTransform,
+                inverseCameraTransform: cameraTransform.inverse,
+                fx: intrinsics.fx,
+                fy: intrinsics.fy,
+                cx: intrinsics.cx,
+                cy: intrinsics.cy,
+                imageWidth: Float(max(sample.imageWidth, 1)),
+                imageHeight: Float(max(sample.imageHeight, 1))
+            )
+        }
+
+        private func project(
+            worldPosition: SIMD3<Float>,
+            calibration: CameraCalibration
+        ) -> ProjectionSample? {
+            let cameraPoint = calibration.inverseCameraTransform * SIMD4<Float>(
+                worldPosition.x,
+                worldPosition.y,
+                worldPosition.z,
+                1
+            )
+            let depth = -cameraPoint.z
+            guard depth > 0.05 else { return nil }
+
+            let projectedX = (calibration.fx * (cameraPoint.x / depth)) + calibration.cx
+            let projectedY = (calibration.fy * (-cameraPoint.y / depth)) + calibration.cy
+            guard projectedX.isFinite, projectedY.isFinite else { return nil }
+            guard projectedX >= 0, projectedX < calibration.imageWidth,
+                  projectedY >= 0, projectedY < calibration.imageHeight else {
+                return nil
+            }
+
+            return ProjectionSample(pixel: SIMD2<Float>(projectedX, projectedY), depth: depth)
+        }
+
+        private func unproject(
+            pixel: SIMD2<Float>,
+            depth: Float,
+            calibration: CameraCalibration
+        ) -> SIMD3<Float>? {
+            guard depth.isFinite, depth > 0 else { return nil }
+            let cameraX = ((pixel.x - calibration.cx) / max(calibration.fx, 0.0001)) * depth
+            let cameraY = -((pixel.y - calibration.cy) / max(calibration.fy, 0.0001)) * depth
+            let cameraPoint = SIMD4<Float>(cameraX, cameraY, -depth, 1)
+            let worldPoint = calibration.cameraTransform * cameraPoint
+            guard worldPoint.x.isFinite, worldPoint.y.isFinite, worldPoint.z.isFinite else {
+                return nil
+            }
+            return SIMD3<Float>(worldPoint.x, worldPoint.y, worldPoint.z)
+        }
+
+        private func resolvedDepth(
+            forColumn column: Int,
+            row: Int,
+            cells: [DepthCell],
+            columns: Int,
+            rows: Int
+        ) -> DepthSample? {
+            let directIndex = (row * columns) + column
+            if cells.indices.contains(directIndex),
+               let directDepth = cells[directIndex].averageDepth {
+                return DepthSample(depth: directDepth, confidence: 1)
+            }
+
+            for radius in 1...2 {
+                var weightedDepth: Float = 0
+                var weightSum: Float = 0
+
+                for yOffset in -radius...radius {
+                    for xOffset in -radius...radius {
+                        let neighborColumn = column + xOffset
+                        let neighborRow = row + yOffset
+                        guard neighborColumn >= 0,
+                              neighborColumn < columns,
+                              neighborRow >= 0,
+                              neighborRow < rows else {
+                            continue
+                        }
+
+                        let neighborIndex = (neighborRow * columns) + neighborColumn
+                        guard cells.indices.contains(neighborIndex),
+                              let neighborDepth = cells[neighborIndex].averageDepth else {
+                            continue
+                        }
+
+                        let distance = max(Float(abs(xOffset) + abs(yOffset)), 1)
+                        let weight = 1 / distance
+                        weightedDepth += neighborDepth * weight
+                        weightSum += weight
+                    }
+                }
+
+                if weightSum > 0 {
+                    return DepthSample(depth: weightedDepth / weightSum, confidence: radius == 1 ? 0.72 : 0.48)
+                }
+            }
+
+            return nil
+        }
+
+        private func matrix4x4(from values: [Float]) -> simd_float4x4? {
+            guard values.count >= 16 else { return nil }
+            return simd_float4x4(
+                SIMD4<Float>(values[0], values[1], values[2], values[3]),
+                SIMD4<Float>(values[4], values[5], values[6], values[7]),
+                SIMD4<Float>(values[8], values[9], values[10], values[11]),
+                SIMD4<Float>(values[12], values[13], values[14], values[15])
+            )
+        }
+
+        private func cameraIntrinsics(from values: [Float]) -> (fx: Float, fy: Float, cx: Float, cy: Float)? {
+            guard values.count >= 9 else { return nil }
+            return (fx: values[0], fy: values[4], cx: values[6], cy: values[7])
         }
 
         private func accentColor(for atmosphere: AtmosphereStyle) -> UIColor {
