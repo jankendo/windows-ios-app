@@ -16,7 +16,7 @@ private enum SpatialScanCaptureFinalizationError: LocalizedError {
     }
 }
 
-private struct SpatialScanLivePreviewPoint: Identifiable, Hashable {
+struct SpatialScanLivePreviewPoint: Identifiable, Hashable {
     let id: Int
     let x: Float
     let y: Float
@@ -1770,8 +1770,8 @@ private struct SpatialScanLivePointCloudView: UIViewRepresentable {
                 dataOffset: 0,
                 dataStride: MemoryLayout<SIMD4<Float>>.stride
             )
-            var indices = vertices.indices.map(Int32.init)
-            let indexData = indices.withUnsafeMutableBytes { Data($0) }
+            let indices: [Int32] = vertices.indices.map { Int32($0) }
+            let indexData = indices.withUnsafeBytes { Data($0) }
             let element = SCNGeometryElement(
                 data: indexData,
                 primitiveType: .point,
