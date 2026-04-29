@@ -7,9 +7,9 @@ import simd
 
 struct SpatialScanPlaybackView: View {
     private enum PlaybackImageSizing {
-        static let thumbnailMaxDimension: CGFloat = 1_280
-        static let maximumLoadedFrameCount = 24
-        static let maximumPointPreviewCount = 90_000
+        static let thumbnailMaxDimension: CGFloat = 1_536
+        static let maximumLoadedFrameCount = 40
+        static let maximumPointPreviewCount = 180_000
     }
 
     let entry: MemoryEntry
@@ -780,8 +780,8 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
         private let minimumPreviewScale: Float = 0.55
         private let maximumPreviewScale: Float = 2.6
-        private let maximumProjectedTextureFrameCount = 20
-        private let maximumProjectedTextureAnchorCount = 22_000
+        private let maximumProjectedTextureFrameCount = 32
+        private let maximumProjectedTextureAnchorCount = 52_000
 
         private struct RenderPoint {
             let position: SCNVector3
@@ -1186,9 +1186,9 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             guard let calibration = cameraCalibration(for: frame.sample) else { return nil }
 
             let imageAspect = max(calibration.imageWidth / max(calibration.imageHeight, 1), 0.25)
-            let targetCellCount: Float = 1_800
-            let gridColumns = min(max(Int(sqrt(targetCellCount * imageAspect)), 32), 64)
-            let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 20), 48)
+            let targetCellCount: Float = 3_600
+            let gridColumns = min(max(Int(sqrt(targetCellCount * imageAspect)), 44), 96)
+            let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 30), 72)
             let cellWidth = calibration.imageWidth / Float(gridColumns)
             let cellHeight = calibration.imageHeight / Float(gridRows)
             var cells = [DepthCell](repeating: DepthCell(), count: gridColumns * gridRows)

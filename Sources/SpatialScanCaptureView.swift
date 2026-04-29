@@ -19,31 +19,29 @@ private enum SpatialScanCaptureFinalizationError: LocalizedError {
 @MainActor
 final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency ARSessionDelegate {
     private enum CaptureConstants {
-        static let frameSamplingInterval: TimeInterval = 0.14
-        static let frameImageSamplingInterval: TimeInterval = 0.42
-        static let coverageFrameImageSamplingInterval: TimeInterval = 0.2
-        static let minimumTranslationMeters: Float = 0.012
-        static let minimumRotationRadians: Float = 0.03
-        static let minimumQualityEvaluationDuration: TimeInterval = 10
-        static let preferredFrameCount = 72
-        static let maximumFrameSampleCount = 360
+        static let frameSamplingInterval: TimeInterval = 0.08
+        static let frameImageSamplingInterval: TimeInterval = 0.22
+        static let coverageFrameImageSamplingInterval: TimeInterval = 0.1
+        static let minimumTranslationMeters: Float = 0.006
+        static let minimumRotationRadians: Float = 0.018
+        static let minimumQualityEvaluationDuration: TimeInterval = 14
+        static let preferredFrameCount = 120
         static let headingCoverageBucketCount = 12
         static let verticalCoverageBandCount = 3
-        static let preferredHeadingSpanDegrees = 345.0
-        static let preferredVerticalSpanDegrees = 82.0
-        static let highQualityScore = 0.94
-        static let minimumHighQualityFrameCount = 48
-        static let minimumHighQualityHeadingSpanDegrees = 318.0
-        static let minimumHighQualityVerticalSpanDegrees = 58.0
+        static let preferredHeadingSpanDegrees = 352.0
+        static let preferredVerticalSpanDegrees = 90.0
+        static let highQualityScore = 0.96
+        static let minimumHighQualityFrameCount = 72
+        static let minimumHighQualityHeadingSpanDegrees = 330.0
+        static let minimumHighQualityVerticalSpanDegrees = 66.0
         static let idealStationaryDriftMeters = 0.85
         static let maximumStationaryDriftMeters = 1.6
-        static let maximumPointSampleCount = 220_000
-        static let maximumPointSamplesPerFrame = 1_300
-        static let pointIdentifierResampleInterval = 5
-        static let preferredPointSampleCount = 10_000
-        static let minimumHighQualityPointSampleCount = 4_500
-        static let minimumFeaturePointDistanceMeters: Float = 0.18
-        static let maximumFeaturePointDistanceMeters: Float = 8.5
+        static let maximumPointSamplesPerFrame = 4_800
+        static let pointIdentifierResampleInterval = 2
+        static let preferredPointSampleCount = 60_000
+        static let minimumHighQualityPointSampleCount = 16_000
+        static let minimumFeaturePointDistanceMeters: Float = 0.08
+        static let maximumFeaturePointDistanceMeters: Float = 12.0
         static let sessionBindingPollCount = 20
         static let sessionBindingPollNanoseconds: UInt64 = 50_000_000
         static let sessionReadyTimeout: TimeInterval = 2.5
@@ -683,7 +681,6 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     }
 
     private func shouldPersistFrameSample(from frame: ARFrame, elapsed: TimeInterval) -> Bool {
-        guard frameSamples.count < CaptureConstants.maximumFrameSampleCount else { return false }
         if previewImageData == nil || frameSamples.isEmpty {
             return true
         }
@@ -714,8 +711,6 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
     @discardableResult
     private func appendFrameSample(from frame: ARFrame, elapsed: TimeInterval, bundleURL: URL) -> Int? {
-        guard frameSamples.count < CaptureConstants.maximumFrameSampleCount else { return nil }
-
         let framesFolderURL = bundleURL.appendingPathComponent("frames", isDirectory: true)
         try? FileManager.default.createDirectory(at: framesFolderURL, withIntermediateDirectories: true)
 
@@ -760,8 +755,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     }
 
     private func appendPointSamples(from frame: ARFrame, sourceFrameIndex: Int?, observationIndex: Int) {
-        guard pointSamples.count < CaptureConstants.maximumPointSampleCount,
-              let pointCloud = frame.rawFeaturePoints else {
+        guard let pointCloud = frame.rawFeaturePoints else {
             return
         }
 
@@ -774,8 +768,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         var addedCount = 0
 
         for index in stride(from: 0, to: points.count, by: sampleStride) {
-            guard pointSamples.count < CaptureConstants.maximumPointSampleCount,
-                  addedCount < CaptureConstants.maximumPointSamplesPerFrame else {
+            guard addedCount < CaptureConstants.maximumPointSamplesPerFrame else {
                 break
             }
 
@@ -1204,7 +1197,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     private func jpegData(from pixelBuffer: CVPixelBuffer) -> Data? {
         let image = CIImage(cvPixelBuffer: pixelBuffer)
         guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return nil }
-        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.94)
+        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 1.0)
     }
 
     private func previewJPEGData(from pixelBuffer: CVPixelBuffer) -> Data? {
@@ -1214,7 +1207,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             cgImage: cgImage,
             scale: 1,
             orientation: previewImageOrientation
-        ).jpegData(compressionQuality: 0.92)
+        ).jpegData(compressionQuality: 0.96)
     }
 
     private var previewImageOrientation: UIImage.Orientation {
