@@ -165,10 +165,10 @@ enum SpatialScanOptimizedPointCloud {
 }
 
 enum SpatialScanPointCloudOptimizer {
-    private static let maximumOptimizedPointCount = 640_000
-    private static let maximumPhotoSplatPointCount = 920_000
-    private static let minimumVoxelSize: Float = 0.0018
-    private static let outlierTrimRatio = 0.004
+    private static let maximumOptimizedPointCount = 1_200_000
+    private static let maximumPhotoSplatPointCount = 1_800_000
+    private static let minimumVoxelSize: Float = 0.0012
+    private static let outlierTrimRatio = 0.002
 
     static func optimize(
         pointSamples: [SpatialScanPointSample],
@@ -324,7 +324,7 @@ enum SpatialScanPointCloudOptimizer {
         let volume = max(Double(extent.x * extent.y * extent.z), 0.001)
         let pointVolume = volume / Double(max(targetCount, 1))
         let edge = Float(pow(pointVolume, 1.0 / 3.0))
-        return max(edge * 0.42, minimumVoxelSize)
+        return max(edge * 0.34, minimumVoxelSize)
     }
 
     private static func voxelDownsample(_ points: [SourcePoint], voxelSize: Float) -> [SourcePoint] {
@@ -368,7 +368,7 @@ enum SpatialScanPointCloudOptimizer {
     ) -> [SourcePoint] {
         guard !rawPoints.isEmpty, !samplers.isEmpty else { return [] }
 
-        let perFrameBudget = max(maximumPhotoSplatPointCount / max(samplers.count, 1), 2_400)
+        let perFrameBudget = max(maximumPhotoSplatPointCount / max(samplers.count, 1), 4_200)
         var photoPoints: [SourcePoint] = []
         photoPoints.reserveCapacity(min(maximumPhotoSplatPointCount, samplers.count * perFrameBudget))
 
@@ -454,9 +454,9 @@ enum SpatialScanPointCloudOptimizer {
         if let sourceFrameIndex = point.sourceFrameIndex {
             candidateSamplers = samplers
                 .sorted { abs($0.frameIndex - sourceFrameIndex) < abs($1.frameIndex - sourceFrameIndex) }
-                .prefix(28)
+                .prefix(40)
         } else {
-            candidateSamplers = samplers.prefix(28)
+            candidateSamplers = samplers.prefix(40)
         }
 
         for sampler in candidateSamplers {
@@ -498,9 +498,9 @@ private func normalized(_ vector: SIMD3<Float>, fallback: SIMD3<Float>) -> SIMD3
 }
 
 private final class FrameColorSampler {
-    private static let maximumLoadedFrameCount = 160
-    private static let maximumColorImageDimension = 1_536
-    private static let maximumProjectedAnchorCount = 64_000
+    private static let maximumLoadedFrameCount = 240
+    private static let maximumColorImageDimension = 1_792
+    private static let maximumProjectedAnchorCount = 110_000
 
     let frameIndex: Int
     private let cameraTransform: simd_float4x4
@@ -560,9 +560,9 @@ private final class FrameColorSampler {
         guard maximumCount > 0, !anchorPoints.isEmpty else { return [] }
 
         let imageAspect = Float(width) / Float(max(height, 1))
-        let targetCellCount = min(max(maximumCount, 1_400), 7_200)
-        let gridColumns = min(max(Int(sqrt(Float(targetCellCount) * imageAspect)), 44), 124)
-        let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 32), 92)
+        let targetCellCount = min(max(maximumCount, 2_400), 12_000)
+        let gridColumns = min(max(Int(sqrt(Float(targetCellCount) * imageAspect)), 56), 164)
+        let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 40), 122)
         let cellWidth = Float(width) / Float(gridColumns)
         let cellHeight = Float(height) / Float(gridRows)
         var cells = [DepthCell](repeating: DepthCell(), count: gridColumns * gridRows)

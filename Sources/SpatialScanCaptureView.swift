@@ -16,32 +16,41 @@ private enum SpatialScanCaptureFinalizationError: LocalizedError {
     }
 }
 
+private struct SpatialScanLivePreviewPoint: Identifiable, Hashable {
+    let id: Int
+    let x: Float
+    let y: Float
+    let z: Float
+}
+
 @MainActor
 final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency ARSessionDelegate {
     private enum CaptureConstants {
-        static let frameSamplingInterval: TimeInterval = 0.08
-        static let frameImageSamplingInterval: TimeInterval = 0.22
-        static let coverageFrameImageSamplingInterval: TimeInterval = 0.1
-        static let minimumTranslationMeters: Float = 0.006
-        static let minimumRotationRadians: Float = 0.018
-        static let minimumQualityEvaluationDuration: TimeInterval = 14
-        static let preferredFrameCount = 120
+        static let frameSamplingInterval: TimeInterval = 0.06
+        static let frameImageSamplingInterval: TimeInterval = 0.16
+        static let coverageFrameImageSamplingInterval: TimeInterval = 0.08
+        static let minimumTranslationMeters: Float = 0.004
+        static let minimumRotationRadians: Float = 0.012
+        static let minimumQualityEvaluationDuration: TimeInterval = 18
+        static let preferredFrameCount = 180
         static let headingCoverageBucketCount = 12
         static let verticalCoverageBandCount = 3
-        static let preferredHeadingSpanDegrees = 352.0
-        static let preferredVerticalSpanDegrees = 90.0
-        static let highQualityScore = 0.96
-        static let minimumHighQualityFrameCount = 72
-        static let minimumHighQualityHeadingSpanDegrees = 330.0
-        static let minimumHighQualityVerticalSpanDegrees = 66.0
+        static let preferredHeadingSpanDegrees = 356.0
+        static let preferredVerticalSpanDegrees = 96.0
+        static let highQualityScore = 0.97
+        static let minimumHighQualityFrameCount = 96
+        static let minimumHighQualityHeadingSpanDegrees = 340.0
+        static let minimumHighQualityVerticalSpanDegrees = 72.0
         static let idealStationaryDriftMeters = 0.85
         static let maximumStationaryDriftMeters = 1.6
-        static let maximumPointSamplesPerFrame = 4_800
-        static let pointIdentifierResampleInterval = 2
-        static let preferredPointSampleCount = 60_000
-        static let minimumHighQualityPointSampleCount = 16_000
-        static let minimumFeaturePointDistanceMeters: Float = 0.08
-        static let maximumFeaturePointDistanceMeters: Float = 12.0
+        static let maximumPointSamplesPerFrame = 8_000
+        static let pointIdentifierResampleInterval = 1
+        static let preferredPointSampleCount = 120_000
+        static let minimumHighQualityPointSampleCount = 32_000
+        static let minimumFeaturePointDistanceMeters: Float = 0.04
+        static let maximumFeaturePointDistanceMeters: Float = 15.0
+        static let maximumLivePreviewPointCount = 24_000
+        static let livePreviewPointStride = 2
         static let sessionBindingPollCount = 20
         static let sessionBindingPollNanoseconds: UInt64 = 50_000_000
         static let sessionReadyTimeout: TimeInterval = 2.5
@@ -70,6 +79,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     @Published private(set) var isOptimizingScan = false
     @Published private(set) var optimizationProgress = 0.0
     @Published private(set) var optimizationStatusText = "3Dデータを最適化しています"
+    @Published private(set) var livePreviewPoints: [SpatialScanLivePreviewPoint] = []
 
     private weak var arSession: ARSession?
     private let ciContext = CIContext()
@@ -97,6 +107,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     private var captureResolved = false
     private var isFinishingCapture = false
     private var hasSentHighQualityFeedback = false
+    private var livePreviewPointID = 0
 
     private struct CaptureQualityState {
         let score: Double
@@ -309,14 +320,6 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         Task { @MainActor [weak self] in
             await self?.finishCapture()
         }
-    }
-
-    func continueImprovingCapture() {
-        guard isHighQualityReady else { return }
-        isImprovingAfterReady = true
-        qualityStatusText = "高精度を超えて強化中"
-        guidanceText = "保存できます。さらに密度を上げる場合は、その場で2周目をゆっくり続けてください。"
-        motionHintText = "続けて密度を上げる"
     }
 
     private func finishCapture() async {
@@ -551,6 +554,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         frameSamples = []
         poseSamples = []
         pointSamples = []
+        livePreviewPoints = []
+        livePreviewPointID = 0
         seenPointIdentifiers = [:]
         savedFrameCoverageCells = []
         firstFrameTimestamp = nil
@@ -621,6 +626,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         frameSamples = []
         poseSamples = []
         pointSamples = []
+        livePreviewPoints = []
+        livePreviewPointID = 0
         seenPointIdentifiers = [:]
         savedFrameCoverageCells = []
         isFinishingCapture = false
@@ -766,6 +773,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         let cameraPosition = frame.camera.transform.columns.3.xyz
         let sampleStride = max(points.count / CaptureConstants.maximumPointSamplesPerFrame, 1)
         var addedCount = 0
+        var newLivePreviewPoints: [SpatialScanLivePreviewPoint] = []
+        newLivePreviewPoints.reserveCapacity(min(points.count / CaptureConstants.livePreviewPointStride, 2_400))
 
         for index in stride(from: 0, to: points.count, by: sampleStride) {
             guard addedCount < CaptureConstants.maximumPointSamplesPerFrame else {
@@ -798,7 +807,29 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
                     z: point.z
                 )
             )
+            if addedCount % CaptureConstants.livePreviewPointStride == 0 {
+                livePreviewPointID += 1
+                newLivePreviewPoints.append(
+                    SpatialScanLivePreviewPoint(
+                        id: livePreviewPointID,
+                        x: point.x,
+                        y: point.y,
+                        z: point.z
+                    )
+                )
+            }
             addedCount += 1
+        }
+
+        appendLivePreviewPoints(newLivePreviewPoints)
+    }
+
+    private func appendLivePreviewPoints(_ points: [SpatialScanLivePreviewPoint]) {
+        guard !points.isEmpty else { return }
+        livePreviewPoints.append(contentsOf: points)
+        let overage = livePreviewPoints.count - CaptureConstants.maximumLivePreviewPointCount
+        if overage > 0 {
+            livePreviewPoints.removeFirst(overage)
         }
     }
 
@@ -823,7 +854,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
                 hasSentHighQualityFeedback = true
             }
             isHighQualityReady = true
-            qualityStatusText = isImprovingAfterReady ? "高精度を超えて強化中" : "高精度に到達"
+            isImprovingAfterReady = true
+            qualityStatusText = "保存まで自動で高密度化中"
         } else {
             isHighQualityReady = false
             isImprovingAfterReady = false
@@ -1275,11 +1307,17 @@ struct SpatialScanCaptureView: View {
             } else {
                 VStack(spacing: 0) {
                     topBar
+                    HStack {
+                        Spacer()
+                        livePointCloudPanel
+                    }
+                    .padding(.top, 10)
                     Spacer()
                     bottomPanel
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 18)
+                .padding(.horizontal, 16)
+                .padding(.top, 18)
+                .padding(.bottom, 12)
             }
         }
         .task {
@@ -1355,9 +1393,11 @@ struct SpatialScanCaptureView: View {
     }
 
     private var bottomPanel: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
             motionGuide
-            scanNavigationGuide
+            if !model.isHighQualityReady {
+                scanNavigationGuide
+            }
 
             ProgressView(value: model.progress)
                 .tint(.white)
@@ -1386,12 +1426,39 @@ struct SpatialScanCaptureView: View {
                 highQualityActions
             }
         }
-        .padding(18)
-        .background(.black.opacity(0.48), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .padding(14)
+        .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(.white.opacity(0.14))
         }
+    }
+
+    private var livePointCloudPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "cube.transparent")
+                    .font(.caption.weight(.bold))
+                Text("Live 3D")
+                    .font(.caption.weight(.bold))
+                Spacer()
+                Text("\(model.livePreviewPoints.count)")
+                    .font(.caption2.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+            }
+            .foregroundStyle(.white)
+
+            SpatialScanLivePointCloudView(points: model.livePreviewPoints)
+                .frame(width: 148, height: 118)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .padding(10)
+        .background(.black.opacity(0.48), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.white.opacity(0.16))
+        }
+        .accessibilityLabel("リアルタイム3D取得プレビュー")
     }
 
     private var motionGuide: some View {
@@ -1522,34 +1589,21 @@ struct SpatialScanCaptureView: View {
 
     private var highQualityActions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(model.isImprovingAfterReady ? "高精度に到達済み。続けるほど密度が上がります。" : "高精度に到達しました。保存するか、さらに続けられます。")
+            Text("高精度に到達済み。保存を押すまで自動で記録を続け、密度を上げ続けます。")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white)
 
-            HStack(spacing: 10) {
-                Button {
-                    model.finishHighQualityCapture()
-                } label: {
-                    Label("保存", systemImage: "checkmark.circle.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.white)
-                .foregroundStyle(.black)
-
-                Button {
-                    model.continueImprovingCapture()
-                } label: {
-                    Label("続ける", systemImage: "plus.viewfinder")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                }
-                .buttonStyle(.bordered)
-                .tint(.white)
+            Button {
+                model.finishHighQualityCapture()
+            } label: {
+                Label("保存して最適化", systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
             }
+            .buttonStyle(.borderedProminent)
+            .tint(.white)
+            .foregroundStyle(.black)
         }
         .padding(12)
         .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -1621,6 +1675,157 @@ private struct SpatialScanOptimizationStage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(24)
         .background(.black.opacity(0.42))
+    }
+}
+
+private struct SpatialScanLivePointCloudView: UIViewRepresentable {
+    let points: [SpatialScanLivePreviewPoint]
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> SCNView {
+        context.coordinator.makeView()
+    }
+
+    func updateUIView(_ uiView: SCNView, context: Context) {
+        context.coordinator.update(points: points)
+    }
+
+    final class Coordinator {
+        private let scene = SCNScene()
+        private let modelRoot = SCNNode()
+        private let pointNode = SCNNode()
+        private let cameraNode = SCNNode()
+        private var signature = ""
+
+        func makeView() -> SCNView {
+            scene.background.contents = UIColor.clear
+            scene.rootNode.addChildNode(modelRoot)
+            modelRoot.addChildNode(pointNode)
+            modelRoot.eulerAngles = SCNVector3(-0.32, 0.58, 0)
+
+            let camera = SCNCamera()
+            camera.fieldOfView = 58
+            camera.zNear = 0.01
+            camera.zFar = 80
+            cameraNode.camera = camera
+            cameraNode.position = SCNVector3(0, 0.08, 3.2)
+            scene.rootNode.addChildNode(cameraNode)
+
+            let view = SCNView()
+            view.scene = scene
+            view.pointOfView = cameraNode
+            view.backgroundColor = .clear
+            view.isOpaque = false
+            view.isPlaying = false
+            view.rendersContinuously = false
+            view.preferredFramesPerSecond = 24
+            view.antialiasingMode = .none
+            view.allowsCameraControl = false
+            return view
+        }
+
+        func update(points: [SpatialScanLivePreviewPoint]) {
+            let nextSignature = "\(points.count):\(points.first?.id ?? 0):\(points.last?.id ?? 0)"
+            guard nextSignature != signature else { return }
+            signature = nextSignature
+
+            guard points.count > 3 else {
+                pointNode.geometry = nil
+                return
+            }
+
+            let vertices = normalizedVertices(from: points)
+            guard !vertices.isEmpty else {
+                pointNode.geometry = nil
+                return
+            }
+
+            var colors: [SIMD4<Float>] = []
+            colors.reserveCapacity(vertices.count)
+            let denominator = max(Float(vertices.count - 1), 1)
+            for index in vertices.indices {
+                let recency = Float(index) / denominator
+                colors.append(
+                    SIMD4<Float>(
+                        0.34 + (recency * 0.48),
+                        0.72 + (recency * 0.22),
+                        1.0,
+                        1.0
+                    )
+                )
+            }
+
+            let vertexSource = SCNGeometrySource(vertices: vertices)
+            let colorData = colors.withUnsafeBytes { Data($0) }
+            let colorSource = SCNGeometrySource(
+                data: colorData,
+                semantic: .color,
+                vectorCount: colors.count,
+                usesFloatComponents: true,
+                componentsPerVector: 4,
+                bytesPerComponent: MemoryLayout<Float>.size,
+                dataOffset: 0,
+                dataStride: MemoryLayout<SIMD4<Float>>.stride
+            )
+            var indices = vertices.indices.map(Int32.init)
+            let indexData = indices.withUnsafeMutableBytes { Data($0) }
+            let element = SCNGeometryElement(
+                data: indexData,
+                primitiveType: .point,
+                primitiveCount: vertices.count,
+                bytesPerIndex: MemoryLayout<Int32>.size
+            )
+            element.pointSize = 4
+            element.minimumPointScreenSpaceRadius = 2
+            element.maximumPointScreenSpaceRadius = 7
+
+            let geometry = SCNGeometry(sources: [vertexSource, colorSource], elements: [element])
+            let material = SCNMaterial()
+            material.lightingModel = .constant
+            material.diffuse.contents = UIColor.white
+            material.emission.contents = UIColor.white.withAlphaComponent(0.12)
+            material.blendMode = .alpha
+            material.readsFromDepthBuffer = false
+            material.writesToDepthBuffer = false
+            geometry.materials = [material]
+            pointNode.geometry = geometry
+        }
+
+        private func normalizedVertices(from points: [SpatialScanLivePreviewPoint]) -> [SCNVector3] {
+            guard let first = points.first else { return [] }
+            var minX = first.x
+            var maxX = first.x
+            var minY = first.y
+            var maxY = first.y
+            var minZ = first.z
+            var maxZ = first.z
+
+            for point in points.dropFirst() {
+                minX = min(minX, point.x)
+                maxX = max(maxX, point.x)
+                minY = min(minY, point.y)
+                maxY = max(maxY, point.y)
+                minZ = min(minZ, point.z)
+                maxZ = max(maxZ, point.z)
+            }
+
+            let centerX = (minX + maxX) / 2
+            let centerY = (minY + maxY) / 2
+            let centerZ = (minZ + maxZ) / 2
+            let extent = max(maxX - minX, maxY - minY, maxZ - minZ, 0.2)
+            let scale = min(2.1 / extent, 5.4)
+
+            return points.map { point in
+                SCNVector3(
+                    (point.x - centerX) * scale,
+                    ((point.y - centerY) * scale) + 0.04,
+                    (point.z - centerZ) * scale
+                )
+            }
+        }
     }
 }
 

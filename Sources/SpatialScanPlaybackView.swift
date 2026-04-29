@@ -7,9 +7,9 @@ import simd
 
 struct SpatialScanPlaybackView: View {
     private enum PlaybackImageSizing {
-        static let thumbnailMaxDimension: CGFloat = 1_536
-        static let maximumLoadedFrameCount = 40
-        static let maximumPointPreviewCount = 180_000
+        static let thumbnailMaxDimension: CGFloat = 1_792
+        static let maximumLoadedFrameCount = 48
+        static let maximumPointPreviewCount = 240_000
     }
 
     let entry: MemoryEntry
@@ -200,7 +200,7 @@ struct SpatialScanPlaybackView: View {
                     .foregroundStyle(.white)
                     .background(.black.opacity(0.42), in: Circle())
                 }
-                .padding(.top, safeAreaInsets.top + 10)
+                .padding(.top, max(safeAreaInsets.top, 18) + 6)
                 .padding(.horizontal, 18)
 
                 Spacer()
@@ -261,7 +261,7 @@ struct SpatialScanPlaybackView: View {
                 heroPlaybackControls
             }
             .padding(.horizontal, 20)
-            .padding(.bottom, safeAreaInsets.bottom + 20)
+            .padding(.bottom, max(safeAreaInsets.bottom, 18) + 10)
         }
     }
 
@@ -780,8 +780,8 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
         private let minimumPreviewScale: Float = 0.55
         private let maximumPreviewScale: Float = 2.6
-        private let maximumProjectedTextureFrameCount = 32
-        private let maximumProjectedTextureAnchorCount = 52_000
+        private let maximumProjectedTextureFrameCount = 40
+        private let maximumProjectedTextureAnchorCount = 86_000
 
         private struct RenderPoint {
             let position: SCNVector3
@@ -1186,9 +1186,9 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             guard let calibration = cameraCalibration(for: frame.sample) else { return nil }
 
             let imageAspect = max(calibration.imageWidth / max(calibration.imageHeight, 1), 0.25)
-            let targetCellCount: Float = 3_600
-            let gridColumns = min(max(Int(sqrt(targetCellCount * imageAspect)), 44), 96)
-            let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 30), 72)
+            let targetCellCount: Float = 5_200
+            let gridColumns = min(max(Int(sqrt(targetCellCount * imageAspect)), 52), 124)
+            let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 36), 92)
             let cellWidth = calibration.imageWidth / Float(gridColumns)
             let cellHeight = calibration.imageHeight / Float(gridRows)
             var cells = [DepthCell](repeating: DepthCell(), count: gridColumns * gridRows)
