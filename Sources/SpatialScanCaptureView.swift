@@ -26,13 +26,13 @@ struct SpatialScanLivePreviewPoint: Identifiable, Hashable {
 @MainActor
 final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency ARSessionDelegate {
     private enum CaptureConstants {
-        static let frameSamplingInterval: TimeInterval = 0.045
-        static let frameImageSamplingInterval: TimeInterval = 0.11
-        static let coverageFrameImageSamplingInterval: TimeInterval = 0.055
-        static let minimumTranslationMeters: Float = 0.0025
-        static let minimumRotationRadians: Float = 0.007
-        static let minimumQualityEvaluationDuration: TimeInterval = 24
-        static let preferredFrameCount = 280
+        static let frameSamplingInterval: TimeInterval = 0.033
+        static let frameImageSamplingInterval: TimeInterval = 0.085
+        static let coverageFrameImageSamplingInterval: TimeInterval = 0.045
+        static let minimumTranslationMeters: Float = 0.0018
+        static let minimumRotationRadians: Float = 0.005
+        static let minimumQualityEvaluationDuration: TimeInterval = 28
+        static let preferredFrameCount = 420
         static let headingCoverageBucketCount = 12
         static let verticalCoverageBandCount = 3
         static let preferredHeadingSpanDegrees = 356.0
@@ -43,14 +43,17 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         static let minimumHighQualityVerticalSpanDegrees = 72.0
         static let idealStationaryDriftMeters = 0.85
         static let maximumStationaryDriftMeters = 1.6
-        static let maximumPointSamplesPerFrame = 16_000
+        static let maximumPointSamplesPerFrame = 28_000
         static let pointIdentifierResampleInterval = 1
-        static let preferredPointSampleCount = 320_000
-        static let minimumHighQualityPointSampleCount = 80_000
-        static let minimumFeaturePointDistanceMeters: Float = 0.025
-        static let maximumFeaturePointDistanceMeters: Float = 18.0
-        static let maximumLivePreviewPointCount = 36_000
-        static let livePreviewPointStride = 3
+        static let preferredPointSampleCount = 620_000
+        static let minimumHighQualityPointSampleCount = 140_000
+        static let minimumFeaturePointDistanceMeters: Float = 0.018
+        static let maximumFeaturePointDistanceMeters: Float = 20.0
+        static let maximumLivePreviewPointCount = 48_000
+        static let livePreviewPointStride = 4
+        static let minimumManualSaveDuration: TimeInterval = 2.5
+        static let minimumManualSaveFrameCount = 6
+        static let minimumManualSavePointCount = 500
         static let sessionBindingPollCount = 20
         static let sessionBindingPollNanoseconds: UInt64 = 50_000_000
         static let sessionReadyTimeout: TimeInterval = 2.5
@@ -80,6 +83,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
     @Published private(set) var optimizationProgress = 0.0
     @Published private(set) var optimizationStatusText = "3Dデータを最適化しています"
     @Published private(set) var livePreviewPoints: [SpatialScanLivePreviewPoint] = []
+    @Published private(set) var isManualSaveAvailable = false
+    @Published private(set) var manualSaveStatusText = "最低限の写真と点群を収集中です"
 
     private weak var arSession: ARSession?
     private let ciContext = CIContext()
@@ -121,6 +126,11 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         let coverageFocusText: String
         let isTrackingStable: Bool
         let isHighQuality: Bool
+    }
+
+    private struct ManualSaveState {
+        let isAvailable: Bool
+        let statusText: String
     }
 
     private struct CaptureCoverageMap {
@@ -311,26 +321,41 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
     func finishHighQualityCapture() {
         guard isHighQualityReady else {
-            qualityStatusText = "まだ高精度化中です"
-            guidanceText = "360度の方位と上下の角度が十分に揃うまで、保存はできません。足を止めたまま続けてください。"
-            motionHintText = "もう少し続ける"
+            finishManualCapture()
             return
         }
 
         Task { @MainActor [weak self] in
-            await self?.finishCapture()
+            await self?.finishCapture(isManualOverride: false)
         }
     }
 
-    private func finishCapture() async {
+    func finishManualCapture() {
+        let state = manualSaveState(elapsed: lastFrameTimestamp)
+        guard state.isAvailable || isHighQualityReady else {
+            qualityStatusText = "手動保存の準備中"
+            guidanceText = state.statusText
+            manualSaveStatusText = state.statusText
+            motionHintText = "もう少し記録"
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            await self?.finishCapture(isManualOverride: !(self?.isHighQualityReady ?? false))
+        }
+    }
+
+    private func finishCapture(isManualOverride: Bool) async {
         guard isScanning, !isFinishingCapture, let bundleURL else { return }
         isFinishingCapture = true
-        qualityStatusText = "空間を仕上げています"
-        guidanceText = "高精度の360度スキャンを保存用の空間データへまとめています。"
+        qualityStatusText = isManualOverride ? "手動保存を最適化中" : "空間を仕上げています"
+        guidanceText = isManualOverride
+            ? "現在までの写真と点群を固定し、時間をかけて最良の3Dデータへ最適化しています。"
+            : "高精度の360度スキャンを保存用の空間データへまとめています。"
         motionHintText = "端末をそのまま安定させてください。"
         isOptimizingScan = true
         optimizationProgress = 0.05
-        optimizationStatusText = "スキャンデータを固定しています"
+        optimizationStatusText = isManualOverride ? "手動保存データを固定しています" : "スキャンデータを固定しています"
 
         captureTimerTask?.cancel()
         captureTimerTask = nil
@@ -391,9 +416,9 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
 
         isOptimizingScan = true
         optimizationProgress = 0.12
-        optimizationStatusText = "写真色付きの3D空間を解析しています"
+        optimizationStatusText = "高解像度の写真色付き3D空間を解析しています"
         qualityStatusText = "3D最適化中"
-        guidanceText = "最適化済みの3Dデータを生成しています。完了するまでそのままお待ちください。"
+        guidanceText = "細部まで写真を投影しながら最適化済みの3Dデータを生成しています。完了するまでそのままお待ちください。"
         motionHintText = "処理中"
 
         let capturedPointSamples = pointSamples
@@ -414,7 +439,7 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             }.value
 
             optimizationProgress = 0.68
-            optimizationStatusText = "画像を3Dスプラットへ焼き付けています"
+            optimizationStatusText = "高密度サーフェルへ写真を焼き付けています"
 
             let manifest = SpatialScanManifest(
                 capturedAt: capturedAt,
@@ -550,6 +575,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         isOptimizingScan = false
         optimizationProgress = 0
         optimizationStatusText = "3Dデータを最適化しています"
+        isManualSaveAvailable = false
+        manualSaveStatusText = "最低限の写真と点群を収集中です"
         sampledFrameCount = 0
         frameSamples = []
         poseSamples = []
@@ -610,6 +637,8 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         isOptimizingScan = false
         optimizationProgress = 0
         optimizationStatusText = "3Dデータを最適化しています"
+        isManualSaveAvailable = false
+        manualSaveStatusText = "最低限の写真と点群を収集中です"
         if audioSession.isRunning {
             audioSession.stopRunning()
         }
@@ -847,6 +876,10 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
         collectedPointCount = pointSamples.count
         guidanceText = guidanceText(for: trackingState, quality: quality)
         motionHintText = motionHint(for: quality, trackingState: trackingState)
+        let manualState = manualSaveState(elapsed: elapsed)
+        let hasReachedHighQuality = quality.isHighQuality || isHighQualityReady
+        isManualSaveAvailable = manualState.isAvailable || hasReachedHighQuality
+        manualSaveStatusText = manualState.statusText
 
         if quality.isHighQuality {
             if !isHighQualityReady && !hasSentHighQualityFeedback {
@@ -856,11 +889,48 @@ final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency
             isHighQualityReady = true
             isImprovingAfterReady = true
             qualityStatusText = "保存まで自動で高密度化中"
+        } else if isHighQualityReady {
+            isImprovingAfterReady = true
+            qualityStatusText = "高精度到達済み・保存まで継続中"
         } else {
             isHighQualityReady = false
             isImprovingAfterReady = false
             qualityStatusText = qualityStatus(for: quality)
         }
+    }
+
+    private func manualSaveState(elapsed: TimeInterval) -> ManualSaveState {
+        if frameSamples.count < CaptureConstants.minimumManualSaveFrameCount {
+            let remaining = CaptureConstants.minimumManualSaveFrameCount - frameSamples.count
+            return ManualSaveState(
+                isAvailable: false,
+                statusText: "手動保存まであと\(remaining)枚、写真フレームを集めています。"
+            )
+        }
+        if pointSamples.count < CaptureConstants.minimumManualSavePointCount {
+            let remaining = CaptureConstants.minimumManualSavePointCount - pointSamples.count
+            return ManualSaveState(
+                isAvailable: false,
+                statusText: "手動保存まであと\(remaining)点、空間特徴点を集めています。"
+            )
+        }
+        if elapsed < CaptureConstants.minimumManualSaveDuration {
+            let remaining = max(CaptureConstants.minimumManualSaveDuration - elapsed, 0)
+            return ManualSaveState(
+                isAvailable: false,
+                statusText: String(format: "手動保存まであと%.1f秒、姿勢を安定させています。", remaining)
+            )
+        }
+        if isHighQualityReady {
+            return ManualSaveState(
+                isAvailable: true,
+                statusText: "高精度到達済みです。保存まで自動で高密度化を続けます。"
+            )
+        }
+        return ManualSaveState(
+            isAvailable: true,
+            statusText: "100%を待たずに手動保存できます。保存後に時間をかけて最適化します。"
+        )
     }
 
     private func captureQualityState(
@@ -1422,9 +1492,7 @@ struct SpatialScanCaptureView: View {
                 scanHintChip(title: "安定", value: "\(Int((model.trackingStability * 100).rounded()))%")
             }
 
-            if model.isHighQualityReady {
-                highQualityActions
-            }
+            saveActions
         }
         .padding(14)
         .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -1587,16 +1655,27 @@ struct SpatialScanCaptureView: View {
         return model.captureCoverageCells[index] ? 0.9 : 0.14
     }
 
-    private var highQualityActions: some View {
+    private var saveActions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("高精度に到達済み。保存を押すまで自動で記録を続け、密度を上げ続けます。")
+            Text(
+                model.isHighQualityReady
+                    ? "高精度に到達済み。保存を押すまで自動で記録を続け、密度を上げ続けます。"
+                    : model.manualSaveStatusText
+            )
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white)
 
             Button {
-                model.finishHighQualityCapture()
+                if model.isHighQualityReady {
+                    model.finishHighQualityCapture()
+                } else {
+                    model.finishManualCapture()
+                }
             } label: {
-                Label("保存して最適化", systemImage: "checkmark.circle.fill")
+                Label(
+                    model.isHighQualityReady ? "保存して最適化" : "手動保存して最適化",
+                    systemImage: model.isHighQualityReady ? "checkmark.circle.fill" : "tray.and.arrow.down.fill"
+                )
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
@@ -1604,6 +1683,8 @@ struct SpatialScanCaptureView: View {
             .buttonStyle(.borderedProminent)
             .tint(.white)
             .foregroundStyle(.black)
+            .disabled(!model.isManualSaveAvailable)
+            .opacity(model.isManualSaveAvailable ? 1 : 0.56)
         }
         .padding(12)
         .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
