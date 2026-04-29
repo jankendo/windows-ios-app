@@ -767,8 +767,9 @@ private struct SavedMemoryImmersivePreviewView: View {
                         atmosphere: entry.atmosphereStyle
                     )
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
+                .padding(.horizontal, 24)
+                .padding(.top, 18)
+                .padding(.bottom, 8)
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
         }
@@ -778,8 +779,8 @@ private struct SavedMemoryImmersivePreviewView: View {
                     previewPanel(compact: false)
                     previewPanel(compact: true)
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 10)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 18)
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
         }
@@ -912,10 +913,10 @@ private struct SavedMemoryImmersivePreviewView: View {
                     .lineLimit(1)
             }
         }
-        .padding(compact ? 15 : 18)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .padding(compact ? 13 : 16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 30, style: .continuous)
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
         }
         .shadow(color: palette.shadow.opacity(colorScheme == .dark ? 0.55 : 0.18), radius: 28, y: 16)

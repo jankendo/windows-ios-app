@@ -26,31 +26,31 @@ struct SpatialScanLivePreviewPoint: Identifiable, Hashable {
 @MainActor
 final class SpatialScanCaptureModel: NSObject, ObservableObject, @preconcurrency ARSessionDelegate {
     private enum CaptureConstants {
-        static let frameSamplingInterval: TimeInterval = 0.06
-        static let frameImageSamplingInterval: TimeInterval = 0.16
-        static let coverageFrameImageSamplingInterval: TimeInterval = 0.08
-        static let minimumTranslationMeters: Float = 0.004
-        static let minimumRotationRadians: Float = 0.012
-        static let minimumQualityEvaluationDuration: TimeInterval = 18
-        static let preferredFrameCount = 180
+        static let frameSamplingInterval: TimeInterval = 0.045
+        static let frameImageSamplingInterval: TimeInterval = 0.11
+        static let coverageFrameImageSamplingInterval: TimeInterval = 0.055
+        static let minimumTranslationMeters: Float = 0.0025
+        static let minimumRotationRadians: Float = 0.007
+        static let minimumQualityEvaluationDuration: TimeInterval = 24
+        static let preferredFrameCount = 280
         static let headingCoverageBucketCount = 12
         static let verticalCoverageBandCount = 3
         static let preferredHeadingSpanDegrees = 356.0
         static let preferredVerticalSpanDegrees = 96.0
-        static let highQualityScore = 0.97
-        static let minimumHighQualityFrameCount = 96
+        static let highQualityScore = 0.985
+        static let minimumHighQualityFrameCount = 144
         static let minimumHighQualityHeadingSpanDegrees = 340.0
         static let minimumHighQualityVerticalSpanDegrees = 72.0
         static let idealStationaryDriftMeters = 0.85
         static let maximumStationaryDriftMeters = 1.6
-        static let maximumPointSamplesPerFrame = 8_000
+        static let maximumPointSamplesPerFrame = 16_000
         static let pointIdentifierResampleInterval = 1
-        static let preferredPointSampleCount = 120_000
-        static let minimumHighQualityPointSampleCount = 32_000
-        static let minimumFeaturePointDistanceMeters: Float = 0.04
-        static let maximumFeaturePointDistanceMeters: Float = 15.0
-        static let maximumLivePreviewPointCount = 24_000
-        static let livePreviewPointStride = 2
+        static let preferredPointSampleCount = 320_000
+        static let minimumHighQualityPointSampleCount = 80_000
+        static let minimumFeaturePointDistanceMeters: Float = 0.025
+        static let maximumFeaturePointDistanceMeters: Float = 18.0
+        static let maximumLivePreviewPointCount = 36_000
+        static let livePreviewPointStride = 3
         static let sessionBindingPollCount = 20
         static let sessionBindingPollNanoseconds: UInt64 = 50_000_000
         static let sessionReadyTimeout: TimeInterval = 2.5

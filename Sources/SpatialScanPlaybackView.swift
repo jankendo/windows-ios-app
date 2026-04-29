@@ -7,9 +7,9 @@ import simd
 
 struct SpatialScanPlaybackView: View {
     private enum PlaybackImageSizing {
-        static let thumbnailMaxDimension: CGFloat = 1_792
-        static let maximumLoadedFrameCount = 48
-        static let maximumPointPreviewCount = 240_000
+        static let thumbnailMaxDimension: CGFloat = 2_560
+        static let maximumLoadedFrameCount = 72
+        static let maximumPointPreviewCount = 360_000
     }
 
     let entry: MemoryEntry
@@ -780,8 +780,8 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
         private let minimumPreviewScale: Float = 0.55
         private let maximumPreviewScale: Float = 2.6
-        private let maximumProjectedTextureFrameCount = 40
-        private let maximumProjectedTextureAnchorCount = 86_000
+        private let maximumProjectedTextureFrameCount = 56
+        private let maximumProjectedTextureAnchorCount = 140_000
 
         private struct RenderPoint {
             let position: SCNVector3
@@ -838,16 +838,26 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
         private struct DepthCell {
             var depthSum: Float = 0
+            var depthSquaredSum: Float = 0
+            var nearestDepth: Float = .greatestFiniteMagnitude
             var count: Int = 0
 
             mutating func add(depth: Float) {
                 depthSum += depth
+                depthSquaredSum += depth * depth
+                nearestDepth = min(nearestDepth, depth)
                 count += 1
             }
 
-            var averageDepth: Float? {
+            var resolvedSample: DepthSample? {
                 guard count > 0 else { return nil }
-                return depthSum / Float(count)
+                let mean = depthSum / Float(count)
+                let variance = max((depthSquaredSum / Float(count)) - (mean * mean), 0)
+                let standardDeviation = sqrt(variance)
+                let stability = max(0.28, 1 - min(standardDeviation / max(mean * 0.08, 0.01), 0.72))
+                let density = min(Float(log2(Double(count) + 1) / 4.0), 1)
+                let resolvedDepth = (mean * 0.72) + (nearestDepth * 0.28)
+                return DepthSample(depth: resolvedDepth, confidence: min(max(stability * density, 0.24), 1))
             }
         }
 
@@ -1076,7 +1086,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
             for renderPoint in renderPoints {
                 let position = renderPoint.position
-                let surfelRadius = min(max(renderPoint.radius, 0.006), 0.12)
+                let surfelRadius = min(max(renderPoint.radius, 0.0035), 0.075)
                 let radialNormal = normalized(position)
                 let normal = vectorLength(renderPoint.normal) > 0.001
                     ? renderPoint.normal
@@ -1186,9 +1196,9 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
             guard let calibration = cameraCalibration(for: frame.sample) else { return nil }
 
             let imageAspect = max(calibration.imageWidth / max(calibration.imageHeight, 1), 0.25)
-            let targetCellCount: Float = 5_200
-            let gridColumns = min(max(Int(sqrt(targetCellCount * imageAspect)), 52), 124)
-            let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 36), 92)
+            let targetCellCount: Float = 11_500
+            let gridColumns = min(max(Int(sqrt(targetCellCount * imageAspect)), 72), 184)
+            let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 48), 136)
             let cellWidth = calibration.imageWidth / Float(gridColumns)
             let cellHeight = calibration.imageHeight / Float(gridRows)
             var cells = [DepthCell](repeating: DepthCell(), count: gridColumns * gridRows)
@@ -1202,8 +1212,8 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                         worldPosition: SIMD3<Float>(sample.x, sample.y, sample.z),
                         calibration: calibration
                       ),
-                      projection.depth >= 0.14,
-                      projection.depth <= 12.0 else {
+                      projection.depth >= 0.12,
+                      projection.depth <= 14.0 else {
                     continue
                 }
 
@@ -1259,7 +1269,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                         }
 
                         let rawPosition = SCNVector3(worldPosition.x, worldPosition.y, worldPosition.z)
-                        guard normalization.contains(rawPosition, margin: 0.22) else {
+                        guard normalization.contains(rawPosition, margin: 0.16) else {
                             cellIsUsable = false
                             break
                         }
@@ -1472,7 +1482,7 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
                             1
                         ),
                         normal: normalized(SCNVector3(sample.normalX, sample.normalY, sample.normalZ)),
-                        radius: min(max(sample.radius * normalization.scale, 0.008), 0.11)
+                        radius: min(max(sample.radius * normalization.scale, 0.0035), 0.075)
                     )
                 )
             }
@@ -1547,8 +1557,8 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
         ) -> DepthSample? {
             let directIndex = (row * columns) + column
             if cells.indices.contains(directIndex),
-               let directDepth = cells[directIndex].averageDepth {
-                return DepthSample(depth: directDepth, confidence: 1)
+               let directSample = cells[directIndex].resolvedSample {
+                return directSample
             }
 
             for radius in 1...2 {
@@ -1568,19 +1578,20 @@ private struct SpatialScanModelPreviewView: UIViewRepresentable {
 
                         let neighborIndex = (neighborRow * columns) + neighborColumn
                         guard cells.indices.contains(neighborIndex),
-                              let neighborDepth = cells[neighborIndex].averageDepth else {
+                              let neighborSample = cells[neighborIndex].resolvedSample else {
                             continue
                         }
 
                         let distance = max(Float(abs(xOffset) + abs(yOffset)), 1)
-                        let weight = 1 / distance
-                        weightedDepth += neighborDepth * weight
+                        let weight = neighborSample.confidence / distance
+                        weightedDepth += neighborSample.depth * weight
                         weightSum += weight
                     }
                 }
 
                 if weightSum > 0 {
-                    return DepthSample(depth: weightedDepth / weightSum, confidence: radius == 1 ? 0.72 : 0.48)
+                    let confidence = min(max(weightSum / Float((radius * 2 + 1) * (radius * 2 + 1)), 0.24), 1)
+                    return DepthSample(depth: weightedDepth / weightSum, confidence: radius == 1 ? max(confidence, 0.68) : max(confidence, 0.42))
                 }
             }
 

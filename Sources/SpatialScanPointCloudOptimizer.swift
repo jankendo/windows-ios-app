@@ -165,10 +165,10 @@ enum SpatialScanOptimizedPointCloud {
 }
 
 enum SpatialScanPointCloudOptimizer {
-    private static let maximumOptimizedPointCount = 1_200_000
-    private static let maximumPhotoSplatPointCount = 1_800_000
-    private static let minimumVoxelSize: Float = 0.0012
-    private static let outlierTrimRatio = 0.002
+    private static let maximumOptimizedPointCount = 2_400_000
+    private static let maximumPhotoSplatPointCount = 4_200_000
+    private static let minimumVoxelSize: Float = 0.00065
+    private static let outlierTrimRatio = 0.001
 
     static func optimize(
         pointSamples: [SpatialScanPointSample],
@@ -198,7 +198,7 @@ enum SpatialScanPointCloudOptimizer {
         var optimizedPoints = voxelDownsample(trimmedPoints, voxelSize: voxelSize)
 
         while optimizedPoints.count > maximumOptimizedPointCount {
-            voxelSize *= 1.16
+            voxelSize *= 1.09
             optimizedPoints = voxelDownsample(trimmedPoints, voxelSize: voxelSize)
         }
 
@@ -213,7 +213,7 @@ enum SpatialScanPointCloudOptimizer {
             from: optimizedPoints,
             samplers: samplers,
             samplersByIndex: samplersByIndex,
-            splatRadius: max(voxelSize * 1.15, 0.012)
+            splatRadius: max(voxelSize * 0.82, 0.004)
         )
         let outputURL = bundleURL.appendingPathComponent(SpatialScanOptimizedPointCloud.relativePath)
         try SpatialScanOptimizedPointCloud.write(points: colorizedPoints, to: outputURL)
@@ -324,7 +324,7 @@ enum SpatialScanPointCloudOptimizer {
         let volume = max(Double(extent.x * extent.y * extent.z), 0.001)
         let pointVolume = volume / Double(max(targetCount, 1))
         let edge = Float(pow(pointVolume, 1.0 / 3.0))
-        return max(edge * 0.34, minimumVoxelSize)
+        return max(edge * 0.22, minimumVoxelSize)
     }
 
     private static func voxelDownsample(_ points: [SourcePoint], voxelSize: Float) -> [SourcePoint] {
@@ -368,7 +368,7 @@ enum SpatialScanPointCloudOptimizer {
     ) -> [SourcePoint] {
         guard !rawPoints.isEmpty, !samplers.isEmpty else { return [] }
 
-        let perFrameBudget = max(maximumPhotoSplatPointCount / max(samplers.count, 1), 4_200)
+        let perFrameBudget = max(maximumPhotoSplatPointCount / max(samplers.count, 1), 9_000)
         var photoPoints: [SourcePoint] = []
         photoPoints.reserveCapacity(min(maximumPhotoSplatPointCount, samplers.count * perFrameBudget))
 
@@ -498,9 +498,9 @@ private func normalized(_ vector: SIMD3<Float>, fallback: SIMD3<Float>) -> SIMD3
 }
 
 private final class FrameColorSampler {
-    private static let maximumLoadedFrameCount = 240
-    private static let maximumColorImageDimension = 1_792
-    private static let maximumProjectedAnchorCount = 110_000
+    private static let maximumLoadedFrameCount = 192
+    private static let maximumColorImageDimension = 2_560
+    private static let maximumProjectedAnchorCount = 260_000
 
     let frameIndex: Int
     private let cameraTransform: simd_float4x4
@@ -560,9 +560,9 @@ private final class FrameColorSampler {
         guard maximumCount > 0, !anchorPoints.isEmpty else { return [] }
 
         let imageAspect = Float(width) / Float(max(height, 1))
-        let targetCellCount = min(max(maximumCount, 2_400), 12_000)
-        let gridColumns = min(max(Int(sqrt(Float(targetCellCount) * imageAspect)), 56), 164)
-        let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 40), 122)
+        let targetCellCount = min(max(maximumCount, 4_800), 32_000)
+        let gridColumns = min(max(Int(sqrt(Float(targetCellCount) * imageAspect)), 84), 260)
+        let gridRows = min(max(Int(Float(gridColumns) / imageAspect), 56), 196)
         let cellWidth = Float(width) / Float(gridColumns)
         let cellHeight = Float(height) / Float(gridRows)
         var cells = [DepthCell](repeating: DepthCell(), count: gridColumns * gridRows)
@@ -571,8 +571,8 @@ private final class FrameColorSampler {
         for index in stride(from: 0, to: anchorPoints.count, by: anchorStride) {
             let anchor = anchorPoints[index]
             guard let projection = project(anchor.position),
-                  projection.depth >= 0.18,
-                  projection.depth <= 9.0 else {
+                  projection.depth >= 0.14,
+                  projection.depth <= 14.0 else {
                 continue
             }
             let column = min(max(Int(projection.pixel.x / cellWidth), 0), gridColumns - 1)
@@ -613,8 +613,8 @@ private final class FrameColorSampler {
                 let worldCellWidth = depthSample.depth * (cellWidth / max(fx * intrinsicScaleX, 1))
                 let worldCellHeight = depthSample.depth * (cellHeight / max(fy * intrinsicScaleY, 1))
                 let confidence = min(max(depthSample.confidence, 0.38), 1)
-                let radiusScale = 0.72 + (confidence * 0.28)
-                let radius = min(max(max(worldCellWidth, worldCellHeight) * 0.95 * radiusScale, 0.012), 0.085)
+                let radiusScale = 0.58 + (confidence * 0.28)
+                let radius = min(max(max(worldCellWidth, worldCellHeight) * 0.72 * radiusScale, 0.004), 0.052)
                 let normal = normalized(cameraPosition - worldPosition, fallback: cameraForward)
 
                 splats.append(
@@ -660,16 +660,26 @@ private final class FrameColorSampler {
 
     private struct DepthCell {
         var depthSum: Float = 0
+        var depthSquaredSum: Float = 0
+        var nearestDepth: Float = .greatestFiniteMagnitude
         var count: Int = 0
 
         mutating func add(depth: Float) {
             depthSum += depth
+            depthSquaredSum += depth * depth
+            nearestDepth = min(nearestDepth, depth)
             count += 1
         }
 
-        var averageDepth: Float? {
+        var resolvedSample: DepthSample? {
             guard count > 0 else { return nil }
-            return depthSum / Float(count)
+            let mean = depthSum / Float(count)
+            let variance = max((depthSquaredSum / Float(count)) - (mean * mean), 0)
+            let standardDeviation = sqrt(variance)
+            let stability = max(0.28, 1 - min(standardDeviation / max(mean * 0.08, 0.01), 0.72))
+            let density = min(Float(log2(Double(count) + 1) / 4.0), 1)
+            let resolvedDepth = (mean * 0.72) + (nearestDepth * 0.28)
+            return DepthSample(depth: resolvedDepth, confidence: min(max(stability * density, 0.24), 1))
         }
     }
 
@@ -708,10 +718,31 @@ private final class FrameColorSampler {
     }
 
     private func colorAt(pixel: SIMD2<Float>) -> SIMD3<Float>? {
-        let x = Int(pixel.x.rounded())
-        let y = Int(pixel.y.rounded())
-        guard x >= 0, x < width, y >= 0, y < height else { return nil }
+        guard width > 0, height > 0 else { return nil }
+        let clampedX = min(max(pixel.x, 0), Float(width - 1))
+        let clampedY = min(max(pixel.y, 0), Float(height - 1))
+        let x0 = min(max(Int(floor(clampedX)), 0), width - 1)
+        let y0 = min(max(Int(floor(clampedY)), 0), height - 1)
+        let x1 = min(x0 + 1, width - 1)
+        let y1 = min(y0 + 1, height - 1)
+        let tx = clampedX - Float(x0)
+        let ty = clampedY - Float(y0)
 
+        guard
+            let c00 = pixelColor(x: x0, y: y0),
+            let c10 = pixelColor(x: x1, y: y0),
+            let c01 = pixelColor(x: x0, y: y1),
+            let c11 = pixelColor(x: x1, y: y1)
+        else {
+            return nil
+        }
+
+        let top = (c00 * (1 - tx)) + (c10 * tx)
+        let bottom = (c01 * (1 - tx)) + (c11 * tx)
+        return (top * (1 - ty)) + (bottom * ty)
+    }
+
+    private func pixelColor(x: Int, y: Int) -> SIMD3<Float>? {
         let offset = ((y * width) + x) * 4
         guard offset + 2 < pixels.count else { return nil }
         return SIMD3<Float>(
@@ -730,8 +761,8 @@ private final class FrameColorSampler {
     ) -> DepthSample? {
         let directIndex = (row * columns) + column
         if cells.indices.contains(directIndex),
-           let directDepth = cells[directIndex].averageDepth {
-            return DepthSample(depth: directDepth, confidence: 1)
+           let directSample = cells[directIndex].resolvedSample {
+            return directSample
         }
 
         for radius in 1...2 {
@@ -750,18 +781,19 @@ private final class FrameColorSampler {
                     }
                     let neighborIndex = (neighborRow * columns) + neighborColumn
                     guard cells.indices.contains(neighborIndex),
-                          let neighborDepth = cells[neighborIndex].averageDepth else {
+                          let neighborSample = cells[neighborIndex].resolvedSample else {
                         continue
                     }
                     let distance = max(Float(abs(xOffset) + abs(yOffset)), 1)
-                    let weight = 1 / distance
-                    weightedDepth += neighborDepth * weight
+                    let weight = neighborSample.confidence / distance
+                    weightedDepth += neighborSample.depth * weight
                     weightSum += weight
                 }
             }
 
             if weightSum > 0 {
-                return DepthSample(depth: weightedDepth / weightSum, confidence: radius == 1 ? 0.72 : 0.48)
+                let confidence = min(max(weightSum / Float((radius * 2 + 1) * (radius * 2 + 1)), 0.24), 1)
+                return DepthSample(depth: weightedDepth / weightSum, confidence: radius == 1 ? max(confidence, 0.68) : max(confidence, 0.42))
             }
         }
 
