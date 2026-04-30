@@ -47,6 +47,15 @@
 - 3D Scan 記録は詳細から frame sequence / reconstruction 状態 / bundle asset をまとめてプレビュー
 - タイトル / メモ / タグ / ムード / 場所で横断検索
 
+### 5. 3D Scan
+- その場で足を止めたまま、上下左右と360度の向きをゆっくり記録
+- カメラ上に軽量点群をリアルタイム表示し、未取得方向を見ながら追加スキャン
+- 高精度に到達した後も、保存ボタンを押すまで取得を継続
+- 100%到達待ちで止まらないように、最低限のフレームと点群が揃った時点で手動保存が可能
+- 保存後は専用の最適化画面で、高密度写真サーフェルと点群を統合
+- 最適化処理は巨大配列を同時保持せず、写真フレームを遅延ロードしながらストリーミング保存
+- プレビューは全画面の3D空間ビューとして表示し、指で向きを操作
+
 ## こんなときに向いています
 
 - 旅先の「空気」を残したい
@@ -68,7 +77,8 @@
 - foreground-only interval capture と scene 保存
 - collection / smart collection / slideshow
 - ライブラリ / 詳細 / 検索
-- 3D Scan bundle の frame-sequence preview と reconstruction progress surface
+- 3D Scan bundle の frame-sequence preview / reconstruction progress surface / 高密度3Dプレビュー
+- 3D Scan の高解像度写真サーフェル生成、点群のボクセル統合、最適化済み点群のストリーミング書き出し
 - ダークモード対応の atmospheric UI
 
 ## 補足
