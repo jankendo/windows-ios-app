@@ -239,6 +239,50 @@ enum ResonanceSchemaV1: VersionedSchema {
     static var models: [any PersistentModel.Type] {
         [MemoryEntry.self]
     }
+
+    @Model
+    final class MemoryEntry: Identifiable {
+        var id: UUID
+        var createdAt: Date
+        var title: String
+        var notes: String
+        var isFavorite: Bool
+        var photoFileName: String
+        var audioFileName: String?
+        var audioDuration: Double
+        var visualTagsRaw: String
+        var audioTagsRaw: String
+        var transcript: String
+        var mood: String
+
+        init(
+            id: UUID = UUID(),
+            createdAt: Date = .now,
+            title: String,
+            notes: String,
+            isFavorite: Bool = false,
+            photoFileName: String,
+            audioFileName: String?,
+            audioDuration: Double,
+            visualTagsRaw: String,
+            audioTagsRaw: String,
+            transcript: String,
+            mood: String
+        ) {
+            self.id = id
+            self.createdAt = createdAt
+            self.title = title
+            self.notes = notes
+            self.isFavorite = isFavorite
+            self.photoFileName = photoFileName
+            self.audioFileName = audioFileName
+            self.audioDuration = audioDuration
+            self.visualTagsRaw = visualTagsRaw
+            self.audioTagsRaw = audioTagsRaw
+            self.transcript = transcript
+            self.mood = mood
+        }
+    }
 }
 
 enum ResonanceSchemaV2: VersionedSchema {
@@ -246,6 +290,123 @@ enum ResonanceSchemaV2: VersionedSchema {
 
     static var models: [any PersistentModel.Type] {
         [MemoryEntry.self, MemoryCollection.self, MemoryScene.self]
+    }
+
+    @Model
+    final class MemoryEntry: Identifiable {
+        var id: UUID
+        var createdAt: Date
+        var title: String
+        var notes: String
+        var isFavorite: Bool
+        var photoFileName: String
+        var audioFileName: String?
+        var audioDuration: Double
+        var visualTagsRaw: String
+        var audioTagsRaw: String
+        var transcript: String
+        var mood: String
+
+        init(
+            id: UUID = UUID(),
+            createdAt: Date = .now,
+            title: String,
+            notes: String,
+            isFavorite: Bool = false,
+            photoFileName: String,
+            audioFileName: String?,
+            audioDuration: Double,
+            visualTagsRaw: String,
+            audioTagsRaw: String,
+            transcript: String,
+            mood: String
+        ) {
+            self.id = id
+            self.createdAt = createdAt
+            self.title = title
+            self.notes = notes
+            self.isFavorite = isFavorite
+            self.photoFileName = photoFileName
+            self.audioFileName = audioFileName
+            self.audioDuration = audioDuration
+            self.visualTagsRaw = visualTagsRaw
+            self.audioTagsRaw = audioTagsRaw
+            self.transcript = transcript
+            self.mood = mood
+        }
+    }
+
+    @Model
+    final class MemoryCollection: Identifiable {
+        var id: UUID
+        var title: String
+        var collectionDescription: String
+        var colorTintRaw: String
+        var coverMemoryId: UUID?
+        var createdAt: Date
+        var updatedAt: Date
+        var isSmartCollection: Bool
+        var smartRuleJSON: String?
+        var entryIDsRaw: String
+
+        init(
+            id: UUID = UUID(),
+            title: String,
+            collectionDescription: String = "",
+            colorTintRaw: String = AtmosphereStyle.day.rawValue,
+            coverMemoryId: UUID? = nil,
+            createdAt: Date = .now,
+            updatedAt: Date = .now,
+            isSmartCollection: Bool = false,
+            smartRuleJSON: String? = nil,
+            entryIDsRaw: String = ""
+        ) {
+            self.id = id
+            self.title = title
+            self.collectionDescription = collectionDescription
+            self.colorTintRaw = colorTintRaw
+            self.coverMemoryId = coverMemoryId
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.isSmartCollection = isSmartCollection
+            self.smartRuleJSON = smartRuleJSON
+            self.entryIDsRaw = entryIDsRaw
+        }
+    }
+
+    @Model
+    final class MemoryScene: Identifiable {
+        var id: UUID
+        var title: String
+        var startedAt: Date
+        var endedAt: Date?
+        var intervalSeconds: Int
+        var plannedCount: Int
+        var actualCount: Int
+        var clipDurationSeconds: Double
+        var entryIDsRaw: String
+
+        init(
+            id: UUID = UUID(),
+            title: String,
+            startedAt: Date = .now,
+            endedAt: Date? = nil,
+            intervalSeconds: Int,
+            plannedCount: Int,
+            actualCount: Int = 0,
+            clipDurationSeconds: Double,
+            entryIDsRaw: String = ""
+        ) {
+            self.id = id
+            self.title = title
+            self.startedAt = startedAt
+            self.endedAt = endedAt
+            self.intervalSeconds = intervalSeconds
+            self.plannedCount = plannedCount
+            self.actualCount = actualCount
+            self.clipDurationSeconds = clipDurationSeconds
+            self.entryIDsRaw = entryIDsRaw
+        }
     }
 }
 
