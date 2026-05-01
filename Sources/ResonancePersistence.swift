@@ -249,14 +249,23 @@ enum ResonanceSchemaV2: VersionedSchema {
     }
 }
 
+enum ResonanceSchemaV3: VersionedSchema {
+    static var versionIdentifier = Schema.Version(3, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [MemoryEntry.self, MemoryCollection.self, MemoryScene.self]
+    }
+}
+
 enum ResonanceMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [ResonanceSchemaV1.self, ResonanceSchemaV2.self]
+        [ResonanceSchemaV1.self, ResonanceSchemaV2.self, ResonanceSchemaV3.self]
     }
 
     static var stages: [MigrationStage] {
         [
-            .lightweight(fromVersion: ResonanceSchemaV1.self, toVersion: ResonanceSchemaV2.self)
+            .lightweight(fromVersion: ResonanceSchemaV1.self, toVersion: ResonanceSchemaV2.self),
+            .lightweight(fromVersion: ResonanceSchemaV2.self, toVersion: ResonanceSchemaV3.self)
         ]
     }
 }

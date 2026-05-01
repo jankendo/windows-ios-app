@@ -12,6 +12,17 @@ struct PhotoCaptionGeneration {
     let style: PhotoCaptionStyle
 }
 
+struct ProductVisualProfile {
+    let visualFeatureVector: [Float]
+    let dominantColorHexes: [String]
+    let brightnessScore: Double
+    let heroFocusPoint: CGPoint
+    let heroCrop: MemoryHeroCrop
+    let generatedTitle: String
+    let searchKeywords: [String]
+    let visualQualityScore: Double
+}
+
 enum MemoryAnalysisService {
     static func requestSpeechAuthorizationIfNeeded() async {
         await log("speech authorization status=\(SFSpeechRecognizer.authorizationStatus().rawValue)", category: "analysis")
@@ -123,6 +134,156 @@ enum MemoryAnalysisService {
         throw CaptionGenerationError.foundationModelsUnavailable
     }
 
+    static func visualProfile(
+        from data: Data,
+        title: String? = nil,
+        placeLabel: String? = nil,
+        createdAt: Date = .now
+    ) async -> ProductVisualProfile {
+        async let tagsTask = imageTags(from: data)
+        async let colorStatsTask = colorStatistics(from: data)
+
+        let focusPoint: CGPoint
+        if let image = UIImage(data: data) {
+            focusPoint = await SaliencyFocusResolver.focusPoint(for: image)
+        } else {
+            focusPoint = CGPoint(x: 0.5, y: 0.5)
+        }
+
+        let tags = await tagsTask
+        let colorStats = await colorStatsTask
+        let normalizedTags = tags.map { $0.lowercased() }
+        let atmosphere = AtmosphereStyle(date: createdAt)
+        let generatedTitle = generatedMemoryTitle(
+            title: title,
+            placeLabel: placeLabel,
+            tags: normalizedTags,
+            atmosphere: atmosphere
+        )
+        let keywords = productSearchKeywords(
+            tags: normalizedTags,
+            placeLabel: placeLabel,
+            atmosphere: atmosphere,
+            generatedTitle: generatedTitle
+        )
+        let heroCrop = cropAroundFocus(focusPoint)
+        let visualQuality = visualQualityScore(
+            brightness: colorStats.brightness,
+            contrast: colorStats.contrast,
+            saturation: colorStats.saturation,
+            tagCount: tags.count
+        )
+
+        return ProductVisualProfile(
+            visualFeatureVector: [
+                Float(colorStats.brightness),
+                Float(colorStats.saturation),
+                Float(colorStats.contrast),
+                Float(colorStats.warmth),
+                Float(focusPoint.x),
+                Float(focusPoint.y),
+                Float(min(Double(tags.count) / 5.0, 1.0))
+            ],
+            dominantColorHexes: colorStats.dominantHexes,
+            brightnessScore: colorStats.brightness,
+            heroFocusPoint: focusPoint,
+            heroCrop: heroCrop,
+            generatedTitle: generatedTitle,
+            searchKeywords: keywords,
+            visualQualityScore: visualQuality
+        )
+    }
+
+    @MainActor
+    static func backfillProductMetadata(for entry: MemoryEntry) async -> Bool {
+        let metadata = entry.atmosphereMetadata
+        let alreadyReady = metadata?.hasProductAnalysis == true
+            && entry.qualityScore != nil
+            && !(entry.dominantColorHexes.isEmpty)
+        guard !alreadyReady else { return false }
+        guard let imageData = try? Data(contentsOf: entry.photoURL) else { return false }
+        let audioURL = entry.analysisAudioURL ?? entry.audioURL
+
+        async let visualProfileTask = visualProfile(
+            from: imageData,
+            title: entry.title,
+            placeLabel: entry.placeLabel,
+            createdAt: entry.createdAt
+        )
+        async let audioProfileTask = Task.detached(priority: .utility) {
+            ImmersiveAudioIntelligence.analyze(url: audioURL)
+        }.value
+
+        let visualProfile = await visualProfileTask
+        let audioProfile = await audioProfileTask
+        let captureQualityScore = min(0.98, max(0.18, (visualProfile.visualQualityScore * 0.58) + (audioProfile.audioQualityScore * 0.42)))
+
+        entry.qualityScore = captureQualityScore
+        entry.dominantColorsRaw = MemoryEntry.encodeTags(visualProfile.dominantColorHexes)
+        entry.heroFocusX = Double(visualProfile.heroFocusPoint.x)
+        entry.heroFocusY = Double(visualProfile.heroFocusPoint.y)
+
+        do {
+            if metadata == nil {
+                let newMetadata = MemoryAtmosphereMetadata(
+                    placeLabel: entry.placeLabel,
+                    waveformFingerprint: audioProfile.waveformFingerprint,
+                    analysisAudioFileName: entry.audioFileName,
+                    photoCaption: entry.photoCaption,
+                    atmosphereStyle: entry.atmosphereStyle,
+                    captureDuration: entry.audioDuration,
+                    sensorSnapshot: entry.sensorSnapshot,
+                    minimumDecibels: entry.minimumDecibels,
+                    maximumDecibels: entry.maximumDecibels,
+                    audioFeatureVector: audioProfile.audioFeatureVector,
+                    seamlessLoopStartPoint: audioProfile.seamlessLoopStartPoint,
+                    seamlessLoopEndPoint: audioProfile.seamlessLoopEndPoint,
+                    directionalHotspots: audioProfile.directionalHotspots,
+                    capturedSpatialAudio: entry.isSpatialCapture,
+                    visualFeatureVector: visualProfile.visualFeatureVector,
+                    audioQualityWarnings: audioProfile.audioQualityWarnings,
+                    captureQualityScore: captureQualityScore,
+                    generatedTitle: visualProfile.generatedTitle,
+                    searchKeywords: visualProfile.searchKeywords,
+                    heroCrop: visualProfile.heroCrop,
+                    dominantColorHexes: visualProfile.dominantColorHexes,
+                    brightnessScore: visualProfile.brightnessScore
+                )
+                try MediaStore.saveAtmosphereMetadata(newMetadata, for: entry.id)
+            } else {
+                try MediaStore.updateAtmosphereMetadata(for: entry.id) { metadata in
+                    if metadata.waveformFingerprint.isEmpty {
+                        metadata.waveformFingerprint = audioProfile.waveformFingerprint
+                    }
+                    if metadata.audioFeatureVector?.isEmpty ?? true {
+                        metadata.audioFeatureVector = audioProfile.audioFeatureVector
+                    }
+                    metadata.audioQualityWarnings = audioProfile.audioQualityWarnings
+                    metadata.captureQualityScore = captureQualityScore
+                    metadata.visualFeatureVector = visualProfile.visualFeatureVector
+                    metadata.generatedTitle = visualProfile.generatedTitle
+                    metadata.searchKeywords = visualProfile.searchKeywords
+                    metadata.heroCrop = visualProfile.heroCrop
+                    metadata.dominantColorHexes = visualProfile.dominantColorHexes
+                    metadata.brightnessScore = visualProfile.brightnessScore
+                    if metadata.seamlessLoopStartPoint == nil {
+                        metadata.seamlessLoopStartPoint = audioProfile.seamlessLoopStartPoint
+                    }
+                    if metadata.seamlessLoopEndPoint == nil {
+                        metadata.seamlessLoopEndPoint = audioProfile.seamlessLoopEndPoint
+                    }
+                    if metadata.directionalHotspots.isEmpty {
+                        metadata.directionalHotspots = audioProfile.directionalHotspots
+                    }
+                }
+            }
+            return true
+        } catch {
+            await log("product metadata backfill failed: \(error.localizedDescription)", category: "analysis")
+            return false
+        }
+    }
+
     private static func imageTags(from data: Data) async -> [String] {
         await Task.detached(priority: .userInitiated) {
             guard
@@ -146,6 +307,183 @@ enum MemoryAnalysisService {
                 return []
             }
         }.value
+    }
+
+    private struct ColorStatistics {
+        let dominantHexes: [String]
+        let brightness: Double
+        let saturation: Double
+        let contrast: Double
+        let warmth: Double
+    }
+
+    private static func colorStatistics(from data: Data) async -> ColorStatistics {
+        await Task.detached(priority: .userInitiated) {
+            guard let image = UIImage(data: data) else {
+                return ColorStatistics(dominantHexes: [], brightness: 0.5, saturation: 0.3, contrast: 0.2, warmth: 0)
+            }
+
+            let targetSize = CGSize(width: 32, height: 32)
+            let renderer = UIGraphicsImageRenderer(size: targetSize)
+            let resized = renderer.image { _ in
+                image.draw(in: CGRect(origin: .zero, size: targetSize))
+            }
+
+            guard let cgImage = resized.cgImage else {
+                return ColorStatistics(dominantHexes: [], brightness: 0.5, saturation: 0.3, contrast: 0.2, warmth: 0)
+            }
+
+            let width = cgImage.width
+            let height = cgImage.height
+            let bytesPerPixel = 4
+            let bytesPerRow = width * bytesPerPixel
+            var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+            let didRender = pixels.withUnsafeMutableBytes { rawBuffer -> Bool in
+                guard let context = CGContext(
+                    data: rawBuffer.baseAddress,
+                    width: width,
+                    height: height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: bytesPerRow,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                ) else {
+                    return false
+                }
+
+                context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+                return true
+            }
+            guard didRender else {
+                return ColorStatistics(dominantHexes: [], brightness: 0.5, saturation: 0.3, contrast: 0.2, warmth: 0)
+            }
+
+            var buckets: [String: Int] = [:]
+            var brightnessValues: [Double] = []
+            var saturationSum = 0.0
+            var warmthSum = 0.0
+
+            for offset in stride(from: 0, to: pixels.count, by: bytesPerPixel) {
+                let red = Double(pixels[offset]) / 255.0
+                let green = Double(pixels[offset + 1]) / 255.0
+                let blue = Double(pixels[offset + 2]) / 255.0
+                let maxChannel = max(red, green, blue)
+                let minChannel = min(red, green, blue)
+                let brightness = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+                let saturation = maxChannel == 0 ? 0 : (maxChannel - minChannel) / maxChannel
+                let warmth = red - blue
+
+                brightnessValues.append(brightness)
+                saturationSum += saturation
+                warmthSum += warmth
+
+                let quantizedRed = min(255, Int(red * 255 / 40) * 40 + 20)
+                let quantizedGreen = min(255, Int(green * 255 / 40) * 40 + 20)
+                let quantizedBlue = min(255, Int(blue * 255 / 40) * 40 + 20)
+                let hex = String(format: "#%02X%02X%02X", quantizedRed, quantizedGreen, quantizedBlue)
+                buckets[hex, default: 0] += 1
+            }
+
+            let sampleCount = Double(max(brightnessValues.count, 1))
+            let averageBrightness = brightnessValues.reduce(0, +) / sampleCount
+            let variance = brightnessValues.reduce(0) { partial, value in
+                let centered = value - averageBrightness
+                return partial + centered * centered
+            } / sampleCount
+            let dominantHexes = buckets
+                .sorted { lhs, rhs in
+                    if lhs.value == rhs.value {
+                        return lhs.key < rhs.key
+                    }
+                    return lhs.value > rhs.value
+                }
+                .prefix(4)
+                .map(\.key)
+
+            return ColorStatistics(
+                dominantHexes: dominantHexes,
+                brightness: averageBrightness,
+                saturation: saturationSum / sampleCount,
+                contrast: min(1, sqrt(variance) * 3.2),
+                warmth: max(-1, min(1, warmthSum / sampleCount))
+            )
+        }.value
+    }
+
+    private static func generatedMemoryTitle(
+        title: String?,
+        placeLabel: String?,
+        tags: [String],
+        atmosphere: AtmosphereStyle
+    ) -> String {
+        let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedTitle.isEmpty {
+            return trimmedTitle
+        }
+
+        let place = placeLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subject = localizedPrimarySubject(from: tags)
+
+        if let place, !place.isEmpty, let subject {
+            return "\(place)の\(subject)"
+        }
+        if let place, !place.isEmpty {
+            return "\(place)の\(atmosphere.localizedLabel)"
+        }
+        if let subject {
+            return "\(subject)の\(atmosphere.localizedLabel)"
+        }
+        return atmosphere.localizedLabel
+    }
+
+    private static func productSearchKeywords(
+        tags: [String],
+        placeLabel: String?,
+        atmosphere: AtmosphereStyle,
+        generatedTitle: String
+    ) -> [String] {
+        var keywords: [String] = [
+            generatedTitle,
+            atmosphere.localizedLabel,
+            atmosphere.poeticLine,
+            atmosphere.restorativeLine
+        ]
+
+        if let placeLabel, !placeLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            keywords.append(placeLabel)
+        }
+
+        keywords.append(contentsOf: localizedVisualHints(from: tags))
+        keywords.append(contentsOf: tags)
+
+        var unique: [String] = []
+        for keyword in keywords {
+            let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !unique.contains(trimmed) else { continue }
+            unique.append(trimmed)
+        }
+        return Array(unique.prefix(18))
+    }
+
+    private static func cropAroundFocus(_ focusPoint: CGPoint) -> MemoryHeroCrop {
+        let cropWidth = 0.86
+        let cropHeight = 0.86
+        let x = max(0, min(1 - cropWidth, Double(focusPoint.x) - cropWidth / 2))
+        let y = max(0, min(1 - cropHeight, Double(focusPoint.y) - cropHeight / 2))
+        return MemoryHeroCrop(x: x, y: y, width: cropWidth, height: cropHeight)
+    }
+
+    private static func visualQualityScore(brightness: Double, contrast: Double, saturation: Double, tagCount: Int) -> Double {
+        var score = 0.58
+        let brightnessDistance = abs(brightness - 0.52)
+        score += max(0, 0.18 - brightnessDistance * 0.34)
+        score += min(contrast, 0.42) * 0.26
+        score += min(saturation, 0.65) * 0.16
+        score += min(Double(tagCount) / 5.0, 1.0) * 0.08
+        if brightness < 0.16 || brightness > 0.88 {
+            score -= 0.12
+        }
+        return max(0.24, min(0.98, score))
     }
 
     private static func audioTags(from audioURL: URL?, transcript: String) async -> [String] {

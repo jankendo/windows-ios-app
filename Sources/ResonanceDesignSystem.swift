@@ -146,13 +146,6 @@ struct ResonanceGradientBackground: View {
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
-        .overlay(alignment: .topTrailing) {
-            Circle()
-                .fill(palette.accent.opacity(colorScheme == .dark ? 0.14 : 0.08))
-                .frame(width: 240, height: 240)
-                .blur(radius: 40)
-                .offset(x: 80, y: -80)
-        }
         .ignoresSafeArea()
     }
 }
@@ -170,10 +163,10 @@ struct ResonanceCard<Content: View>: View {
 
     var body: some View {
         let palette = ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
-        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
 
         content
-            .padding(20)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(palette.surfacePrimary, in: shape)
             .clipShape(shape)
@@ -181,7 +174,7 @@ struct ResonanceCard<Content: View>: View {
                 shape
                     .strokeBorder(palette.stroke)
             }
-            .shadow(color: palette.shadow, radius: 24, y: 12)
+            .shadow(color: palette.shadow, radius: 14, y: 7)
     }
 }
 
@@ -250,10 +243,10 @@ struct ResonanceStatTile: View {
                 .foregroundStyle(palette.secondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(14)
+        .background(palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(palette.stroke)
         }
     }
@@ -329,9 +322,9 @@ struct ResonanceInputFieldModifier: ViewModifier {
         content
             .padding(.horizontal, 14)
             .padding(.vertical, 14)
-            .background(palette.inputFill, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(palette.inputFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(palette.stroke)
             }
             .foregroundStyle(palette.primaryText)
@@ -350,5 +343,120 @@ extension TimeInterval {
         let minutes = totalSeconds / 60
         let seconds = totalSeconds % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+struct ResonanceProductHeader: View {
+    let eyebrow: String
+    let title: String
+    let subtitle: String
+    var atmosphere: AtmosphereStyle? = nil
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let palette = ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
+
+        VStack(alignment: .leading, spacing: 6) {
+            Text(eyebrow)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(palette.accent)
+                .textCase(.uppercase)
+
+            Text(title)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(palette.primaryText)
+                .lineLimit(2)
+                .minimumScaleFactor(0.86)
+
+            Text(subtitle)
+                .font(.subheadline)
+                .foregroundStyle(palette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct ResonanceQualityMeter: View {
+    let score: Double
+    let label: String
+    var warnings: [String] = []
+    var atmosphere: AtmosphereStyle? = nil
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let palette = ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
+        let clampedScore = max(0, min(1, score))
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(label, systemImage: warnings.isEmpty ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(warnings.isEmpty ? palette.primaryText : Color.orange)
+                Spacer()
+                Text("\(Int((clampedScore * 100).rounded()))")
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(palette.secondaryText)
+            }
+
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(palette.surfaceSecondary)
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.orange, palette.accent, Color.green],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: geometry.size.width * clampedScore)
+                }
+            }
+            .frame(height: 6)
+
+            if let warning = warnings.first {
+                Text(warning)
+                    .font(.caption2)
+                    .foregroundStyle(palette.secondaryText)
+                    .lineLimit(2)
+            }
+        }
+    }
+}
+
+struct ResonanceColorSwatches: View {
+    let hexes: [String]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(hexes.prefix(4), id: \.self) { hex in
+                Circle()
+                    .fill(Color(hex: hex) ?? .secondary.opacity(0.25))
+                    .frame(width: 12, height: 12)
+                    .overlay {
+                        Circle().strokeBorder(.white.opacity(0.45), lineWidth: 0.5)
+                    }
+            }
+        }
+        .accessibilityHidden(hexes.isEmpty)
+    }
+}
+
+extension Color {
+    init?(hex: String) {
+        let normalized = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard normalized.count == 6, let value = Int(normalized, radix: 16) else {
+            return nil
+        }
+
+        self.init(
+            red: Double((value >> 16) & 0xFF) / 255.0,
+            green: Double((value >> 8) & 0xFF) / 255.0,
+            blue: Double(value & 0xFF) / 255.0
+        )
     }
 }

@@ -141,6 +141,15 @@ enum PartialCaptureRecoveryState: Equatable, Codable {
     case failed(reason: InterruptionReason)
 }
 
+struct MemoryHeroCrop: Codable, Hashable {
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+
+    static let fullFrame = MemoryHeroCrop(x: 0, y: 0, width: 1, height: 1)
+}
+
 struct MemoryAtmosphereMetadata: Codable {
     static let currentPhotoCaptionVersion = 3
 
@@ -161,6 +170,14 @@ struct MemoryAtmosphereMetadata: Codable {
     var seamlessLoopEndPoint: Double?
     var directionalHotspots: [DirectionalAudioHotspot]
     var capturedSpatialAudio: Bool?
+    var visualFeatureVector: [Float]?
+    var audioQualityWarnings: [String]?
+    var captureQualityScore: Double?
+    var generatedTitle: String?
+    var searchKeywords: [String]?
+    var heroCrop: MemoryHeroCrop?
+    var dominantColorHexes: [String]?
+    var brightnessScore: Double?
 
     init(
         placeLabel: String?,
@@ -176,10 +193,19 @@ struct MemoryAtmosphereMetadata: Codable {
         seamlessLoopStartPoint: Double? = nil,
         seamlessLoopEndPoint: Double? = nil,
         directionalHotspots: [DirectionalAudioHotspot] = [],
-        capturedSpatialAudio: Bool? = nil
+        capturedSpatialAudio: Bool? = nil,
+        visualFeatureVector: [Float]? = nil,
+        audioQualityWarnings: [String]? = nil,
+        captureQualityScore: Double? = nil,
+        generatedTitle: String? = nil,
+        searchKeywords: [String]? = nil,
+        heroCrop: MemoryHeroCrop? = nil,
+        dominantColorHexes: [String]? = nil,
+        brightnessScore: Double? = nil
     ) {
         let trimmedCaption = photoCaption?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedCaption = (trimmedCaption?.isEmpty == false) ? trimmedCaption : nil
+        let trimmedGeneratedTitle = generatedTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         self.placeLabel = placeLabel
         self.waveformFingerprint = waveformFingerprint
@@ -198,6 +224,14 @@ struct MemoryAtmosphereMetadata: Codable {
         self.seamlessLoopEndPoint = seamlessLoopEndPoint
         self.directionalHotspots = directionalHotspots
         self.capturedSpatialAudio = capturedSpatialAudio
+        self.visualFeatureVector = visualFeatureVector
+        self.audioQualityWarnings = audioQualityWarnings
+        self.captureQualityScore = captureQualityScore
+        self.generatedTitle = (trimmedGeneratedTitle?.isEmpty == false) ? trimmedGeneratedTitle : nil
+        self.searchKeywords = searchKeywords?.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        self.heroCrop = heroCrop
+        self.dominantColorHexes = dominantColorHexes
+        self.brightnessScore = brightnessScore
     }
 
     var atmosphereStyle: AtmosphereStyle {
@@ -221,6 +255,12 @@ struct MemoryAtmosphereMetadata: Codable {
 
     var hasImmersiveAudioProfile: Bool {
         seamlessLoopStartPoint != nil || seamlessLoopEndPoint != nil || !(audioFeatureVector?.isEmpty ?? true)
+    }
+
+    var hasProductAnalysis: Bool {
+        captureQualityScore != nil
+            && !(visualFeatureVector?.isEmpty ?? true)
+            && !(searchKeywords?.isEmpty ?? true)
     }
 }
 
@@ -279,6 +319,12 @@ final class MemoryEntry: Identifiable {
     var audioTagsRaw: String
     var transcript: String
     var mood: String
+    var qualityScore: Double? = nil
+    var dominantColorsRaw: String? = nil
+    var heroFocusX: Double? = nil
+    var heroFocusY: Double? = nil
+    var lastPlayedAt: Date? = nil
+    var playCount: Int = 0
 
     init(
         id: UUID = UUID(),
@@ -292,7 +338,13 @@ final class MemoryEntry: Identifiable {
         visualTags: [String],
         audioTags: [String],
         transcript: String,
-        mood: String
+        mood: String,
+        qualityScore: Double? = nil,
+        dominantColors: [String] = [],
+        heroFocusX: Double? = nil,
+        heroFocusY: Double? = nil,
+        lastPlayedAt: Date? = nil,
+        playCount: Int = 0
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -306,11 +358,23 @@ final class MemoryEntry: Identifiable {
         self.audioTagsRaw = Self.encodeTags(audioTags)
         self.transcript = transcript
         self.mood = mood
+        self.qualityScore = qualityScore
+        self.dominantColorsRaw = Self.encodeTags(dominantColors)
+        self.heroFocusX = heroFocusX
+        self.heroFocusY = heroFocusY
+        self.lastPlayedAt = lastPlayedAt
+        self.playCount = playCount
     }
 
     var displayTitle: String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? createdAt.formatted(date: .abbreviated, time: .shortened) : trimmed
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        if let generatedTitle = atmosphereMetadata?.generatedTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !generatedTitle.isEmpty {
+            return generatedTitle
+        }
+        return createdAt.formatted(date: .abbreviated, time: .shortened)
     }
 
     var visualTags: [String] {
@@ -339,6 +403,8 @@ final class MemoryEntry: Identifiable {
             atmosphereStyle.localizedLabel,
             photoCaption ?? "",
             placeLabel ?? "",
+            atmosphereMetadata?.generatedTitle ?? "",
+            productSearchKeywords.joined(separator: " "),
             visualTagsRaw.replacingOccurrences(of: "|", with: " "),
             audioTagsRaw.replacingOccurrences(of: "|", with: " ")
         ]
@@ -459,6 +525,59 @@ final class MemoryEntry: Identifiable {
         return []
     }
 
+    var visualFeatureVector: [Float] {
+        atmosphereMetadata?.visualFeatureVector ?? []
+    }
+
+    var productSearchKeywords: [String] {
+        atmosphereMetadata?.searchKeywords ?? []
+    }
+
+    var dominantColorHexes: [String] {
+        let encoded = dominantColorsRaw ?? ""
+        let modelColors = Self.decodeTags(encoded).filter { $0.hasPrefix("#") }
+        if !modelColors.isEmpty {
+            return modelColors
+        }
+        return atmosphereMetadata?.dominantColorHexes ?? []
+    }
+
+    var heroFocusPoint: CGPoint {
+        if let heroFocusX, let heroFocusY {
+            return CGPoint(x: heroFocusX, y: heroFocusY)
+        }
+        if let crop = atmosphereMetadata?.heroCrop {
+            return CGPoint(x: crop.x + (crop.width / 2), y: crop.y + (crop.height / 2))
+        }
+        return CGPoint(x: 0.5, y: 0.5)
+    }
+
+    var productQualityScore: Double {
+        if let qualityScore {
+            return max(0, min(1, qualityScore))
+        }
+        if let metadataScore = atmosphereMetadata?.captureQualityScore {
+            return max(0, min(1, metadataScore))
+        }
+        let waveformAverage = waveformFingerprint.reduce(0) { $0 + $1 } / CGFloat(max(waveformFingerprint.count, 1))
+        return max(0.42, min(0.86, 0.54 + Double(waveformAverage) * 0.42))
+    }
+
+    var productQualityLabel: String {
+        switch productQualityScore {
+        case 0.82...:
+            return "高品質"
+        case 0.62..<0.82:
+            return "良好"
+        default:
+            return "要確認"
+        }
+    }
+
+    var productQualityWarnings: [String] {
+        atmosphereMetadata?.audioQualityWarnings ?? []
+    }
+
     var seamlessLoopStartPoint: Double? {
         atmosphereMetadata?.seamlessLoopStartPoint
     }
@@ -509,6 +628,11 @@ final class MemoryEntry: Identifiable {
         .compactMap { $0 }
         .filter { !$0.isEmpty }
         .joined(separator: "\n")
+    }
+
+    func recordPlaybackStarted() {
+        lastPlayedAt = .now
+        playCount += 1
     }
 
     static func encodeTags(_ tags: [String]) -> String {
@@ -726,14 +850,30 @@ enum MemorySearchEngine {
             audioVector = waveform + Array(repeating: 0, count: max(0, 8 - waveform.count))
         }
 
+        let visualVector: [Float]
+        if !entry.visualFeatureVector.isEmpty {
+            visualVector = Array(entry.visualFeatureVector.prefix(7)) + Array(repeating: 0, count: max(0, 7 - entry.visualFeatureVector.count))
+        } else {
+            visualVector = [
+                Float(entry.atmosphereMetadata?.brightnessScore ?? 0.5),
+                0.3,
+                0.2,
+                0,
+                Float(entry.heroFocusPoint.x),
+                Float(entry.heroFocusPoint.y),
+                Float(min(Double(entry.autoTags.count) / 5.0, 1.0))
+            ]
+        }
+
         let compass = compassPoint(for: entry)
         let atmosphereEncoding: [Float] = AtmosphereStyle.allCases.map {
             $0 == entry.atmosphereStyle ? 1 : 0
         }
-        return audioVector + [
+        return audioVector + visualVector + [
             Float(compass.naturalUrban),
             Float(compass.quietLively),
-            entry.isFavorite ? 1 : 0
+            entry.isFavorite ? 1 : 0,
+            Float(entry.productQualityScore)
         ] + atmosphereEncoding
     }
 
@@ -786,6 +926,10 @@ enum MemorySearchEngine {
         }
 
         score += entry.isFavorite ? 0.18 : 0
+        score += entry.productQualityScore * 0.24
+        if let lastPlayedAt = entry.lastPlayedAt {
+            score += max(0, 0.18 - (Date.now.timeIntervalSince(lastPlayedAt) / (60 * 60 * 24 * 14)))
+        }
         score += max(0, 0.18 - (Date.now.timeIntervalSince(entry.createdAt) / (60 * 60 * 24 * 30 * 4)))
         return score
     }
@@ -823,6 +967,12 @@ enum MemorySearchEngine {
         if contains(query: normalizedQuery, tokens: tokens, in: entry.placeLabel ?? "") {
             reasons.append("場所")
         }
+        if contains(query: normalizedQuery, tokens: tokens, in: entry.productSearchKeywords.joined(separator: " ")) {
+            reasons.append("写真")
+        }
+        if contains(query: normalizedQuery, tokens: tokens, in: entry.productQualityLabel) || entry.productQualityWarnings.contains(where: { contains(query: normalizedQuery, tokens: tokens, in: $0) }) {
+            reasons.append("品質")
+        }
         if contains(query: normalizedQuery, tokens: tokens, in: entry.atmosphereStyle.localizedLabel) {
             reasons.append("時間帯")
         }
@@ -846,7 +996,9 @@ enum MemorySearchEngine {
         let haystacks = [
             entry.searchableText,
             normalizeForLooseMatching(entry.searchableText),
-            entry.searchAliasText
+            entry.searchAliasText,
+            entry.productSearchKeywords.joined(separator: " ").lowercased(),
+            normalizeForLooseMatching(entry.productSearchKeywords.joined(separator: " "))
         ]
 
         if haystacks.contains(where: { $0.contains(query) }) {

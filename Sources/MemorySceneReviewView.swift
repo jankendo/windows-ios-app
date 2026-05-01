@@ -48,6 +48,35 @@ struct MemorySceneReviewView: View {
         return (trimmedCaption?.isEmpty == false) ? trimmedCaption! : atmosphere.poeticLine
     }
 
+    private var draftAudioQualityScore: Double {
+        guard let minimumDecibels = draft.minimumDecibels, let maximumDecibels = draft.maximumDecibels else {
+            return draft.audioDuration >= 4 ? 0.68 : 0.54
+        }
+        let range = max(0, maximumDecibels - minimumDecibels)
+        var score = 0.58 + min(range / 52.0, 0.22)
+        if maximumDecibels > -4 {
+            score -= 0.14
+        }
+        if maximumDecibels < -42 {
+            score -= 0.12
+        }
+        if draft.audioDuration >= 4 {
+            score += 0.08
+        }
+        return max(0.18, min(0.96, score))
+    }
+
+    private var draftAudioWarnings: [String] {
+        guard let maximumDecibels = draft.maximumDecibels else { return [] }
+        if maximumDecibels > -4 {
+            return ["音量ピークが強めです。保存はできますが、次回は少し離すと安定します"]
+        }
+        if maximumDecibels < -42 {
+            return ["録音が静かです。残したい音がある場合は少し近づいてください"]
+        }
+        return []
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let panelHeight = composerPanelHeight(in: geometry)
@@ -236,6 +265,13 @@ struct MemorySceneReviewView: View {
                             decibelSummary
                         }
                     }
+
+                    ResonanceQualityMeter(
+                        score: draftAudioQualityScore,
+                        label: "保存前の録音品質",
+                        warnings: draftAudioWarnings,
+                        atmosphere: atmosphere
+                    )
 
                     TextField("", text: $title, prompt: Text("例: 雨上がりの横浜、静かな余韻").foregroundStyle(palette.tertiaryText))
                         .focused($focusedField, equals: .title)
@@ -527,6 +563,7 @@ private struct ImmersiveMemoryPlaybackView: View {
     @State private var dragOffset: CGSize = .zero
     @State private var saliencyFocus = CGPoint(x: 0.5, y: 0.5)
     @State private var kenBurnsExpanded = false
+    @State private var zoomScale: CGFloat = 1
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
@@ -572,7 +609,7 @@ private struct ImmersiveMemoryPlaybackView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .scaleEffect(reduceMotion ? 1.04 : (kenBurnsExpanded ? 1.12 : 1.04))
+                    .scaleEffect((reduceMotion ? 1.04 : (kenBurnsExpanded ? 1.12 : 1.04)) * zoomScale)
                     .offset(
                         x: motionHorizontalShift + saliencyShift.width,
                         y: motionVerticalShift + saliencyShift.height
@@ -614,6 +651,17 @@ private struct ImmersiveMemoryPlaybackView: View {
                         dragOffset = .zero
                     }
                     viewModel.resetDrag()
+                }
+        )
+        .simultaneousGesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    zoomScale = max(1, min(3.2, value))
+                }
+                .onEnded { value in
+                    withAnimation(.interactiveSpring(response: 0.42, dampingFraction: 0.84)) {
+                        zoomScale = max(1, min(3.2, value))
+                    }
                 }
         )
         .safeAreaInset(edge: .top) {
@@ -761,12 +809,14 @@ private struct ImmersiveMemoryPlaybackView: View {
                 }
             }
 
-            AudioWaveformView(
+            SeekableAudioWaveformView(
                 samples: waveformSamples,
                 progress: viewModel.player.duration > 0 ? viewModel.player.currentTime / viewModel.player.duration : 0,
+                duration: max(viewModel.player.duration, draft.audioDuration),
                 activeColor: .white,
                 inactiveColor: Color.white.opacity(0.14),
-                minimumBarHeight: compact ? 8 : 10
+                minimumBarHeight: compact ? 8 : 10,
+                onSeek: { viewModel.seek(to: $0) }
             )
             .frame(height: compact ? 30 : 38)
             .accessibilityHidden(true)

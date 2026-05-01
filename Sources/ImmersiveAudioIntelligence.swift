@@ -18,6 +18,8 @@ struct ImmersiveAudioAnalysis {
     let seamlessLoopStartPoint: TimeInterval?
     let seamlessLoopEndPoint: TimeInterval?
     let directionalHotspots: [DirectionalAudioHotspot]
+    let audioQualityScore: Double
+    let audioQualityWarnings: [String]
 }
 
 enum ImmersiveAudioIntelligence {
@@ -28,7 +30,9 @@ enum ImmersiveAudioIntelligence {
                 audioFeatureVector: [],
                 seamlessLoopStartPoint: nil,
                 seamlessLoopEndPoint: nil,
-                directionalHotspots: []
+                directionalHotspots: [],
+                audioQualityScore: 0.52,
+                audioQualityWarnings: url == nil ? ["録音がありません"] : ["音声解析を完了できませんでした"]
             )
         }
 
@@ -36,13 +40,16 @@ enum ImmersiveAudioIntelligence {
         let loopPoints = analyzeLoopPoints(from: signal)
         let featureVector = makeFeatureVector(from: signal)
         let hotspots = detectHotspots(from: signal)
+        let quality = evaluateQuality(signal: signal, featureVector: featureVector, loopPoints: loopPoints)
 
         return ImmersiveAudioAnalysis(
             waveformFingerprint: waveform,
             audioFeatureVector: featureVector,
             seamlessLoopStartPoint: loopPoints?.start,
             seamlessLoopEndPoint: loopPoints?.end,
-            directionalHotspots: hotspots
+            directionalHotspots: hotspots,
+            audioQualityScore: quality.score,
+            audioQualityWarnings: quality.warnings
         )
     }
 }
@@ -223,6 +230,55 @@ private extension ImmersiveAudioIntelligence {
             peakRatio,
             channelSpread
         ]
+    }
+
+    static func evaluateQuality(signal: Signal, featureVector: [Float], loopPoints: LoopPoints?) -> (score: Double, warnings: [String]) {
+        guard featureVector.count >= 8, signal.sampleRate > 0 else {
+            return (0.52, ["音声特徴を十分に取得できませんでした"])
+        }
+
+        let duration = Double(signal.frameCount) / signal.sampleRate
+        let rms = Double(featureVector[0])
+        let dynamicRange = Double(featureVector[2])
+        let transientDensity = Double(featureVector[4])
+        let quietRatio = Double(featureVector[5])
+        let peakRatio = Double(featureVector[6])
+        var score = 0.62
+        var warnings: [String] = []
+
+        if duration >= 4 {
+            score += 0.08
+        } else {
+            score -= 0.1
+            warnings.append("録音が短いため、空気感が薄くなる可能性があります")
+        }
+
+        if rms < 0.006 {
+            score -= 0.18
+            warnings.append("入力が静かです。次回は音源へ少し近づくと安定します")
+        } else if rms > 0.16 || peakRatio > 0.18 {
+            score -= 0.16
+            warnings.append("音量ピークが強めです。次回は少し離すと歪みを抑えられます")
+        } else {
+            score += 0.12
+        }
+
+        if quietRatio > 0.82 {
+            score -= 0.08
+            warnings.append("静音区間が多めです")
+        }
+
+        if dynamicRange > 0.08 {
+            score += 0.06
+        }
+        if transientDensity > 0.008 {
+            score += 0.04
+        }
+        if loopPoints != nil {
+            score += 0.04
+        }
+
+        return (max(0.18, min(0.98, score)), Array(warnings.prefix(2)))
     }
 
     static func detectHotspots(from signal: Signal) -> [DirectionalAudioHotspot] {

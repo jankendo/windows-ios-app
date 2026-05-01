@@ -48,6 +48,10 @@ final class ImmersivePlaybackViewModel: ObservableObject {
         player.togglePlayback(for: preferredPlaybackURL)
     }
 
+    func seek(to time: TimeInterval) {
+        player.seek(to: time)
+    }
+
     func updateBaseSpatialOffset(_ offset: CGSize) {
         baseSpatialOffset = offset
         applySpatialState()

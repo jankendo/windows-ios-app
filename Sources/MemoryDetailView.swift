@@ -62,6 +62,7 @@ struct MemoryDetailView: View {
                     }
 
                     captionStyleCard
+                    qualityInsightCard
 
                     if entry.sensorSnapshot != nil
                         || entry.minimumDecibels != nil
@@ -202,6 +203,7 @@ struct MemoryDetailView: View {
                 player.load(url: playbackURL)
             }
             Task {
+                await backfillProductMetadataIfNeeded()
                 await backfillPhotoCaptionIfNeeded()
             }
         }
@@ -274,6 +276,10 @@ struct MemoryDetailView: View {
                                     .foregroundStyle(palette.primaryText)
                                 Spacer()
                                 Button {
+                                    if !player.isPlaying {
+                                        entry.recordPlaybackStarted()
+                                        try? modelContext.save()
+                                    }
                                     player.togglePlayback(for: playbackURL)
                                 } label: {
                                     Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
@@ -283,12 +289,14 @@ struct MemoryDetailView: View {
                                 .buttonStyle(.plain)
                             }
 
-                            AudioWaveformView(
+                            SeekableAudioWaveformView(
                                 samples: waveformSamples,
                                 progress: player.duration > 0 ? player.currentTime / player.duration : 0,
+                                duration: max(player.duration, entry.audioDuration),
                                 activeColor: palette.accent,
                                 inactiveColor: Color.white.opacity(colorScheme == .dark ? 0.2 : 0.26),
-                                minimumBarHeight: 10
+                                minimumBarHeight: 10,
+                                onSeek: { player.seek(to: $0) }
                             )
 
                             Slider(
@@ -391,6 +399,44 @@ struct MemoryDetailView: View {
         }
     }
 
+    private var qualityInsightCard: some View {
+        ResonanceCard(atmosphere: entry.atmosphereStyle) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("記録品質")
+                            .font(.headline)
+                            .foregroundStyle(palette.primaryText)
+                        Text("写真、録音、検索しやすさをオンデバイスで評価しています。")
+                            .font(.caption)
+                            .foregroundStyle(palette.secondaryText)
+                    }
+                    Spacer()
+                    ResonanceColorSwatches(hexes: entry.dominantColorHexes)
+                }
+
+                ResonanceQualityMeter(
+                    score: entry.productQualityScore,
+                    label: entry.productQualityLabel,
+                    warnings: entry.productQualityWarnings,
+                    atmosphere: entry.atmosphereStyle
+                )
+
+                if !entry.productSearchKeywords.isEmpty {
+                    FlexibleTagCloud(tags: Array(entry.productSearchKeywords.prefix(8)), atmosphere: entry.atmosphereStyle)
+                }
+            }
+        }
+    }
+
+    private func backfillProductMetadataIfNeeded() async {
+        let updated = await MemoryAnalysisService.backfillProductMetadata(for: entry)
+        if updated {
+            waveformSamples = entry.waveformFingerprint
+            try? modelContext.save()
+        }
+    }
+
     private func backfillPhotoCaptionIfNeeded() async {
         let needsCaptionRefresh = entry.atmosphereMetadata?.needsPhotoCaptionRefresh ?? true
         guard needsCaptionRefresh || resolvedPhotoCaption == nil else { return }
@@ -474,6 +520,11 @@ private struct MemoryHeroImage: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .scaleEffect(1.035)
+                    .offset(
+                        x: (0.5 - entry.heroFocusPoint.x) * 36,
+                        y: (0.5 - entry.heroFocusPoint.y) * 28
+                    )
             } else {
                 RoundedRectangle(cornerRadius: 32)
                     .fill(.gray.opacity(0.15))
@@ -496,12 +547,14 @@ private struct SavedMemoryImmersivePreviewView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @ObservedObject private var environmentService = CaptureLocationService.shared
     @StateObject private var viewModel = ImmersivePlaybackViewModel()
     @State private var controlsVisible = true
     @State private var dragOffset: CGSize = .zero
     @State private var saliencyFocus = CGPoint(x: 0.5, y: 0.5)
     @State private var kenBurnsExpanded = false
+    @State private var zoomScale: CGFloat = 1
 
     private var palette: ResonancePalette {
         ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
@@ -541,7 +594,7 @@ private struct SavedMemoryImmersivePreviewView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .scaleEffect(reduceMotion ? 1.04 : (kenBurnsExpanded ? 1.12 : 1.04))
+                    .scaleEffect((reduceMotion ? 1.04 : (kenBurnsExpanded ? 1.12 : 1.04)) * zoomScale)
                     .offset(
                         x: motionHorizontalShift + saliencyShift.width,
                         y: motionVerticalShift + saliencyShift.height
@@ -583,6 +636,17 @@ private struct SavedMemoryImmersivePreviewView: View {
                         dragOffset = .zero
                     }
                     viewModel.resetDrag()
+                }
+        )
+        .simultaneousGesture(
+            MagnificationGesture()
+                .onChanged { value in
+                    zoomScale = max(1, min(3.2, value))
+                }
+                .onEnded { value in
+                    withAnimation(.interactiveSpring(response: 0.42, dampingFraction: 0.84)) {
+                        zoomScale = max(1, min(3.2, value))
+                    }
                 }
         )
         .safeAreaInset(edge: .top) {
@@ -630,6 +694,8 @@ private struct SavedMemoryImmersivePreviewView: View {
             }
         }
         .onAppear {
+            entry.recordPlaybackStarted()
+            try? modelContext.save()
             viewModel.loadAmbientLoop(
                 playbackURL: playbackURL,
                 analysisURL: entry.analysisAudioURL,
@@ -734,12 +800,14 @@ private struct SavedMemoryImmersivePreviewView: View {
                 }
             }
 
-            AudioWaveformView(
+            SeekableAudioWaveformView(
                 samples: entry.waveformFingerprint,
                 progress: viewModel.player.duration > 0 ? viewModel.player.currentTime / viewModel.player.duration : 0,
+                duration: max(viewModel.player.duration, entry.audioDuration),
                 activeColor: .white,
                 inactiveColor: Color.white.opacity(0.14),
-                minimumBarHeight: compact ? 8 : 10
+                minimumBarHeight: compact ? 8 : 10,
+                onSeek: { viewModel.seek(to: $0) }
             )
             .frame(height: compact ? 30 : 38)
             .accessibilityHidden(true)

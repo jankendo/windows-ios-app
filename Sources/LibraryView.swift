@@ -246,6 +246,23 @@ struct LibraryView: View {
         .filter { !$0.entries.isEmpty }
     }
 
+    private var todayEntries: [MemoryEntry] {
+        filteredEntries
+            .filter { Calendar.current.isDateInToday($0.createdAt) }
+            .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private var recentlyPlayedEntries: [MemoryEntry] {
+        filteredEntries
+            .filter { $0.lastPlayedAt != nil }
+            .sorted { ($0.lastPlayedAt ?? .distantPast) > ($1.lastPlayedAt ?? .distantPast) }
+    }
+
+    private var averageQualityScore: Double {
+        guard !filteredEntries.isEmpty else { return 0 }
+        return filteredEntries.map(\.productQualityScore).reduce(0, +) / Double(filteredEntries.count)
+    }
+
     private var timeCapsuleEntries: [MemoryEntry] {
         guard timeCapsuleEnabled else { return [] }
         let calendar = Calendar.current
@@ -529,6 +546,7 @@ struct LibraryView: View {
                 HStack(spacing: 12) {
                     ResonanceStatTile(title: "合計", value: "\(entries.count)", symbol: "photo.stack.fill")
                     ResonanceStatTile(title: "地図対応", value: "\(entries.filter { $0.hasMapLocation }.count)", symbol: "map.fill")
+                    ResonanceStatTile(title: "平均品質", value: filteredEntries.isEmpty ? "--" : "\(Int((averageQualityScore * 100).rounded()))", symbol: "checkmark.seal.fill")
                     if nearbyMemoriesEnabled {
                         ResonanceStatTile(title: "近く", value: "\(nearbyEntries.count)", symbol: "location.fill")
                     }
@@ -656,8 +674,27 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var reunionSection: some View {
-        if timeCapsuleEnabled || nearbyMemoriesEnabled {
+        if timeCapsuleEnabled || nearbyMemoriesEnabled || !todayEntries.isEmpty || !recentlyPlayedEntries.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
+                if !todayEntries.isEmpty {
+                    sectionHeader(title: "今日の記録", subtitle: "今日残した写真と音")
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 14) {
+                            ForEach(todayEntries.prefix(8)) { entry in
+                                NavigationLink {
+                                    MemoryDetailView(entry: entry)
+                                } label: {
+                                    ProductMemoryRailCard(entry: entry)
+                                        .frame(width: 252)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
                 if !timeCapsuleEntries.isEmpty {
                     sectionHeader(title: "Time Capsule", subtitle: "過去の同じ日に残した空気")
 
@@ -669,6 +706,25 @@ struct LibraryView: View {
                                 } label: {
                                     TimeCapsuleCard(entry: entry)
                                         .frame(width: 248)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                if !recentlyPlayedEntries.isEmpty {
+                    sectionHeader(title: "最近聴いた記録", subtitle: "再生した余韻へすぐ戻る")
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 14) {
+                            ForEach(recentlyPlayedEntries.prefix(8)) { entry in
+                                NavigationLink {
+                                    MemoryDetailView(entry: entry)
+                                } label: {
+                                    ProductMemoryRailCard(entry: entry)
+                                        .frame(width: 252)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -1119,9 +1175,12 @@ struct LibraryView: View {
             partialResult[entry.id] = entry
         }.values)
 
-        var updatedAnyCaption = false
+        var updatedAnyEntry = false
 
         for entry in candidateEntries {
+            let updatedProductMetadata = await MemoryAnalysisService.backfillProductMetadata(for: entry)
+            updatedAnyEntry = updatedAnyEntry || updatedProductMetadata
+
             let needsCaptionRefresh = entry.atmosphereMetadata?.needsPhotoCaptionRefresh ?? true
             if let existingCaption = entry.photoCaption, !existingCaption.isEmpty, !needsCaptionRefresh {
                 continue
@@ -1141,14 +1200,15 @@ struct LibraryView: View {
                         metadata.photoCaptionVersion = MemoryAtmosphereMetadata.currentPhotoCaptionVersion
                     }
                 }
-                updatedAnyCaption = true
+                updatedAnyEntry = true
             } catch {
                 continue
             }
         }
 
-        if updatedAnyCaption {
+        if updatedAnyEntry {
             await MainActor.run {
+                try? modelContext.save()
                 captionRefreshToken += 1
             }
         }
@@ -1520,6 +1580,59 @@ private struct TimeCapsuleCard: View {
     }
 }
 
+private struct ProductMemoryRailCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let entry: MemoryEntry
+
+    var body: some View {
+        let palette = ResonancePalette.make(for: colorScheme, atmosphere: entry.atmosphereStyle)
+
+        ResonanceCard(atmosphere: entry.atmosphereStyle) {
+            VStack(alignment: .leading, spacing: 12) {
+                ZStack(alignment: .bottomLeading) {
+                    MemoryThumbnail(entry: entry, width: nil, height: 142)
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.58)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                    HStack {
+                        ResonanceBadge(
+                            title: entry.productQualityLabel,
+                            systemImage: "checkmark.seal.fill",
+                            tint: .white,
+                            atmosphere: entry.atmosphereStyle
+                        )
+                        Spacer()
+                        ResonanceColorSwatches(hexes: entry.dominantColorHexes)
+                    }
+                    .padding(10)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(entry.displayTitle)
+                        .font(.headline)
+                        .foregroundStyle(palette.primaryText)
+                        .lineLimit(1)
+                    Text(entry.descriptiveCaption)
+                        .font(.caption)
+                        .foregroundStyle(palette.secondaryText)
+                        .lineLimit(2)
+                }
+
+                ResonanceQualityMeter(
+                    score: entry.productQualityScore,
+                    label: "\(Int(entry.audioDuration.rounded()))秒の録音",
+                    warnings: entry.productQualityWarnings,
+                    atmosphere: entry.atmosphereStyle
+                )
+            }
+        }
+    }
+}
+
 private struct NearbyMemoryCard: View {
     let entry: MemoryEntry
     let distanceText: String
@@ -1613,6 +1726,8 @@ struct MemoryCardView: View {
 
                         Spacer()
 
+                        ResonanceColorSwatches(hexes: entry.dominantColorHexes)
+
                         if entry.isFavorite {
                             Image(systemName: "heart.fill")
                                 .foregroundStyle(.pink)
@@ -1635,6 +1750,7 @@ struct MemoryCardView: View {
 
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
+                            ResonanceBadge(title: entry.productQualityLabel, systemImage: "checkmark.seal.fill", atmosphere: entry.atmosphereStyle)
                             ResonanceBadge(title: entry.localizedMood, systemImage: "sparkles", atmosphere: entry.atmosphereStyle)
                             ResonanceBadge(title: entry.atmosphereStyle.localizedLabel, systemImage: entry.atmosphereStyle.symbolName, atmosphere: entry.atmosphereStyle)
                             if entry.hasAudio {
@@ -1701,6 +1817,13 @@ private struct MemoryGridCardView: View {
                         .foregroundStyle(palette.secondaryText)
                         .lineLimit(2)
 
+                    ResonanceQualityMeter(
+                        score: entry.productQualityScore,
+                        label: entry.productQualityLabel,
+                        warnings: [],
+                        atmosphere: entry.atmosphereStyle
+                    )
+
                     AudioWaveformView(
                         samples: entry.waveformFingerprint,
                         progress: 1,
@@ -1742,8 +1865,13 @@ struct MemoryThumbnail: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .scaleEffect(1.035)
+                    .offset(
+                        x: (0.5 - entry.heroFocusPoint.x) * 18,
+                        y: (0.5 - entry.heroFocusPoint.y) * 14
+                    )
             } else {
-                RoundedRectangle(cornerRadius: 16)
+                RoundedRectangle(cornerRadius: 8)
                     .fill(.gray.opacity(0.15))
                     .overlay {
                         Image(systemName: "photo")
@@ -1753,7 +1881,7 @@ struct MemoryThumbnail: View {
         }
         .frame(width: width, height: height)
         .frame(maxWidth: width == nil ? .infinity : nil)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

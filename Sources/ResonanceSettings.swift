@@ -168,8 +168,17 @@ struct SettingsView: View {
         ZStack {
             ResonanceGradientBackground()
 
-            Form {
-                Section("再会体験") {
+            ScrollView {
+                VStack(spacing: 16) {
+                    ResonanceProductHeader(
+                        eyebrow: "Preferences",
+                        title: "写真と録音の体験を整える",
+                        subtitle: "再会、没入プレビュー、キャプション、連続撮影の既定値を管理します。"
+                    )
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+
+                    settingsSection(title: "再会体験", symbol: "sparkles") {
                     Toggle("Time Capsule を表示", isOn: $timeCapsuleEnabled)
                     Toggle("近くの記録を表示", isOn: $nearbyMemoriesEnabled)
 
@@ -181,7 +190,7 @@ struct SettingsView: View {
                     .disabled(!nearbyMemoriesEnabled)
                 }
 
-                Section("没入プレビュー") {
+                    settingsSection(title: "没入プレビュー", symbol: "arrow.up.left.and.arrow.down.right") {
                     Toggle("環境粒子を有効化", isOn: $immersiveParticlesEnabled)
                     Toggle("音量連動の光を有効化", isOn: $immersiveAudioReactiveLightEnabled)
                     Toggle("音のホットスポットを重ねる", isOn: $immersiveHotspotOverlayEnabled)
@@ -214,7 +223,7 @@ struct SettingsView: View {
                         .foregroundStyle(palette.secondaryText)
                 }
 
-                Section("キャプション") {
+                    settingsSection(title: "キャプション", symbol: "text.quote") {
                     Picker("標準スタイル", selection: $defaultCaptionStyle) {
                         ForEach(PhotoCaptionStyle.allCases) { style in
                             Text(style.localizedLabel).tag(style.rawValue)
@@ -228,8 +237,9 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Interval capture") {
+                    settingsSection(title: "Interval capture", symbol: "timer") {
                     TextField("既定のシーン名", text: $intervalCaptureSceneTitle)
+                        .textFieldStyle(.roundedBorder)
 
                     HStack {
                         Text("撮影間隔")
@@ -246,12 +256,30 @@ struct SettingsView: View {
                     Text("Capture 画面の Interval モードで使う既定値です。")
                         .font(.footnote)
                         .foregroundStyle(palette.secondaryText)
+                    }
                 }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 28)
             }
-            .scrollContentBackground(.hidden)
         }
         .navigationTitle("設定")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func settingsSection<Content: View>(
+        title: String,
+        symbol: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ResonanceCard {
+            VStack(alignment: .leading, spacing: 14) {
+                Label(title, systemImage: symbol)
+                    .font(.headline)
+                    .foregroundStyle(palette.primaryText)
+
+                content()
+            }
+        }
     }
 }
 

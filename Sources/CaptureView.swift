@@ -411,10 +411,19 @@ final class CaptureFlowModel: ObservableObject {
         )
         let storedAudioURL = storedMedia.audioFileName.map(MediaStore.audioURL(for:))
         let analysisAudioURL = storedMedia.analysisAudioFileName.map(MediaStore.audioURL(for:)) ?? draft.analysisAudioURL ?? storedAudioURL
-        let analysis = await MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: analysisAudioURL)
-        let immersiveAnalysis = await Task.detached(priority: .userInitiated) {
+        async let analysisTask = MemoryAnalysisService.analyze(photoData: draft.photoData, audioURL: analysisAudioURL)
+        async let visualProfileTask = MemoryAnalysisService.visualProfile(
+            from: draft.photoData,
+            title: title,
+            placeLabel: draft.placeLabel,
+            createdAt: draft.capturedAt
+        )
+        async let immersiveAnalysisTask = Task.detached(priority: .userInitiated) {
             ImmersiveAudioIntelligence.analyze(url: analysisAudioURL)
         }.value
+        let analysis = await analysisTask
+        let visualProfile = await visualProfileTask
+        let immersiveAnalysis = await immersiveAnalysisTask
         let captionGeneration = await MemoryAnalysisService.captionGeneration(
             from: draft.photoData,
             title: title,
@@ -434,6 +443,8 @@ final class CaptureFlowModel: ObservableObject {
             shouldPreserveVerifiedFoundationCaption
             ? draft.photoCaptionSource
             : (captionGeneration?.source ?? draft.photoCaptionSource)
+        let captureQualityScore = min(0.98, max(0.18, (visualProfile.visualQualityScore * 0.58) + (immersiveAnalysis.audioQualityScore * 0.42)))
+        let focusPoint = visualProfile.heroFocusPoint
 
         let entry = MemoryEntry(
             createdAt: draft.capturedAt,
@@ -445,7 +456,11 @@ final class CaptureFlowModel: ObservableObject {
             visualTags: analysis.visualTags,
             audioTags: analysis.audioTags,
             transcript: analysis.transcript,
-            mood: analysis.mood
+            mood: analysis.mood,
+            qualityScore: captureQualityScore,
+            dominantColors: visualProfile.dominantColorHexes,
+            heroFocusX: Double(focusPoint.x),
+            heroFocusY: Double(focusPoint.y)
         )
 
         let metadata = MemoryAtmosphereMetadata(
@@ -462,7 +477,15 @@ final class CaptureFlowModel: ObservableObject {
             seamlessLoopStartPoint: immersiveAnalysis.seamlessLoopStartPoint,
             seamlessLoopEndPoint: immersiveAnalysis.seamlessLoopEndPoint,
             directionalHotspots: immersiveAnalysis.directionalHotspots,
-            capturedSpatialAudio: draft.isSpatialAudio
+            capturedSpatialAudio: draft.isSpatialAudio,
+            visualFeatureVector: visualProfile.visualFeatureVector,
+            audioQualityWarnings: immersiveAnalysis.audioQualityWarnings,
+            captureQualityScore: captureQualityScore,
+            generatedTitle: visualProfile.generatedTitle,
+            searchKeywords: visualProfile.searchKeywords,
+            heroCrop: visualProfile.heroCrop,
+            dominantColorHexes: visualProfile.dominantColorHexes,
+            brightnessScore: visualProfile.brightnessScore
         )
         var finalMetadata = metadata
         finalMetadata.photoCaptionSourceRaw =
@@ -713,6 +736,35 @@ struct CaptureView: View {
     private var todayCount: Int {
         let calendar = Calendar.current
         return entries.filter { calendar.isDateInToday($0.createdAt) }.count
+    }
+
+    private var liveAudioQualityScore: Double {
+        let samples = model.camera.liveMeterSamples
+        guard !samples.isEmpty else { return 0.52 }
+        let average = samples.reduce(CGFloat.zero, +) / CGFloat(samples.count)
+        let peak = samples.max() ?? 0
+        var score = 0.56 + Double(average) * 0.55
+        if average < 0.08 {
+            score -= 0.2
+        }
+        if peak > 0.88 {
+            score -= 0.18
+        }
+        return max(0.18, min(0.98, score))
+    }
+
+    private var liveAudioWarnings: [String] {
+        let samples = model.camera.liveMeterSamples
+        guard !samples.isEmpty, model.camera.isCapturing else { return [] }
+        let average = samples.reduce(CGFloat.zero, +) / CGFloat(samples.count)
+        let peak = samples.max() ?? 0
+        if peak > 0.88 {
+            return ["入力ピークが強めです。iPhoneを音源から少し離してください"]
+        }
+        if average < 0.08 {
+            return ["録音が静かです。残したい音へ少し近づけてください"]
+        }
+        return []
     }
 
     private var needsStartupOverlay: Bool {
@@ -1031,11 +1083,19 @@ struct CaptureView: View {
                         ProgressView(value: model.camera.captureProgress)
                             .tint(palette.accent)
                     }
+
+                    ResonanceQualityMeter(
+                        score: liveAudioQualityScore,
+                        label: "録音品質",
+                        warnings: liveAudioWarnings,
+                        atmosphere: atmosphere
+                    )
+                    .colorScheme(.dark)
                 }
                 .padding(16)
-                .background(.black.opacity(0.56), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .background(.black.opacity(0.56), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(.white.opacity(0.18))
                 }
             } else {
@@ -1051,9 +1111,9 @@ struct CaptureView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                    .background(.black.opacity(0.5), in: Capsule())
+                    .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay {
-                        Capsule()
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(.white.opacity(0.18))
                     }
 
@@ -1104,7 +1164,7 @@ struct CaptureView: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(.white.opacity(0.12))
                     .frame(width: 58, height: 58)
                     .overlay {
@@ -1133,9 +1193,9 @@ struct CaptureView: View {
             }
             .frame(width: 72)
             .padding(.vertical, 10)
-            .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .background(.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(.white.opacity(0.18))
             }
         }
@@ -1284,9 +1344,9 @@ struct CaptureView: View {
                 }
             }
             .padding(28)
-            .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 32, style: .continuous))
+            .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(.white.opacity(0.16))
             }
             .padding(24)
@@ -1305,7 +1365,7 @@ struct CaptureView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var captureSettingsSheet: some View {
@@ -1404,9 +1464,9 @@ struct CaptureView: View {
             content()
         }
         .padding(16)
-        .background(palette.surfacePrimary, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(palette.surfacePrimary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(palette.stroke)
         }
     }

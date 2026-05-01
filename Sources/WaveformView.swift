@@ -30,6 +30,37 @@ struct AudioWaveformView: View {
     }
 }
 
+struct SeekableAudioWaveformView: View {
+    let samples: [CGFloat]
+    let progress: Double
+    let duration: TimeInterval
+    var activeColor: Color = .indigo
+    var inactiveColor: Color = Color.indigo.opacity(0.2)
+    var minimumBarHeight: CGFloat = 14
+    let onSeek: (TimeInterval) -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            AudioWaveformView(
+                samples: samples,
+                progress: progress,
+                activeColor: activeColor,
+                inactiveColor: inactiveColor,
+                minimumBarHeight: minimumBarHeight
+            )
+            .frame(height: geometry.size.height)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let fraction = max(0, min(1, value.location.x / max(geometry.size.width, 1)))
+                        onSeek(TimeInterval(fraction) * max(duration, 0.1))
+                    }
+            )
+        }
+    }
+}
+
 enum WaveformExtractor {
     static func samples(from url: URL?, sampleCount: Int = 40) -> [CGFloat] {
         guard
