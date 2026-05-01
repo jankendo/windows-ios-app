@@ -50,7 +50,7 @@ struct MemoryCollectionCardView: View {
                     }
 
                     HStack {
-                        Label("\(entries.count)件", systemImage: "square.stack.3d.down.right")
+                        Label("\(entries.count)件", systemImage: "photo.stack")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(palette.secondaryText)
                         Spacer()
@@ -110,7 +110,7 @@ struct MemorySceneCardView: View {
                         }
 
                         if scene.actualCount > previewEntries.count {
-                            Label("+\(scene.actualCount - previewEntries.count)", systemImage: "square.stack.3d.up.fill")
+                            Label("+\(scene.actualCount - previewEntries.count)", systemImage: "photo.stack.fill")
                                 .font(.caption.weight(.semibold))
                                 .frame(maxWidth: .infinity, minHeight: 34)
                                 .foregroundStyle(palette.primaryText)

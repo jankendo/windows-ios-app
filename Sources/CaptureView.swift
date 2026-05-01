@@ -702,6 +702,10 @@ struct CaptureView: View {
         ResonancePalette.make(for: colorScheme, atmosphere: atmosphere)
     }
 
+    private var durationPresetColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 92), spacing: 10)]
+    }
+
     private var recentEntry: MemoryEntry? {
         entries.first
     }
@@ -860,11 +864,11 @@ struct CaptureView: View {
         VStack(spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Resonance")
-                        .font(.headline.weight(.semibold))
+                    Text("写真と録音")
+                        .font(.title3.weight(.bold))
                         .foregroundStyle(.white)
 
-                    Text("写真ではなく、その場の空気まで連れて帰る")
+                    Text("1枚の写真に、その場の音を重ねて残す")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.78))
                 }
@@ -875,7 +879,7 @@ struct CaptureView: View {
                     showingCaptureSettings = true
                 } label: {
                     ResonanceBadge(
-                        title: captureMode == .ambient ? "Ambient \(Int(captureDurationSeconds.rounded()))s" : "Interval \(intervalCapturePlannedCount)x",
+                        title: captureMode == .ambient ? "録音 \(Int(captureDurationSeconds.rounded()))秒" : "連続 \(intervalCapturePlannedCount)枚",
                         systemImage: "slider.horizontal.3",
                         tint: .white,
                         atmosphere: atmosphere
@@ -886,6 +890,20 @@ struct CaptureView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    ResonanceBadge(
+                        title: "Photo",
+                        systemImage: "camera.fill",
+                        tint: .white,
+                        atmosphere: atmosphere
+                    )
+
+                    ResonanceBadge(
+                        title: "Audio",
+                        systemImage: "waveform",
+                        tint: .white,
+                        atmosphere: atmosphere
+                    )
+
                     ResonanceBadge(
                         title: atmosphere.localizedLabel,
                         systemImage: atmosphere.symbolName,
@@ -947,9 +965,9 @@ struct CaptureView: View {
             if model.camera.permissionState == .denied {
                 permissionBottomCard
             } else {
-                captureModeQuickSelector
                 captureInfoPill
                 captureControlsBar
+                captureModeQuickSelector
             }
         }
         .padding(.horizontal, 18)
@@ -969,7 +987,7 @@ struct CaptureView: View {
             if model.camera.isCapturing || model.camera.isProcessingCapture {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Label(model.camera.isCapturing ? "Capturing the air" : "Composing your memory", systemImage: model.camera.isCapturing ? "waveform.and.mic" : "sparkles")
+                        Label(model.camera.isCapturing ? "録音中" : "プレビューを準備中", systemImage: model.camera.isCapturing ? "waveform.and.mic" : "photo.badge.checkmark")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.white)
                             .symbolEffect(.pulse, options: .repeating, isActive: model.camera.isCapturing || model.camera.isProcessingCapture)
@@ -992,10 +1010,10 @@ struct CaptureView: View {
 
                     Text(
                         model.camera.isWaitingForRecordingStart
-                        ? "シャッター音が録音に混ざらないよう、静かな立ち上がりを待っています。"
+                        ? "シャッター音が録音に混ざらないよう、少し待ってから録音を始めます。"
                         : (model.camera.isCapturing
-                            ? "シャッターのあとも、その場の空気を静かに集めています。"
-                            : "写真と音、場所と空気をひとつのシーンとしてまとめています。")
+                            ? "写真に重ねる環境音を集めています。波形で録音の入り方を確認できます。"
+                            : "写真と録音をプレビュー用の記録へまとめています。")
                     )
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.82))
@@ -1219,7 +1237,7 @@ struct CaptureView: View {
                     .font(.title3.bold())
                     .foregroundStyle(.white)
 
-                Text("カメラと空間センサーを整えて、心地よく撮影できる状態へ導いています。")
+                Text("カメラとマイクを整えて、写真と録音をすぐ確認できる状態にしています。")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.82))
                     .multilineTextAlignment(.center)
@@ -1227,8 +1245,8 @@ struct CaptureView: View {
 
             VStack(spacing: 10) {
                 readinessRow(title: "Camera", isReady: model.camera.isSessionRunning)
-                readinessRow(title: "Location", isReady: environmentService.isLocationReady || environmentService.authorizationStatus == .denied)
-                readinessRow(title: "Spatial sensors", isReady: environmentService.isMotionReady || environmentService.isPressureReady)
+                readinessRow(title: "Microphone", isReady: model.camera.permissionState == .ready)
+                readinessRow(title: "Place context", isReady: environmentService.isLocationReady || environmentService.authorizationStatus == .denied)
             }
         }
         .padding(28)
@@ -1251,14 +1269,14 @@ struct CaptureView: View {
                     .scaleEffect(1.18)
 
                 VStack(spacing: 8) {
-                    Text(model.isPreparingIntervalReview ? "Finishing your interval scene" : "Preparing your memory scene")
+                    Text(model.isPreparingIntervalReview ? "連続撮影をまとめています" : "写真と録音を確認用に整えています")
                         .font(.title3.bold())
                         .foregroundStyle(.white)
 
                     Text(
                         model.isPreparingIntervalReview
-                        ? "指定枚数の撮影が終わりました。写真と音、位置、空気感を仕上げてからプレビューを表示します。"
-                        : "写真、音、位置、空気感をひとつのシーンへまとめています。完了までお待ちください。"
+                        ? "指定枚数の撮影が終わりました。写真と音を保存し、シーンとして見返せるようにしています。"
+                        : "写真、録音、場所の情報をひとつのプレビューへまとめています。完了までお待ちください。"
                     )
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.82))
@@ -1291,82 +1309,106 @@ struct CaptureView: View {
     }
 
     private var captureSettingsSheet: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(captureMode == .ambient ? "Ambient capture" : "Interval capture")
-                .font(.title3.bold())
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("撮影と録音", systemImage: "camera.fill")
+                        .font(.title3.bold())
 
-            Text(captureMode == .ambient
-                 ? "環境音の長さをシーンに合わせて調整できます。短く素早く残すことも、少し長めに空気を集めることもできます。"
-                 : "一定間隔で複数のシーンを残すモードです。主画面からも切り替えられ、ここでは間隔や枚数を調整できます。")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            captureModeSelectionButtons
-
-            let columns = [GridItem(.adaptive(minimum: 92), spacing: 10)]
-
-            LazyVGrid(columns: columns, spacing: 10) {
-                ForEach([3.0, 6.0, 10.0, 15.0], id: \.self) { duration in
-                    Button("\(Int(duration))秒") {
-                        captureDurationSeconds = duration
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: 48)
-                    .background(captureDurationSeconds == duration ? palette.accent : palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .foregroundStyle(captureDurationSeconds == duration ? Color.white : palette.primaryText)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("長さ")
-                    Spacer()
-                    Text("\(Int(captureDurationSeconds.rounded()))秒")
-                        .fontWeight(.semibold)
-                }
-
-                Slider(value: $captureDurationSeconds, in: 3...20, step: 1)
-                    .tint(palette.accent)
-            }
-
-            Toggle(isOn: $delayRecordingUntilAfterShutter) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("シャッター音を避けて録音を始める")
-                        .font(.subheadline.weight(.semibold))
-                    Text("iPhone ではシャッター音を無効化できないため、オンにすると撮影後に少し待ってから環境音を記録します。")
-                        .font(.footnote)
+                    Text(captureMode == .ambient
+                         ? "1枚の写真と、指定した長さの環境音をまとめてプレビューします。"
+                         : "同じ設定で複数回撮影し、写真と録音のシーンとして保存します。")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-            }
-            .tint(palette.accent)
 
-            if captureMode == .interval {
-                VStack(alignment: .leading, spacing: 12) {
-                    TextField("シーン名", text: $intervalCaptureSceneTitle)
-                        .textFieldStyle(.roundedBorder)
+                captureModeSelectionButtons
+
+                settingSection(title: "録音の長さ", symbol: "waveform") {
+                    LazyVGrid(columns: durationPresetColumns, spacing: 10) {
+                        ForEach([3.0, 6.0, 10.0, 15.0], id: \.self) { duration in
+                            Button("\(Int(duration))秒") {
+                                captureDurationSeconds = duration
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .background(captureDurationSeconds == duration ? palette.accent : palette.surfaceSecondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .foregroundStyle(captureDurationSeconds == duration ? Color.white : palette.primaryText)
+                        }
+                    }
 
                     HStack {
-                        Text("間隔")
+                        Text("現在")
                         Spacer()
-                        Text("\(Int(intervalCaptureSpacingSeconds.rounded()))秒")
+                        Text("\(Int(captureDurationSeconds.rounded()))秒")
                             .fontWeight(.semibold)
                     }
+                    .font(.subheadline)
 
-                    Slider(value: $intervalCaptureSpacingSeconds, in: 10...180, step: 5)
+                    Slider(value: $captureDurationSeconds, in: 3...20, step: 1)
                         .tint(palette.accent)
+                }
 
-                    Stepper("枚数 \(intervalCapturePlannedCount)", value: $intervalCapturePlannedCount, in: 2...12)
+                settingSection(title: "録音開始", symbol: "speaker.slash.fill") {
+                    Toggle(isOn: $delayRecordingUntilAfterShutter) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("シャッター音を避ける")
+                                .font(.subheadline.weight(.semibold))
+                            Text("オンにすると撮影後に少し待ってから録音を始めます。プレビューの音が自然になります。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tint(palette.accent)
+                }
 
-                    Text("Interval は前景動作のみ対応です。バックグラウンドへ移ると一時停止し、再開ボタンで続きから再開できます。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                if captureMode == .interval {
+                    settingSection(title: "連続撮影", symbol: "timer") {
+                        TextField("シーン名", text: $intervalCaptureSceneTitle)
+                            .textFieldStyle(.roundedBorder)
+
+                        HStack {
+                            Text("間隔")
+                            Spacer()
+                            Text("\(Int(intervalCaptureSpacingSeconds.rounded()))秒")
+                                .fontWeight(.semibold)
+                        }
+                        .font(.subheadline)
+
+                        Slider(value: $intervalCaptureSpacingSeconds, in: 10...180, step: 5)
+                            .tint(palette.accent)
+
+                        Stepper("枚数 \(intervalCapturePlannedCount)", value: $intervalCapturePlannedCount, in: 2...12)
+
+                        Text("前景動作のみ対応です。バックグラウンドへ移ると一時停止し、再開ボタンで続きから再開できます。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-
-            Spacer()
+            .padding(24)
         }
-        .padding(24)
         .presentationBackground(.regularMaterial)
+    }
+
+    private func settingSection<Content: View>(
+        title: String,
+        symbol: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(title, systemImage: symbol)
+                .font(.headline)
+                .foregroundStyle(palette.primaryText)
+
+            content()
+        }
+        .padding(16)
+        .background(palette.surfacePrimary, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(palette.stroke)
+        }
     }
 
     private var captureModeQuickSelector: some View {

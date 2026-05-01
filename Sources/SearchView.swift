@@ -257,10 +257,10 @@ struct SearchView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("類似空間スキャン")
+                                Text("似た空気の記録")
                                     .font(.headline)
                                     .foregroundStyle(palette.primaryText)
-                                Text("「\(similaritySeed.displayTitle)」に近い空気感")
+                                Text("「\(similaritySeed.displayTitle)」に近い写真と音")
                                     .font(.subheadline)
                                     .foregroundStyle(palette.secondaryText)
                             }
@@ -304,7 +304,7 @@ struct SearchView: View {
                             } label: {
                                 MemoryCardView(
                                     entry: entry,
-                                    matchReasons: ["類似空間"]
+                                    matchReasons: ["似た空気"]
                                 )
                             }
                             .buttonStyle(.plain)

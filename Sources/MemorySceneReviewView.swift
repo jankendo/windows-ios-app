@@ -40,7 +40,7 @@ struct MemorySceneReviewView: View {
 
     private var previewDisplayTitle: String {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedTitle.isEmpty ? "深呼吸して、この空気にとどまる" : trimmedTitle
+        return trimmedTitle.isEmpty ? "写真と録音のプレビュー" : trimmedTitle
     }
 
     private var previewDisplayCaption: String {
@@ -153,7 +153,7 @@ struct MemorySceneReviewView: View {
                         )
                         if draft.isSpatialAudio {
                             ResonanceBadge(
-                                title: "Spatial Audio",
+                                title: "空間オーディオ",
                                 systemImage: "dot.radiowaves.left.and.right",
                                 tint: .white,
                                 atmosphere: atmosphere
@@ -188,7 +188,7 @@ struct MemorySceneReviewView: View {
                     .frame(height: 36)
 
                     HStack {
-                        Label("静かに全画面でひらく", systemImage: "arrow.up.left.and.arrow.down.right")
+                        Label("全画面で写真と録音を確認", systemImage: "arrow.up.left.and.arrow.down.right")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.82))
                         Spacer()
@@ -197,10 +197,10 @@ struct MemorySceneReviewView: View {
                             .foregroundStyle(.white.opacity(0.72))
                     }
                 }
-                .padding(18)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+                .padding(16)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.22))
                 }
                 .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.28 : 0.14), radius: 28, y: 16)
@@ -306,7 +306,7 @@ struct MemorySceneReviewView: View {
                 Button {
                     onSave()
                 } label: {
-                    Label(isSaving ? "保存中…" : "この空気を保存", systemImage: "sparkles.rectangle.stack.fill")
+                    Label(isSaving ? "保存中…" : "写真と録音を保存", systemImage: "square.and.arrow.down.fill")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
@@ -330,11 +330,11 @@ struct MemorySceneReviewView: View {
 
     private var reviewHeadline: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("静かな仕上げ")
+            Text("Preview")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(palette.secondaryText)
 
-            Text("記憶に名前を与える")
+            Text("写真と録音を確認する")
                 .font(.title3.bold())
                 .foregroundStyle(palette.primaryText)
         }
@@ -344,7 +344,7 @@ struct MemorySceneReviewView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("余韻のことば")
+                    Text("写真キャプション")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(palette.secondaryText)
                     Text(captionStyle.localizedLabel)
@@ -577,8 +577,6 @@ private struct ImmersiveMemoryPlaybackView: View {
                         x: motionHorizontalShift + saliencyShift.width,
                         y: motionVerticalShift + saliencyShift.height
                     )
-                    .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(-environmentService.previewHorizontalShift) * 0.16), axis: (x: 0, y: 1, z: 0))
-                    .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(environmentService.previewVerticalShift) * 0.1), axis: (x: 1, y: 0, z: 0))
                     .ignoresSafeArea()
                     .animation(reduceMotion ? .default : .linear(duration: 20).repeatForever(autoreverses: true), value: kenBurnsExpanded)
             }

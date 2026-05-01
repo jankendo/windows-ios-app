@@ -504,10 +504,10 @@ struct LibraryView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Spatial Library")
+                        Text("Memory Library")
                             .font(.headline)
                             .foregroundStyle(palette.primaryText)
-                        Text("撮影した記録を、時期・空気・場所からたどれます。")
+                        Text("写真と録音の記録を、時期・空気・場所からたどれます。")
                             .font(.subheadline)
                             .foregroundStyle(palette.secondaryText)
                     }
@@ -527,7 +527,7 @@ struct LibraryView: View {
                 }
 
                 HStack(spacing: 12) {
-                    ResonanceStatTile(title: "合計", value: "\(entries.count)", symbol: "square.stack.3d.down.right.fill")
+                    ResonanceStatTile(title: "合計", value: "\(entries.count)", symbol: "photo.stack.fill")
                     ResonanceStatTile(title: "地図対応", value: "\(entries.filter { $0.hasMapLocation }.count)", symbol: "map.fill")
                     if nearbyMemoriesEnabled {
                         ResonanceStatTile(title: "近く", value: "\(nearbyEntries.count)", symbol: "location.fill")
@@ -857,7 +857,7 @@ struct LibraryView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Spatial Map")
+                    Text("Memory Map")
                         .font(.headline)
                         .foregroundStyle(palette.primaryText)
                     Spacer()
@@ -1474,7 +1474,7 @@ private struct ClusteredMapPinView: View {
                         .strokeBorder(isSelected ? palette.accent : Color.white.opacity(0.94), lineWidth: isSelected ? 3 : 2)
 
                     VStack(spacing: 2) {
-                        Image(systemName: "square.stack.3d.up.fill")
+                        Image(systemName: "photo.stack.fill")
                             .font(.caption.weight(.bold))
                             .foregroundStyle(isSelected ? palette.accent : .white)
                         Text("\(group.count)")

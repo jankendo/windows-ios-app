@@ -68,7 +68,7 @@ struct MemoryDetailView: View {
                         || entry.maximumDecibels != nil {
                         ResonanceCard(atmosphere: entry.atmosphereStyle) {
                             VStack(alignment: .leading, spacing: 12) {
-                                Text("空間センサー")
+                                Text("記録メタデータ")
                                     .font(.headline)
                                     .foregroundStyle(palette.primaryText)
 
@@ -546,8 +546,6 @@ private struct SavedMemoryImmersivePreviewView: View {
                         x: motionHorizontalShift + saliencyShift.width,
                         y: motionVerticalShift + saliencyShift.height
                     )
-                    .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(-environmentService.previewHorizontalShift) * 0.16), axis: (x: 0, y: 1, z: 0))
-                    .rotation3DEffect(.degrees(reduceMotion ? 0 : Double(environmentService.previewVerticalShift) * 0.1), axis: (x: 1, y: 0, z: 0))
                     .ignoresSafeArea()
                     .animation(reduceMotion ? .default : .linear(duration: 20).repeatForever(autoreverses: true), value: kenBurnsExpanded)
             }
